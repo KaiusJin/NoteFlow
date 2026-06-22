@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: noteflow-postgres
+    environment:
+      POSTGRES_DB: noteflow
+      POSTGRES_USER: noteflow
+      POSTGRES_PASSWORD: noteflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - noteflow_postgres_data:/var/lib/postgresql/data
+      - ./infra/db/init:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:7-alpine
+    container_name: noteflow-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  noteflow_postgres_data:

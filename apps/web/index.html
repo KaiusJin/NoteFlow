@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NoteFlow Upload</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <div class="eyebrow">NoteFlow MVP</div>
+        <h1>Upload a PDF</h1>
+        <p class="lede">
+          Start the first workflow: save a PDF, create a parse task, and watch the processing status.
+        </p>
+
+        <form id="upload-form" class="form">
+          <label>
+            Title
+            <input id="title" name="title" type="text" placeholder="Week 1 probability notes" />
+          </label>
+
+          <label>
+            Document type
+            <select id="document-type" name="documentType">
+              <option value="COURSE_NOTES">Course notes</option>
+              <option value="LECTURE_SLIDES">Lecture slides</option>
+              <option value="RESEARCH_PAPER">Research paper</option>
+              <option value="TEXTBOOK_CHAPTER">Textbook chapter</option>
+              <option value="ASSIGNMENT">Assignment</option>
+              <option value="PAST_EXAM">Past exam</option>
+              <option value="HANDWRITTEN_NOTES">Handwritten notes</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </label>
+
+          <label class="file-drop" for="pdf-file">
+            <span id="file-label">Choose a PDF</span>
+            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" required />
+          </label>
+
+          <button type="submit">Upload and Parse</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="section-header">
+          <div>
+            <div class="eyebrow">Task Status</div>
+            <h2>Processing</h2>
+          </div>
+          <button id="refresh-documents" class="secondary" type="button">Refresh</button>
+        </div>
+
+        <div id="status-card" class="status-card muted">
+          Upload a PDF to create a parsing task.
+        </div>
+
+        <div class="progress-shell" aria-label="Task progress">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+      </section>
+
+      <section class="panel wide">
+        <div class="section-header">
+          <div>
+            <div class="eyebrow">Documents</div>
+            <h2>Recent uploads</h2>
+          </div>
+        </div>
+        <div id="documents-list" class="documents-list"></div>
+      </section>
+
+      <section class="panel wide">
+        <div class="section-header">
+          <div>
+            <div class="eyebrow">Parsed Output</div>
+            <h2>PDF text extraction</h2>
+          </div>
+        </div>
+        <div id="parse-output" class="parse-output muted">
+          Select a parsed document to view its extraction summary and chunks.
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js?v=markdown-pages-1"></script>
+  </body>
+</html>

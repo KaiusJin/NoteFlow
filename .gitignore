@@ -1,0 +1,17 @@
+.DS_Store
+
+# Java
+.gradle/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local runtime data
+/storage/
+services/api/storage/*
+!services/api/storage/README.md
+experiments/
+.env

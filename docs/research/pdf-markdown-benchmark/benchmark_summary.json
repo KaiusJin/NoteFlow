@@ -1,0 +1,47 @@
+[
+  {
+    "sample": "CS116",
+    "tool": "noteflow",
+    "status": "ok",
+    "seconds": 27.265,
+    "output_dir": "experiments/pdf_markdown/outputs/CS116/noteflow",
+    "markdown_path": "experiments/pdf_markdown/outputs/CS116/noteflow/CS116.md",
+    "markdown_chars": 9041,
+    "markdown_lines": 334,
+    "image_refs": 0,
+    "table_markers": 0,
+    "math_markers": 16,
+    "code_fences": 3,
+    "error": null
+  },
+  {
+    "sample": "MATH138L22",
+    "tool": "noteflow",
+    "status": "ok",
+    "seconds": 36.908,
+    "output_dir": "experiments/pdf_markdown/outputs/MATH138L22/noteflow",
+    "markdown_path": "experiments/pdf_markdown/outputs/MATH138L22/noteflow/MATH138L22.md",
+    "markdown_chars": 4823,
+    "markdown_lines": 454,
+    "image_refs": 0,
+    "table_markers": 0,
+    "math_markers": 92,
+    "code_fences": 3,
+    "error": null
+  },
+  {
+    "sample": "handwritten_note",
+    "tool": "noteflow",
+    "status": "ok",
+    "seconds": 101.59,
+    "output_dir": "experiments/pdf_markdown/outputs/handwritten_note/noteflow",
+    "markdown_path": "experiments/pdf_markdown/outputs/handwritten_note/noteflow/handwritten_note.md",
+    "markdown_chars": 2358,
+    "markdown_lines": 199,
+    "image_refs": 0,
+    "table_markers": 0,
+    "math_markers": 0,
+    "code_fences": 0,
+    "error": null
+  }
+]

@@ -1,0 +1,30 @@
+spring:
+  application:
+    name: noteflow-api
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/noteflow}
+    username: ${SPRING_DATASOURCE_USERNAME:noteflow}
+    password: ${SPRING_DATASOURCE_PASSWORD:noteflow}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+noteflow:
+  storage:
+    upload-dir: ${NOTEFLOW_UPLOAD_DIR:storage/uploads}
+  queue:
+    document-analysis: ${NOTEFLOW_DOCUMENT_QUEUE:queue:document-analysis}
+  dev:
+    user-id: ${NOTEFLOW_DEV_USER_ID:00000000-0000-0000-0000-000000000001}
