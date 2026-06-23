@@ -23,14 +23,14 @@ public class GeminiEmbeddingClient implements EmbeddingClient {
             ObjectMapper objectMapper,
             @Value("${noteflow.embedding.provider:${EMBEDDING_PROVIDER:disabled}}") String provider,
             @Value("${noteflow.embedding.gemini-api-key:${GEMINI_API_KEY:}}") String apiKey,
-            @Value("${noteflow.embedding.gemini-model:${GEMINI_EMBEDDING_MODEL:text-embedding-004}}") String model) {
+            @Value("${noteflow.embedding.gemini-model:${GEMINI_EMBEDDING_MODEL:gemini-embedding-001}}") String model) {
         this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(20))
             .build();
         this.provider = provider == null ? "disabled" : provider.trim().toLowerCase();
         this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.model = model == null || model.isBlank() ? "text-embedding-004" : model.trim();
+        this.model = model == null || model.isBlank() ? "gemini-embedding-001" : model.trim();
     }
 
     @Override

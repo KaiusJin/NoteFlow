@@ -80,10 +80,6 @@ documentsList.addEventListener("click", async (event) => {
     await generateEmbeddings(embeddingsButton.dataset.generateEmbeddings);
     return;
   }
-  const searchButton = event.target.closest("[data-search-document]");
-  if (searchButton) {
-    renderSearchPanel(searchButton.dataset.searchDocument);
-  }
 });
 
 function formatStepLabel(step) {
@@ -260,6 +256,20 @@ function renderDocuments(documents) {
       }
       const noteStatusHtml = `<span class="badge ${noteStatusClass}">${escapeHtml(noteStatusText)}</span>`;
 
+      let embeddingStatusText = "Embedding Not Started";
+      let embeddingStatusClass = "muted";
+      if (document.embeddingStatus === "READY") {
+        embeddingStatusText = "Embedding Ready";
+        embeddingStatusClass = "ready";
+      } else if (document.embeddingStatus === "PROCESSING" || document.embeddingStatus === "PENDING" || document.embeddingStatus === "RETRYING") {
+        embeddingStatusText = "Embedding Processing";
+        embeddingStatusClass = "processing";
+      } else if (document.embeddingStatus === "FAILED") {
+        embeddingStatusText = "Embedding Failed";
+        embeddingStatusClass = "failed";
+      }
+      const embeddingStatusHtml = `<span class="badge ${embeddingStatusClass}">${escapeHtml(embeddingStatusText)}</span>`;
+
       return `
         <article class="document-row">
           <div class="document-main">
@@ -274,11 +284,11 @@ function renderDocuments(documents) {
           <div class="document-badges">
             <span class="badge ${parseStatusClass}">${escapeHtml(parseStatusText)}</span>
             ${noteStatusHtml}
+            ${embeddingStatusHtml}
           </div>
           <div class="row-actions">
             <button class="secondary" type="button" data-view-parse="${escapeHtml(document.id)}">View Parsed Output</button>
             <button class="secondary" type="button" data-view-notes="${escapeHtml(document.id)}">View AI Notes</button>
-            <button class="secondary" type="button" data-search-document="${escapeHtml(document.id)}">Search</button>
             <button class="secondary" type="button" data-generate-embeddings="${escapeHtml(document.id)}">Generate Embeddings</button>
             <button type="button" data-generate-notes="${escapeHtml(document.id)}">Generate AI Notes</button>
           </div>
@@ -420,14 +430,14 @@ function renderSearchPanel(documentId = null) {
           <input id="search-top-k" name="topK" type="number" min="1" max="30" value="8" />
         </label>
       </div>
-      <div id="custom-search-scope" class="custom-search-scope" hidden>
-        ${renderCustomSearchScope(documents)}
-      </div>
       <div class="search-actions">
         <button type="submit">Search</button>
       </div>
+      <div id="search-results" class="search-results muted">Generate embeddings before searching a document.</div>
+      <div id="custom-search-scope" class="custom-search-scope" hidden>
+        ${renderCustomSearchScope(documents)}
+      </div>
     </form>
-    <div id="search-results" class="search-results muted">Generate embeddings before searching a document.</div>
   `;
 
   const formEl = parseOutput.querySelector("#search-form");

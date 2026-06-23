@@ -14,9 +14,10 @@ public record DocumentResponse(
     ContentSourceType contentSourceType,
     DocumentStatus status,
     String aiNoteStatus,
+    String embeddingStatus,
     Instant createdAt
 ) {
-    public static DocumentResponse from(Document document, String aiNoteStatus) {
+    public static DocumentResponse from(Document document, String aiNoteStatus, String embeddingStatus) {
         return new DocumentResponse(
             document.getId(),
             document.getTitle(),
@@ -28,6 +29,7 @@ public record DocumentResponse(
             document.getContentSourceType(),
             document.getStatus(),
             aiNoteStatus,
+            embeddingStatus,
             document.getCreatedAt()
         );
     }

@@ -4,12 +4,15 @@ import com.noteflow.storage.LocalFileStorageService;
 import com.noteflow.storage.StoredFile;
 import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
+import com.noteflow.tasks.TaskStatus;
 import com.noteflow.tasks.TaskType;
 import com.noteflow.users.DevUserService;
 import com.noteflow.notes.DocumentAiNote;
 import com.noteflow.notes.DocumentAiNoteRepository;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -21,14 +24,16 @@ public class DocumentService {
     private final TaskDispatchService taskDispatcher;
     private final LocalFileStorageService storage;
     private final DocumentAiNoteRepository notes;
+    private final JdbcTemplate jdbc;
 
     public DocumentService(DevUserService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
-            LocalFileStorageService storage, DocumentAiNoteRepository notes) {
+            LocalFileStorageService storage, DocumentAiNoteRepository notes, JdbcTemplate jdbc) {
         this.users = users;
         this.documents = documents;
         this.taskDispatcher = taskDispatcher;
         this.storage = storage;
         this.notes = notes;
+        this.jdbc = jdbc;
     }
 
     @Transactional
@@ -62,7 +67,8 @@ public class DocumentService {
                 String aiNoteStatus = notes.findFirstByDocumentIdOrderByNoteVersionDesc(document.getId())
                     .map(DocumentAiNote::getStatus)
                     .orElse("NOT_STARTED");
-                return DocumentResponse.from(document, aiNoteStatus);
+                String embeddingStatus = embeddingStatus(document.getId());
+                return DocumentResponse.from(document, aiNoteStatus, embeddingStatus);
             })
             .toList();
     }
@@ -75,7 +81,34 @@ public class DocumentService {
         String aiNoteStatus = notes.findFirstByDocumentIdOrderByNoteVersionDesc(document.getId())
             .map(DocumentAiNote::getStatus)
             .orElse("NOT_STARTED");
-        return DocumentResponse.from(document, aiNoteStatus);
+        return DocumentResponse.from(document, aiNoteStatus, embeddingStatus(document.getId()));
+    }
+
+    private String embeddingStatus(UUID documentId) {
+        Task activeTask = taskDispatcher.latestActiveTask(documentId, TaskType.GENERATE_EMBEDDINGS);
+        if (activeTask != null) {
+            return "PROCESSING";
+        }
+        try {
+            Integer count = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM document_embeddings WHERE document_id = ? AND embedding IS NOT NULL",
+                Integer.class,
+                documentId
+            );
+            if (count != null && count > 0) {
+                return "READY";
+            }
+        } catch (DataAccessException ignored) {
+            return "NOT_STARTED";
+        }
+        return latestEmbeddingTaskStatus(documentId);
+    }
+
+    private String latestEmbeddingTaskStatus(UUID documentId) {
+        return taskDispatcher.latestTask(documentId, TaskType.GENERATE_EMBEDDINGS)
+            .map(Task::getStatus)
+            .map(status -> status == TaskStatus.FAILED ? "FAILED" : "NOT_STARTED")
+            .orElse("NOT_STARTED");
     }
 
     private void validatePdf(MultipartFile file) {

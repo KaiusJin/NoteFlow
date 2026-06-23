@@ -1,6 +1,7 @@
 package com.noteflow.tasks;
 
 import com.noteflow.queue.DocumentTaskQueue;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,12 @@ public class TaskDispatchService {
             .filter(task -> ACTIVE_STATUSES.contains(task.getStatus()))
             .findFirst()
             .orElse(null);
+    }
+
+    public Optional<Task> latestTask(UUID documentId, TaskType taskType) {
+        return tasks.findByDocumentIdOrderByCreatedAtDesc(documentId).stream()
+            .filter(task -> task.getTaskType() == taskType)
+            .findFirst();
     }
 
     private void enqueueAfterCommit(Task task) {

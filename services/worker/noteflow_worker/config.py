@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     notes_group_target_tokens: int = 3200
     notes_group_max_tokens: int = 4500
     embedding_provider: str = "disabled"
-    gemini_embedding_model: str = "text-embedding-004"
+    gemini_embedding_model: str = "gemini-embedding-001"
     openai_embedding_model: str = "text-embedding-3-small"
     local_embedding_model: str = "bge-small-en-v1.5"
     embedding_batch_size: int = 16
