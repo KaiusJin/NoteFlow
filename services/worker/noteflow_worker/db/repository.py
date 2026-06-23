@@ -13,6 +13,9 @@ class DocumentRecord:
     id: str
     storage_path: str
     document_type: str
+    title: str = ""
+    content_source_type: str = "UNKNOWN"
+    page_count: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class TextChunk:
     token_count: Optional[int] = None
     source_asset_id: Optional[str] = None
     metadata_json: Optional[str] = None
+    id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -111,15 +115,65 @@ class MarkdownDocument:
     quality_report_json: Optional[str]
 
 
+@dataclass(frozen=True)
+class AiNoteSection:
+    note_id: str
+    document_id: str
+    section_index: int
+    section_type: str
+    heading: str
+    markdown: str
+    page_start: Optional[int]
+    page_end: Optional[int]
+    source_chunk_ids_json: str
+    source_pages_json: str
+    confidence: float
+    warnings_json: str
+    metadata_json: Optional[str] = None
+
+
+class CleanConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return self._conn.__exit__(exc_type, exc_val, exc_tb)
+
+    def execute(self, query, params=None, *, prepare=None):
+        clean_params = self._clean_nuls(params)
+        return self._conn.execute(query, clean_params, prepare=prepare)
+
+    def _clean_nuls(self, params):
+        if params is None:
+            return None
+        if isinstance(params, tuple):
+            return tuple(self._clean_nuls(x) for x in params)
+        if isinstance(params, list):
+            return [self._clean_nuls(x) for x in params]
+        if isinstance(params, dict):
+            return {k: self._clean_nuls(v) for k, v in params.items()}
+        if isinstance(params, str):
+            return params.replace('\x00', '')
+        return params
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 class Repository:
     def connect(self):
-        return psycopg.connect(settings.database_url, row_factory=dict_row)
+        conn = psycopg.connect(settings.database_url, row_factory=dict_row)
+        return CleanConnection(conn)
 
     def load_document(self, document_id: str) -> DocumentRecord:
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, storage_path, document_type
+                SELECT id, storage_path, document_type, title, content_source_type, page_count
                 FROM documents
                 WHERE id = %s
                 """,
@@ -127,7 +181,213 @@ class Repository:
             ).fetchone()
         if row is None:
             raise ValueError(f"Document not found: {document_id}")
-        return DocumentRecord(id=str(row["id"]), storage_path=row["storage_path"], document_type=row["document_type"])
+        return DocumentRecord(
+            id=str(row["id"]),
+            storage_path=row["storage_path"],
+            document_type=row["document_type"],
+            title=row["title"] or "",
+            content_source_type=row["content_source_type"] or "UNKNOWN",
+            page_count=row["page_count"],
+        )
+
+    def load_chunks(self, document_id: str) -> list[TextChunk]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  id,
+                  page_number,
+                  page_start,
+                  page_end,
+                  section_title,
+                  chunk_index,
+                  chunk_type,
+                  content,
+                  token_count,
+                  source_asset_id,
+                  metadata_json
+                FROM document_chunks
+                WHERE document_id = %s
+                ORDER BY chunk_index
+                """,
+                (document_id,),
+            ).fetchall()
+        return [
+            TextChunk(
+                id=str(row["id"]),
+                page_number=row["page_number"],
+                page_start=row["page_start"],
+                page_end=row["page_end"],
+                section_title=row["section_title"],
+                chunk_index=row["chunk_index"],
+                chunk_type=row["chunk_type"] or "PARAGRAPH",
+                content=row["content"] or "",
+                token_count=row["token_count"],
+                source_asset_id=str(row["source_asset_id"]) if row["source_asset_id"] else None,
+                metadata_json=row["metadata_json"],
+            )
+            for row in rows
+        ]
+
+    def latest_generating_note_id(self, document_id: str) -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id
+                FROM document_ai_notes
+                WHERE document_id = %s AND status = 'GENERATING'
+                ORDER BY note_version DESC, created_at DESC
+                LIMIT 1
+                """,
+                (document_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"No generating note found for document {document_id}")
+        return str(row["id"])
+
+    def ensure_notes_schema(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_ai_notes (
+                  id UUID PRIMARY KEY,
+                  document_id UUID NOT NULL,
+                  note_version INTEGER NOT NULL,
+                  status VARCHAR(64) NOT NULL,
+                  title VARCHAR(500),
+                  markdown TEXT NOT NULL,
+                  summary TEXT,
+                  model_provider VARCHAR(64),
+                  model_name VARCHAR(128),
+                  prompt_version VARCHAR(64),
+                  source_document_version VARCHAR(64),
+                  quality_report_json TEXT,
+                  metadata_json TEXT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE(document_id, note_version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_ai_note_sections (
+                  id UUID PRIMARY KEY,
+                  note_id UUID NOT NULL,
+                  document_id UUID NOT NULL,
+                  section_index INTEGER NOT NULL,
+                  section_type VARCHAR(64) NOT NULL,
+                  heading VARCHAR(500),
+                  markdown TEXT NOT NULL,
+                  page_start INTEGER,
+                  page_end INTEGER,
+                  source_chunk_ids_json TEXT,
+                  source_pages_json TEXT,
+                  confidence DOUBLE PRECISION,
+                  warnings_json TEXT,
+                  metadata_json TEXT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE(note_id, section_index)
+                )
+                """
+            )
+
+    def save_ai_note(
+        self,
+        note_id: str,
+        document_id: str,
+        markdown: str,
+        summary: str,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        quality_report_json: str,
+        metadata_json: str,
+        sections: Iterable[AiNoteSection],
+    ) -> None:
+        sections = list(sections)
+        self.ensure_notes_schema()
+        with self.connect() as conn:
+            conn.execute("DELETE FROM document_ai_note_sections WHERE note_id = %s", (note_id,))
+            for section in sections:
+                conn.execute(
+                    """
+                    INSERT INTO document_ai_note_sections (
+                      id,
+                      note_id,
+                      document_id,
+                      section_index,
+                      section_type,
+                      heading,
+                      markdown,
+                      page_start,
+                      page_end,
+                      source_chunk_ids_json,
+                      source_pages_json,
+                      confidence,
+                      warnings_json,
+                      metadata_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        str(uuid4()),
+                        section.note_id,
+                        section.document_id,
+                        section.section_index,
+                        section.section_type,
+                        section.heading,
+                        section.markdown,
+                        section.page_start,
+                        section.page_end,
+                        section.source_chunk_ids_json,
+                        section.source_pages_json,
+                        section.confidence,
+                        section.warnings_json,
+                        section.metadata_json,
+                    ),
+                )
+            conn.execute(
+                """
+                UPDATE document_ai_notes
+                SET status = 'READY',
+                    markdown = %s,
+                    summary = %s,
+                    model_provider = %s,
+                    model_name = %s,
+                    prompt_version = %s,
+                    source_document_version = %s,
+                    quality_report_json = %s,
+                    metadata_json = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    markdown,
+                    summary,
+                    provider,
+                    model,
+                    prompt_version,
+                    "chunks:v1",
+                    quality_report_json,
+                    metadata_json,
+                    note_id,
+                ),
+            )
+
+    def fail_ai_note(self, note_id: str, error_message: str) -> None:
+        self.ensure_notes_schema()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE document_ai_notes
+                SET status = 'FAILED',
+                    summary = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (error_message[:4000], note_id),
+            )
 
     def mark_processing(self, task_id: str, document_id: str, step: str, progress: int) -> None:
         with self.connect() as conn:
@@ -824,4 +1084,50 @@ class Repository:
                 WHERE id = %s
                 """,
                 (document_id,),
+            )
+
+    def mark_task_processing(self, task_id: str, step: str, progress: int) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'PROCESSING',
+                    current_step = %s,
+                    progress = %s,
+                    started_at = COALESCE(started_at, NOW()),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (step, progress, task_id),
+            )
+
+    def mark_task_completed(self, task_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'COMPLETED',
+                    current_step = 'COMPLETED',
+                    progress = 100,
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (task_id,),
+            )
+
+    def mark_task_failed(self, task_id: str, error_message: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'FAILED',
+                    current_step = 'FAILED',
+                    progress = 100,
+                    error_message = %s,
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (error_message[:4000], task_id),
             )

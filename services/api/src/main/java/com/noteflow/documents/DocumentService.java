@@ -7,6 +7,8 @@ import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskRepository;
 import com.noteflow.tasks.TaskType;
 import com.noteflow.users.DevUserService;
+import com.noteflow.notes.DocumentAiNote;
+import com.noteflow.notes.DocumentAiNoteRepository;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -20,14 +22,16 @@ public class DocumentService {
     private final TaskRepository tasks;
     private final LocalFileStorageService storage;
     private final DocumentTaskQueue queue;
+    private final DocumentAiNoteRepository notes;
 
     public DocumentService(DevUserService users, DocumentRepository documents, TaskRepository tasks,
-            LocalFileStorageService storage, DocumentTaskQueue queue) {
+            LocalFileStorageService storage, DocumentTaskQueue queue, DocumentAiNoteRepository notes) {
         this.users = users;
         this.documents = documents;
         this.tasks = tasks;
         this.storage = storage;
         this.queue = queue;
+        this.notes = notes;
     }
 
     @Transactional
@@ -59,7 +63,12 @@ public class DocumentService {
     public List<DocumentResponse> listCurrentUserDocuments() {
         UUID userId = users.currentUserId();
         return documents.findByUserIdOrderByCreatedAtDesc(userId).stream()
-            .map(DocumentResponse::from)
+            .map(document -> {
+                String aiNoteStatus = notes.findFirstByDocumentIdOrderByNoteVersionDesc(document.getId())
+                    .map(DocumentAiNote::getStatus)
+                    .orElse("NOT_STARTED");
+                return DocumentResponse.from(document, aiNoteStatus);
+            })
             .toList();
     }
 
@@ -68,7 +77,10 @@ public class DocumentService {
         Document document = documents.findById(id)
             .filter(candidate -> candidate.getUserId().equals(userId))
             .orElseThrow(() -> new IllegalArgumentException("Document not found"));
-        return DocumentResponse.from(document);
+        String aiNoteStatus = notes.findFirstByDocumentIdOrderByNoteVersionDesc(document.getId())
+            .map(DocumentAiNote::getStatus)
+            .orElse("NOT_STARTED");
+        return DocumentResponse.from(document, aiNoteStatus);
     }
 
     private void validatePdf(MultipartFile file) {

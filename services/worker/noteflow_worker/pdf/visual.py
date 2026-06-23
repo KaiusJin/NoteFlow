@@ -14,6 +14,8 @@ RENDER_DPI = 144
 MIN_DRAWINGS_FOR_VISUAL_PAGE = 8
 MIN_IMAGE_COVERAGE = 0.04
 MIN_OCR_CHARS_FOR_SUMMARY = 20
+MIN_NATIVE_TEXT_CHARS_TO_SKIP_OCR = 160
+MIN_IMAGE_COVERAGE_FOR_OCR = 0.12
 
 
 @dataclass(frozen=True)
@@ -70,7 +72,7 @@ def analyze_pdf_visuals(path: str, document_id: str) -> list[VisualPage]:
             image_blocks, image_coverage = image_block_stats(page)
             drawings = page.get_drawings()
             text = page.get_text("text") or ""
-            ocr_text = run_ocr_if_available(image_path)
+            ocr_text = run_ocr_if_available(image_path) if should_run_ocr(text, image_blocks, image_coverage) else None
 
             visual_pages.append(
                 VisualPage(
@@ -86,6 +88,12 @@ def analyze_pdf_visuals(path: str, document_id: str) -> list[VisualPage]:
                 )
             )
     return visual_pages
+
+
+def should_run_ocr(text: str, image_blocks: list[dict], image_coverage: float) -> bool:
+    if len(text.strip()) < MIN_NATIVE_TEXT_CHARS_TO_SKIP_OCR:
+        return True
+    return bool(image_blocks) and image_coverage >= MIN_IMAGE_COVERAGE_FOR_OCR
 
 
 def image_block_stats(page) -> tuple[list[dict], float]:

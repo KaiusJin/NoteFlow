@@ -8,6 +8,7 @@ from typing import Optional
 from pypdf import PdfReader
 
 from noteflow_worker.db.repository import TextChunk
+from noteflow_worker.pdf.math_normalizer import normalize_pdf_math_text
 
 
 MIN_TOKENS = 80
@@ -101,7 +102,8 @@ def extract_pages(reader: PdfReader) -> list[PageText]:
 
 def normalize_page_text(text: str) -> str:
     lines: list[str] = []
-    for raw_line in text.splitlines():
+    normalized_text = normalize_pdf_math_text(text)
+    for raw_line in normalized_text.splitlines():
         line = raw_line.rstrip()
         if line.strip():
             lines.append(line)
@@ -193,6 +195,8 @@ def is_formula_like(line: str) -> bool:
         "β",
         "μ",
         "σ",
+        "\\begin{cases}",
+        "\\end{cases}",
     )
     if any(token in line for token in math_tokens):
         return True

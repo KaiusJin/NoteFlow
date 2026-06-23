@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from noteflow_worker.db.repository import LayoutBlock, MarkdownDocument, MarkdownPage, VlmResult
+from noteflow_worker.pdf.math_normalizer import balance_cases_environment, normalize_pdf_math_text
 from noteflow_worker.pdf.parser import estimate_tokens
 
 
@@ -159,7 +160,7 @@ def build_markdown_page(
 
 
 def render_text_block(block: LayoutBlock) -> str:
-    content = normalize_markdown_spacing(block.content or "")
+    content = normalize_markdown_spacing(balance_cases_environment(normalize_pdf_math_text(block.content or "")))
     if not content:
         return ""
     if block.block_type == "HEADING":

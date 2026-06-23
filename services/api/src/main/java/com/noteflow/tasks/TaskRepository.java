@@ -6,4 +6,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface TaskRepository extends JpaRepository<Task, UUID> {
     List<Task> findByDocumentIdOrderByCreatedAtDesc(UUID documentId);
+    List<Task> findByUserIdOrderByCreatedAtDesc(UUID userId);
 }

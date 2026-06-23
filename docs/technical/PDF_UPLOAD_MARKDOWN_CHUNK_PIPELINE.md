@@ -301,6 +301,23 @@ Markdown builder:
 services/worker/noteflow_worker/pdf/markdown.py
 ```
 
+Math text normalizer:
+
+```text
+services/worker/noteflow_worker/pdf/math_normalizer.py
+```
+
+The normalizer handles PDF font artifacts that appear when TeX math glyphs are extracted as private-use Unicode characters. Examples:
+
+```text
+ -> \begin{cases} ... \end{cases}
+ -> (
+ -> )
+\x10 and \x11 -> ( and )
+```
+
+The system does not blindly delete these characters, because they often represent meaningful math structure such as piecewise functions. It converts them into readable Markdown/LaTeX-ish text before chunking and embedding.
+
 Inputs:
 
 ```text
@@ -399,7 +416,15 @@ services/worker/noteflow_worker/pdf/layout.py
 Entrypoint:
 
 ```python
-build_markdown_chunks(markdown_text, layout_blocks, vlm_results, asset_ids_by_page, content_source_type)
+build_markdown_chunks(
+    markdown_text,
+    layout_blocks,
+    vlm_results,
+    asset_ids_by_page,
+    content_source_type,
+    document_type,
+    chunk_strategy
+)
 ```
 
 The first step parses document Markdown into `MarkdownElement` objects:
@@ -549,7 +574,27 @@ Chunk metadata includes:
 
 The chunk's `assetIds` link it back to page render assets or visual assets for frontend source inspection.
 
-## 16. Current Output Locations
+## 16. Long Text PDF Guardrails
+
+Long native-text PDFs, such as full course-note books, need different cost controls from short slide decks.
+
+Current guardrails:
+
+1. The worker still renders page assets so the frontend can cite and inspect source pages.
+2. OCR is skipped when a page already has enough native PDF text.
+3. OCR is used only for low-native-text pages or pages with meaningful image coverage.
+4. Visual regions are still saved for inspection.
+5. For long non-handwritten documents, only high-value regions are sent to VLM:
+   - code screenshots
+   - handwritten regions
+   - low-text visual pages
+   - substantial diagrams
+6. Ordinary full-page visual fallback regions are not sent to VLM in long text PDFs.
+7. Handwritten/scanned documents are not affected by this shortcut; they still require full-page VLM when selected by strategy.
+
+This prevents a 300+ page text PDF from spending minutes on low-value OCR/VLM work before the main Markdown and chunk output is available.
+
+## 17. Current Output Locations
 
 ### Filesystem
 

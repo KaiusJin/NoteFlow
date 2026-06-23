@@ -13,9 +13,10 @@ public record DocumentResponse(
     DocumentType documentType,
     ContentSourceType contentSourceType,
     DocumentStatus status,
+    String aiNoteStatus,
     Instant createdAt
 ) {
-    public static DocumentResponse from(Document document) {
+    public static DocumentResponse from(Document document, String aiNoteStatus) {
         return new DocumentResponse(
             document.getId(),
             document.getTitle(),
@@ -26,6 +27,7 @@ public record DocumentResponse(
             document.getDocumentType(),
             document.getContentSourceType(),
             document.getStatus(),
+            aiNoteStatus,
             document.getCreatedAt()
         );
     }

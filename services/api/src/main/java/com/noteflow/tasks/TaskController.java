@@ -34,4 +34,12 @@ public class TaskController {
             .map(TaskResponse::from)
             .toList();
     }
+
+    @GetMapping("/tasks")
+    public List<TaskResponse> listAll() {
+        UUID userId = users.currentUserId();
+        return tasks.findByUserIdOrderByCreatedAtDesc(userId).stream()
+            .map(TaskResponse::from)
+            .toList();
+    }
 }

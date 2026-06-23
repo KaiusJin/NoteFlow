@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     vision_request_timeout_seconds: int = 60
     vision_request_max_attempts: int = 3
     vision_retry_backoff_seconds: float = 2.0
+    notes_provider: str = ""
+    gemini_notes_model: str = "gemini-2.5-flash"
+    openai_notes_model: str = "gpt-4o-mini"
+    notes_request_timeout_seconds: int = 90
+    notes_request_max_attempts: int = 3
+    notes_retry_backoff_seconds: float = 2.0
+    notes_group_target_tokens: int = 3200
+    notes_group_max_tokens: int = 4500
 
 
 settings = Settings()

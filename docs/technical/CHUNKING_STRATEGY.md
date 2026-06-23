@@ -2,6 +2,10 @@
 
 This document describes the current PDF chunking strategy, why it is designed this way, and the current quality assessment based on a parsed lecture PDF.
 
+Document-type-specific routing is defined in:
+
+[DOCUMENT_TYPE_PROCESSING_STRATEGY.md](/Users/kaius/Project/NoteFlow/docs/technical/DOCUMENT_TYPE_PROCESSING_STRATEGY.md)
+
 ## 1. Goal
 
 The chunker should produce text chunks that are useful for:

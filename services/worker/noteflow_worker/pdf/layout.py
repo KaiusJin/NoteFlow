@@ -13,6 +13,7 @@ from noteflow_worker.pdf.parser import (
     estimate_tokens,
     preview_text,
 )
+from noteflow_worker.pdf.math_normalizer import balance_cases_environment, normalize_pdf_math_text
 from noteflow_worker.pdf.visual import VisualPage
 
 
@@ -22,6 +23,14 @@ PAGE_AWARE_SOURCE_TYPES = {"SCANNED_PDF", "HANDWRITTEN_SCAN"}
 PAGE_AWARE_TARGET_TOKENS = 650
 PAGE_AWARE_MAX_TOKENS = 1000
 PAGE_AWARE_MIN_MERGE_TOKENS = 60
+STRATEGY_TOKEN_BUDGETS = {
+    "PAGE_AWARE": {"target": 650, "max": 1000, "min_merge": 60},
+    "SLIDE_AWARE": {"target": 700, "max": 1100, "min_merge": 80},
+    "TOPIC_AWARE": {"target": 650, "max": 1000, "min_merge": 80},
+    "PAPER_SECTION_AWARE": {"target": 800, "max": 1200, "min_merge": 100},
+    "QUESTION_AWARE": {"target": 750, "max": 1200, "min_merge": 80},
+    "MIXED_FALLBACK": {"target": 650, "max": 1000, "min_merge": 80},
+}
 
 
 @dataclass(frozen=True)
@@ -135,8 +144,9 @@ def extract_page_text_blocks(page, page_number: int) -> list[WorkingBlock]:
         lines = block_lines(block)
         if not lines:
             continue
-        raw_text = "\n".join(lines)
-        block_type = classify_text_block(lines)
+        raw_text = normalize_pdf_math_text("\n".join(lines))
+        normalized_lines = [line for line in raw_text.splitlines() if line.strip()]
+        block_type = classify_text_block(normalized_lines)
         content = format_block_content(raw_text, block_type)
         bbox = normalize_bbox(block.get("bbox"))
         y0 = bbox[1] if bbox else 0.0
@@ -219,6 +229,10 @@ def split_table_row(line: str) -> list[str]:
 
 
 def format_block_content(text: str, block_type: str) -> str:
+    text = normalize_pdf_math_text(text)
+    if "\\begin{cases}" in text or "\\end{cases}" in text:
+        block_type = "FORMULA"
+        text = balance_cases_environment(text)
     if block_type == "TABLE":
         return table_to_markdown(text)
     if block_type == "CODE":
@@ -914,13 +928,37 @@ def build_markdown_chunks(
     vlm_results: list[VlmResult],
     asset_ids_by_page: dict[int, str],
     content_source_type: Optional[str] = None,
+    document_type: Optional[str] = None,
+    chunk_strategy: Optional[str] = None,
 ) -> list[TextChunk]:
     elements = parse_markdown_to_elements(markdown_text)
-    if should_use_page_aware_chunks(content_source_type, vlm_results):
-        return build_page_aware_markdown_chunks(elements, layout_blocks, vlm_results, asset_ids_by_page)
+    resolved_strategy = chunk_strategy or infer_chunk_strategy(document_type, content_source_type, vlm_results)
+    strategy_context = {
+        "documentType": document_type or "OTHER",
+        "contentSourceType": content_source_type or "UNKNOWN",
+        "chunkStrategy": resolved_strategy,
+    }
+    if resolved_strategy in {"PAGE_AWARE", "SLIDE_AWARE"} or should_use_page_aware_chunks(content_source_type, vlm_results):
+        return build_page_aware_markdown_chunks(
+            elements,
+            layout_blocks,
+            vlm_results,
+            asset_ids_by_page,
+            resolved_strategy,
+            strategy_context,
+        )
+    if resolved_strategy == "QUESTION_AWARE":
+        return build_question_aware_markdown_chunks(
+            elements,
+            layout_blocks,
+            vlm_results,
+            asset_ids_by_page,
+            strategy_context,
+        )
     
     chunks: list[TextChunk] = []
     current: list[MarkdownElement] = []
+    budgets = token_budgets(resolved_strategy)
     
     def current_tokens() -> int:
         return sum(estimate_tokens(el.content) for el in current)
@@ -929,7 +967,7 @@ def build_markdown_chunks(
         nonlocal current
         if not current:
             return
-        chunks.append(chunk_from_elements(current, len(chunks), layout_blocks, vlm_results, asset_ids_by_page))
+        chunks.append(chunk_from_elements(current, len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
         current = []
 
     for element in elements:
@@ -937,7 +975,7 @@ def build_markdown_chunks(
         
         if should_markdown_element_be_standalone(element, token_count):
             flush()
-            chunks.append(chunk_from_elements([element], len(chunks), layout_blocks, vlm_results, asset_ids_by_page))
+            chunks.append(chunk_from_elements([element], len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
             continue
             
         if not current:
@@ -952,17 +990,42 @@ def build_markdown_chunks(
                 and element.heading_path[0] != current[-1].heading_path[0]
             )
         )
-        too_large = current_tokens() + token_count > MAX_TOKENS
-        enough_context = current_tokens() >= TARGET_TOKENS and element.page_number != current[-1].page_number
+        too_large = current_tokens() + token_count > budgets["max"]
+        enough_context = current_tokens() >= budgets["target"] and element.page_number != current[-1].page_number
+        strategy_boundary = should_start_strategy_boundary(resolved_strategy, element, current)
         
         current_is_only_heading = all(el.block_type == "HEADING" for el in current)
-        if (section_changed or too_large or enough_context) and not current_is_only_heading:
+        if (section_changed or too_large or enough_context or strategy_boundary) and not current_is_only_heading:
             flush()
             
         current.append(element)
 
     flush()
     return add_semantic_overlap(chunks)
+
+
+def infer_chunk_strategy(
+    document_type: Optional[str],
+    content_source_type: Optional[str],
+    vlm_results: list[VlmResult],
+) -> str:
+    if document_type == "HANDWRITTEN_NOTES" or content_source_type in PAGE_AWARE_SOURCE_TYPES:
+        return "PAGE_AWARE"
+    if document_type == "LECTURE_SLIDES":
+        return "SLIDE_AWARE"
+    if document_type == "RESEARCH_PAPER":
+        return "PAPER_SECTION_AWARE"
+    if document_type in {"ASSIGNMENT", "PAST_EXAM"}:
+        return "QUESTION_AWARE"
+    if document_type == "COURSE_NOTES":
+        return "TOPIC_AWARE"
+    if should_use_page_aware_chunks(content_source_type, vlm_results):
+        return "PAGE_AWARE"
+    return "MIXED_FALLBACK"
+
+
+def token_budgets(chunk_strategy: Optional[str]) -> dict[str, int]:
+    return STRATEGY_TOKEN_BUDGETS.get(chunk_strategy or "MIXED_FALLBACK", STRATEGY_TOKEN_BUDGETS["MIXED_FALLBACK"])
 
 
 def should_use_page_aware_chunks(content_source_type: Optional[str], vlm_results: list[VlmResult]) -> bool:
@@ -981,6 +1044,8 @@ def build_page_aware_markdown_chunks(
     layout_blocks: list[LayoutBlock],
     vlm_results: list[VlmResult],
     asset_ids_by_page: dict[int, str],
+    chunk_strategy: str = "PAGE_AWARE",
+    strategy_context: Optional[dict] = None,
 ) -> list[TextChunk]:
     pages: list[list[MarkdownElement]] = []
     current_page: list[MarkdownElement] = []
@@ -1001,6 +1066,7 @@ def build_page_aware_markdown_chunks(
 
     chunks: list[TextChunk] = []
     current: list[MarkdownElement] = []
+    budgets = token_budgets(chunk_strategy)
 
     def current_tokens() -> int:
         return sum(estimate_tokens(element.content) for element in current)
@@ -1009,15 +1075,15 @@ def build_page_aware_markdown_chunks(
         nonlocal current
         if not current:
             return
-        chunks.append(chunk_from_elements(current, len(chunks), layout_blocks, vlm_results, asset_ids_by_page))
+        chunks.append(chunk_from_elements(current, len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
         current = []
 
     for page_elements in pages:
         page_tokens = sum(estimate_tokens(element.content) for element in page_elements)
-        if page_tokens > PAGE_AWARE_MAX_TOKENS:
+        if page_tokens > budgets["max"]:
             flush()
-            for part in split_large_page(page_elements):
-                chunks.append(chunk_from_elements(part, len(chunks), layout_blocks, vlm_results, asset_ids_by_page))
+            for part in split_large_page(page_elements, budgets["max"]):
+                chunks.append(chunk_from_elements(part, len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
             continue
 
         if not current:
@@ -1025,9 +1091,12 @@ def build_page_aware_markdown_chunks(
             continue
 
         combined_tokens = current_tokens() + page_tokens
-        if starts_new_page_topic(page_elements) and current_tokens() >= PAGE_AWARE_MIN_MERGE_TOKENS:
+        new_topic = starts_new_page_topic(page_elements)
+        if chunk_strategy == "SLIDE_AWARE" and starts_new_slide_topic(page_elements, current):
+            new_topic = True
+        if new_topic and current_tokens() >= budgets["min_merge"]:
             flush()
-        elif current_tokens() >= PAGE_AWARE_TARGET_TOKENS or combined_tokens > PAGE_AWARE_MAX_TOKENS:
+        elif current_tokens() >= budgets["target"] or combined_tokens > budgets["max"]:
             flush()
 
         current.extend(page_elements)
@@ -1078,14 +1147,14 @@ def looks_like_topic_heading(text: str) -> bool:
     return uppercase_ratio >= 0.72 and len(text.split()) <= 6
 
 
-def split_large_page(elements: list[MarkdownElement]) -> list[list[MarkdownElement]]:
+def split_large_page(elements: list[MarkdownElement], max_tokens: int = PAGE_AWARE_MAX_TOKENS) -> list[list[MarkdownElement]]:
     parts: list[list[MarkdownElement]] = []
     current: list[MarkdownElement] = []
     current_tokens = 0
 
     for element in elements:
         token_count = estimate_tokens(element.content)
-        if current and current_tokens + token_count > PAGE_AWARE_MAX_TOKENS:
+        if current and current_tokens + token_count > max_tokens:
             parts.append(current)
             current = []
             current_tokens = 0
@@ -1097,12 +1166,138 @@ def split_large_page(elements: list[MarkdownElement]) -> list[list[MarkdownEleme
     return parts
 
 
+def build_question_aware_markdown_chunks(
+    elements: list[MarkdownElement],
+    layout_blocks: list[LayoutBlock],
+    vlm_results: list[VlmResult],
+    asset_ids_by_page: dict[int, str],
+    strategy_context: dict,
+) -> list[TextChunk]:
+    chunks: list[TextChunk] = []
+    current: list[MarkdownElement] = []
+    budgets = token_budgets("QUESTION_AWARE")
+
+    def current_tokens() -> int:
+        return sum(estimate_tokens(element.content) for element in current)
+
+    def flush() -> None:
+        nonlocal current
+        if not current:
+            return
+        chunks.append(chunk_from_elements(current, len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
+        current = []
+
+    for element in elements:
+        token_count = estimate_tokens(element.content)
+        starts_question = starts_question_boundary(element)
+
+        if should_markdown_element_be_standalone(element, token_count) and token_count >= budgets["target"]:
+            flush()
+            chunks.append(chunk_from_elements([element], len(chunks), layout_blocks, vlm_results, asset_ids_by_page, strategy_context))
+            continue
+
+        if current and starts_question and current_tokens() >= budgets["min_merge"]:
+            flush()
+        elif current and current_tokens() + token_count > budgets["max"]:
+            flush()
+
+        current.append(element)
+
+    flush()
+    return add_semantic_overlap(chunks)
+
+
+def starts_new_slide_topic(page_elements: list[MarkdownElement], current: list[MarkdownElement]) -> bool:
+    if not page_elements or not current:
+        return False
+    current_headings = [heading for element in current for heading in element.heading_path]
+    next_headings = [heading for element in page_elements for heading in element.heading_path]
+    if next_headings and current_headings and next_headings[-1] != current_headings[-1]:
+        return True
+    return starts_new_page_topic(page_elements)
+
+
+def should_start_strategy_boundary(strategy: str, element: MarkdownElement, current: list[MarkdownElement]) -> bool:
+    if not current:
+        return False
+    if strategy == "TOPIC_AWARE":
+        return starts_academic_unit(element)
+    if strategy == "PAPER_SECTION_AWARE":
+        return starts_paper_section(element)
+    return False
+
+
+def starts_academic_unit(element: MarkdownElement) -> bool:
+    text = first_semantic_line(element.content)
+    if not text:
+        return False
+    lowered = text.lower().strip("#: ")
+    prefixes = (
+        "definition",
+        "theorem",
+        "lemma",
+        "corollary",
+        "proposition",
+        "proof",
+        "example",
+        "solution",
+        "remark",
+    )
+    return any(lowered.startswith(prefix) for prefix in prefixes)
+
+
+def starts_paper_section(element: MarkdownElement) -> bool:
+    if element.block_type != "HEADING":
+        return False
+    text = first_semantic_line(element.content).lower().strip("#: ")
+    sections = (
+        "abstract",
+        "introduction",
+        "background",
+        "related work",
+        "method",
+        "methods",
+        "methodology",
+        "experiment",
+        "experiments",
+        "results",
+        "discussion",
+        "conclusion",
+        "references",
+    )
+    return any(text.startswith(section) for section in sections)
+
+
+def starts_question_boundary(element: MarkdownElement) -> bool:
+    text = first_semantic_line(element.content).strip()
+    if not text:
+        return False
+    patterns = (
+        r"^#{1,6}\s*(question|problem|exercise)\s+\d+",
+        r"^(question|problem|exercise)\s+\d+",
+        r"^q\s*\d+[\).:\s]",
+        r"^\d+\.\s+",
+        r"^\d+\)\s+",
+    )
+    lowered = text.lower()
+    return any(re.match(pattern, lowered) for pattern in patterns)
+
+
+def first_semantic_line(content: str) -> str:
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("<!--"):
+            return stripped
+    return ""
+
+
 def chunk_from_elements(
     elements: list[MarkdownElement],
     chunk_index: int,
     layout_blocks: list[LayoutBlock],
     vlm_results: list[VlmResult],
     asset_ids_by_page: dict[int, str],
+    strategy_context: Optional[dict] = None,
 ) -> TextChunk:
     page_start = min(el.page_number for el in elements)
     page_end = max(el.page_number for el in elements)
@@ -1137,6 +1332,7 @@ def chunk_from_elements(
     sorted_asset_ids = sorted(list(asset_ids))
     
     metadata = {
+        **(strategy_context or {}),
         "headings": headings,
         "blockTypes": block_types,
         "containsImage": contains_image,

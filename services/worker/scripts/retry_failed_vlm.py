@@ -16,11 +16,11 @@ from noteflow_worker.pdf.regions import analyze_regions_with_vlm
 PAGE_LEVEL_SOURCE_TYPES = {"SCANNED_PDF", "HANDWRITTEN_SCAN"}
 
 
-def load_document_info(repository: Repository, document_id: str) -> tuple[str, str]:
+def load_document_info(repository: Repository, document_id: str) -> tuple[str, str, str]:
     with repository.connect() as conn:
         row = conn.execute(
             """
-            SELECT title, content_source_type
+            SELECT title, document_type, content_source_type
             FROM documents
             WHERE id = %s
             """,
@@ -28,7 +28,7 @@ def load_document_info(repository: Repository, document_id: str) -> tuple[str, s
         ).fetchone()
     if row is None:
         raise ValueError(f"Document not found: {document_id}")
-    return row["title"] or document_id, row["content_source_type"] or ""
+    return row["title"] or document_id, row["document_type"] or "OTHER", row["content_source_type"] or ""
 
 
 def load_page_asset_ids(repository: Repository, document_id: str) -> dict[int, str]:
@@ -66,7 +66,7 @@ def rebuild_page_level_layout_blocks(repository: Repository, document_id: str, a
     return blocks
 
 
-def rebuild_markdown_and_chunks(repository: Repository, document_id: str, content_source_type: str) -> None:
+def rebuild_markdown_and_chunks(repository: Repository, document_id: str, document_type: str, content_source_type: str) -> None:
     asset_ids_by_page = load_page_asset_ids(repository, document_id)
     if content_source_type in PAGE_LEVEL_SOURCE_TYPES:
         layout_blocks = rebuild_page_level_layout_blocks(repository, document_id, asset_ids_by_page)
@@ -83,6 +83,7 @@ def rebuild_markdown_and_chunks(repository: Repository, document_id: str, conten
         vlm_results,
         asset_ids_by_page,
         content_source_type,
+        document_type,
     )
     repository.replace_chunks(document_id, chunks)
 
@@ -95,7 +96,7 @@ def main() -> int:
     document_id = sys.argv[1]
     requested_pages = {int(value) for value in sys.argv[2:]}
     repository = Repository()
-    title, content_source_type = load_document_info(repository, document_id)
+    title, document_type, content_source_type = load_document_info(repository, document_id)
 
     regions = repository.load_visual_regions(document_id)
     vlm_results = repository.load_vlm_results(document_id)
@@ -134,7 +135,7 @@ def main() -> int:
             merged.append(result)
 
     repository.replace_vlm_results(document_id, merged)
-    rebuild_markdown_and_chunks(repository, document_id, content_source_type)
+    rebuild_markdown_and_chunks(repository, document_id, document_type, content_source_type)
     print(f"Rebuilt Markdown and chunks for {title}.")
     return 0
 

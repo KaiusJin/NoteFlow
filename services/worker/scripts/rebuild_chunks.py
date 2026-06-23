@@ -34,6 +34,7 @@ def main() -> int:
             SELECT
               d.id,
               d.title,
+              d.document_type,
               d.content_source_type,
               m.markdown
             FROM documents d
@@ -49,6 +50,7 @@ def main() -> int:
     for index, row in enumerate(rows, start=1):
         document_id = str(row["id"])
         title = row["title"] or document_id
+        document_type = row["document_type"] or "OTHER"
         content_source_type = row["content_source_type"]
         layout_blocks = repository.load_layout_blocks(document_id)
         vlm_results = repository.load_vlm_results(document_id)
@@ -59,6 +61,7 @@ def main() -> int:
             vlm_results,
             asset_ids_by_page,
             content_source_type,
+            document_type,
         )
         repository.replace_chunks(document_id, chunks)
         token_counts = [chunk.token_count or 0 for chunk in chunks]

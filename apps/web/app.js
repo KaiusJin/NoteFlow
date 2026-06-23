@@ -9,7 +9,10 @@ const documentsList = document.querySelector("#documents-list");
 const refreshDocuments = document.querySelector("#refresh-documents");
 const parseOutput = document.querySelector("#parse-output");
 
-let activePoll = null;
+let documentsMap = new Map();
+let latestTasksList = [];
+const pendingNotesTasks = new Map(); // taskId -> documentId
+let globalPollInterval = null;
 
 fileInput.addEventListener("change", () => {
   const file = fileInput.files[0];
@@ -45,9 +48,8 @@ form.addEventListener("submit", async (event) => {
 
     renderStatus(`Created document ${payload.documentId}\nCreated task ${payload.taskId}`, 5);
     await loadDocuments();
-    pollTask(payload.taskId);
   } catch (error) {
-    renderStatus(error.message, 0);
+    renderStatus(formatFetchError(error), 0);
   } finally {
     submitButton.disabled = false;
   }
@@ -56,53 +58,125 @@ form.addEventListener("submit", async (event) => {
 refreshDocuments.addEventListener("click", loadDocuments);
 
 documentsList.addEventListener("click", async (event) => {
-  const button = event.target.closest("[data-view-parse]");
-  if (!button) {
+  const parseButton = event.target.closest("[data-view-parse]");
+  if (parseButton) {
+    await loadParsedOutput(parseButton.dataset.viewParse);
     return;
   }
-  await loadParsedOutput(button.dataset.viewParse);
+  const notesButton = event.target.closest("[data-generate-notes]");
+  if (notesButton) {
+    await generateNotes(notesButton.dataset.generateNotes);
+    return;
+  }
+  const viewNotesButton = event.target.closest("[data-view-notes]");
+  if (viewNotesButton) {
+    await loadNotes(viewNotesButton.dataset.viewNotes);
+  }
 });
 
-async function pollTask(taskId) {
-  if (activePoll) {
-    clearInterval(activePoll);
+function formatStepLabel(step) {
+  if (!step) return "Processing";
+  if (step === "PENDING") return "Pending";
+  if (step === "PROCESSING") return "Processing";
+  if (step === "RETRYING") return "Retrying";
+  return step
+    .toLowerCase()
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function renderTaskStatus(tasks) {
+  // Filter tasks to show only active ones
+  const activeTasks = tasks.filter(t => t.status === "PENDING" || t.status === "PROCESSING" || t.status === "RETRYING");
+
+  if (activeTasks.length === 0) {
+    statusCard.innerHTML = `Upload a PDF to create a parsing task.`;
+    statusCard.classList.add("muted");
+    progressBar.style.width = "0%";
+    return;
+  }
+
+  statusCard.classList.remove("muted");
+  statusCard.innerHTML = activeTasks.map(task => {
+    const doc = documentsMap.get(task.documentId);
+    const docTitle = doc ? doc.title : (task.documentId ? `Document ${task.documentId.slice(0, 8)}` : "Unknown Document");
+    const taskTypeLabel = task.taskType === "PARSE_DOCUMENT" ? "PDF to Markdown" : 
+                          task.taskType === "GENERATE_NOTES" ? "AI Notes Generation" : task.taskType;
+    
+    const statusClass = task.status.toLowerCase();
+    const errorHtml = task.errorMessage ? `<div class="task-error-msg">${escapeHtml(task.errorMessage)}</div>` : "";
+    
+    return `
+      <div class="task-status-item">
+        <div class="task-status-meta">
+          <span class="task-doc-title">${escapeHtml(docTitle)}</span>
+          <span class="task-type-badge ${task.taskType ? task.taskType.toLowerCase() : ""}">${escapeHtml(taskTypeLabel)}</span>
+        </div>
+        <div class="task-status-row">
+          <div class="task-status-indicator">
+            <span class="status-pulse-dot"></span>
+            <span class="task-step-label">${escapeHtml(formatStepLabel(task.currentStep || task.status))}</span>
+          </div>
+          <span class="task-progress-pct">${task.progress}%</span>
+        </div>
+        ${errorHtml}
+        <div class="task-progress-shell">
+          <div class="task-progress-bar ${statusClass}" style="width: ${task.progress}%"></div>
+        </div>
+      </div>
+    `;
+  }).join("\n");
+
+  const avgProgress = activeTasks.reduce((sum, t) => sum + t.progress, 0) / activeTasks.length;
+  progressBar.style.width = `${avgProgress}%`;
+}
+
+async function startGlobalPolling() {
+  if (globalPollInterval) {
+    clearInterval(globalPollInterval);
   }
 
   const tick = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/tasks/${taskId}`);
-      const task = await readJson(response);
-      if (!response.ok) {
-        throw new Error(task.message || "Could not load task");
+      const [docsResponse, tasksResponse] = await Promise.all([
+        fetch(`${API_BASE_URL}/documents`),
+        fetch(`${API_BASE_URL}/tasks`)
+      ]);
+
+      if (tasksResponse.ok) {
+        latestTasksList = await readJson(tasksResponse);
       }
 
-      renderStatus(
-        [
-          `Task: ${task.id}`,
-          `Status: ${task.status}`,
-          `Step: ${task.currentStep}`,
-          `Progress: ${task.progress}%`,
-          task.errorMessage ? `Error: ${task.errorMessage}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        task.progress
-      );
+      if (docsResponse.ok) {
+        const documents = await readJson(docsResponse);
+        documentsMap = new Map(documents.map(d => [d.id, d]));
+        renderDocuments(documents);
+      }
 
-      if (task.status === "COMPLETED" || task.status === "FAILED" || task.status === "CANCELLED") {
-        clearInterval(activePoll);
-        activePoll = null;
-        await loadDocuments();
+      if (tasksResponse.ok) {
+        renderTaskStatus(latestTasksList);
+
+        // Check if any tracked note generation task has completed
+        for (const [taskId, docId] of pendingNotesTasks.entries()) {
+          const task = latestTasksList.find(t => t.id === taskId);
+          if (task) {
+            if (task.status === "COMPLETED") {
+              pendingNotesTasks.delete(taskId);
+              await loadNotes(docId);
+            } else if (task.status === "FAILED" || task.status === "CANCELLED") {
+              pendingNotesTasks.delete(taskId);
+            }
+          }
+        }
       }
     } catch (error) {
-      renderStatus(error.message, 0);
-      clearInterval(activePoll);
-      activePoll = null;
+      console.error("Polling error:", error);
     }
   };
 
   await tick();
-  activePoll = setInterval(tick, 1500);
+  globalPollInterval = setInterval(tick, 1500);
 }
 
 async function loadDocuments() {
@@ -112,10 +186,22 @@ async function loadDocuments() {
     if (!response.ok) {
       throw new Error(documents.message || "Could not load documents");
     }
+    documentsMap = new Map(documents.map(d => [d.id, d]));
     renderDocuments(documents);
   } catch (error) {
-    documentsList.innerHTML = `<div class="status-card muted">${escapeHtml(error.message)}</div>`;
+    documentsList.innerHTML = `<div class="status-card muted">${escapeHtml(formatFetchError(error))}</div>`;
   }
+}
+
+function formatFetchError(error) {
+  if (error instanceof TypeError && error.message === "Failed to fetch") {
+    return [
+      "Could not reach the NoteFlow API.",
+      `API: ${API_BASE_URL}`,
+      "Check that the API is running and that the frontend origin is allowed by CORS.",
+    ].join("\n");
+  }
+  return error.message || "Unexpected request error";
 }
 
 function renderStatus(message, progress) {
@@ -132,10 +218,38 @@ function renderDocuments(documents) {
 
   documentsList.innerHTML = documents
     .map((document) => {
-      const statusClass = document.status.toLowerCase();
+      // 1. Determine Parse Status Badge
+      let parseStatusText = "Parse Unknown";
+      let parseStatusClass = "unknown";
+      if (document.status === "READY") {
+        parseStatusText = "Parse Ready";
+        parseStatusClass = "ready";
+      } else if (document.status === "PROCESSING" || document.status === "UPLOADED") {
+        parseStatusText = "Parse Processing";
+        parseStatusClass = "processing";
+      } else if (document.status === "FAILED") {
+        parseStatusText = "Parse Failed";
+        parseStatusClass = "failed";
+      }
+
+      // 2. Determine AI Note Status Badge
+      let noteStatusText = "AI Note Not Started";
+      let noteStatusClass = "muted";
+      if (document.aiNoteStatus === "READY") {
+        noteStatusText = "AI Note Ready";
+        noteStatusClass = "ready";
+      } else if (document.aiNoteStatus === "GENERATING" || document.aiNoteStatus === "PROCESSING") {
+        noteStatusText = "AI Note Pending";
+        noteStatusClass = "processing";
+      } else if (document.aiNoteStatus === "FAILED") {
+        noteStatusText = "AI Note Failed";
+        noteStatusClass = "failed";
+      }
+      const noteStatusHtml = `<span class="badge ${noteStatusClass}">${escapeHtml(noteStatusText)}</span>`;
+
       return `
         <article class="document-row">
-          <div>
+          <div class="document-main">
             <p class="document-title">${escapeHtml(document.title)}</p>
             <div class="document-meta">
               ${escapeHtml(document.documentType)}
@@ -144,10 +258,15 @@ function renderDocuments(documents) {
               ${document.pageCount ? `· ${document.pageCount} pages` : ""}
             </div>
           </div>
-          <span class="badge ${statusClass}">${escapeHtml(document.status)}</span>
-          <button class="secondary" type="button" data-view-parse="${escapeHtml(document.id)}">
-            View parsed output
-          </button>
+          <div class="document-badges">
+            <span class="badge ${parseStatusClass}">${escapeHtml(parseStatusText)}</span>
+            ${noteStatusHtml}
+          </div>
+          <div class="row-actions">
+            <button class="secondary" type="button" data-view-parse="${escapeHtml(document.id)}">View Parsed Output</button>
+            <button class="secondary" type="button" data-view-notes="${escapeHtml(document.id)}">View AI Notes</button>
+            <button type="button" data-generate-notes="${escapeHtml(document.id)}">Generate AI Notes</button>
+          </div>
         </article>
       `;
     })
@@ -156,7 +275,7 @@ function renderDocuments(documents) {
 
 async function loadParsedOutput(documentId) {
   parseOutput.classList.remove("muted");
-  parseOutput.textContent = "Loading parsed output...";
+  parseOutput.innerHTML = `<div class="output-title">Parsed Output</div><div class="status-card muted">Loading parsed output...</div>`;
   try {
     const [summaryResponse, chunksResponse, assetsResponse, blocksResponse, regionsResponse, vlmResponse, markdownPagesResponse, markdownResponse] = await Promise.all([
       fetch(`${API_BASE_URL}/documents/${documentId}/parse-result`),
@@ -210,12 +329,70 @@ async function loadParsedOutput(documentId) {
   }
 }
 
+async function generateNotes(documentId) {
+  renderStatus("Creating AI notes task...", 0);
+  try {
+    const response = await fetch(`${API_BASE_URL}/documents/${documentId}/notes`, {
+      method: "POST",
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new Error(payload.message || "Could not create notes task");
+    }
+    renderStatus(`Created AI notes ${payload.noteId}\nCreated task ${payload.taskId}`, 5);
+    pendingNotesTasks.set(payload.taskId, documentId);
+  } catch (error) {
+    renderStatus(formatFetchError(error), 0);
+  }
+}
+
+async function loadNotes(documentId) {
+  parseOutput.classList.remove("muted");
+  parseOutput.innerHTML = `<div class="output-title">AI Notes</div><div class="status-card muted">Loading AI notes...</div>`;
+  try {
+    const response = await fetch(`${API_BASE_URL}/documents/${documentId}/notes`);
+    const note = await readJson(response);
+    if (!response.ok) {
+      throw new Error(note.message || "AI notes are not available yet");
+    }
+    renderNotes(note);
+  } catch (error) {
+    parseOutput.classList.add("muted");
+    parseOutput.textContent = formatFetchError(error);
+  }
+}
+
+function renderNotes(note) {
+  const report = parseJsonSafe(note.qualityReportJson) || {};
+  const coverage = report.coveredPageStart && report.coveredPageEnd
+    ? `${report.coveredPageStart}-${report.coveredPageEnd}`
+    : "-";
+  parseOutput.innerHTML = `
+    <div class="output-title">AI Notes</div>
+    <div class="summary-grid">
+      ${summaryItem("Status", note.status)}
+      ${summaryItem("Version", note.noteVersion)}
+      ${summaryItem("Provider", note.modelProvider || "-")}
+      ${summaryItem("Model", note.modelName || "-")}
+      ${summaryItem("Sections", report.sectionCount || "-")}
+      ${summaryItem("Coverage", coverage)}
+      ${summaryItem("Confidence", report.averageConfidence ?? "-")}
+    </div>
+    <div class="preview-block notes-preview">
+      <strong>${escapeHtml(note.title || "AI Notes")}</strong>
+      ${note.summary ? `<p>${escapeHtml(note.summary)}</p>` : ""}
+      <pre>${escapeHtml(note.markdown || "Notes are not ready yet.")}</pre>
+    </div>
+  `;
+}
+
 function renderParsedOutput(summary, chunks, assets, blocks, regions, vlmResults, markdownPages, markdownDocument) {
   const visualAssetCount = assets.filter((asset) => asset.visualSummary).length;
   const blockCounts = countBy(blocks, "blockType");
   const successfulVlm = vlmResults.filter((result) => result.searchText || result.description || result.transcription).length;
   const markdownQuality = markdownDocument ? parseJsonSafe(markdownDocument.qualityReportJson) : null;
   parseOutput.innerHTML = `
+    <div class="output-title">Parsed Output</div>
     <div class="summary-grid">
       ${summaryItem("Parser", summary.parserName)}
       ${summaryItem("Pages", summary.pageCount)}
@@ -395,4 +572,4 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-loadDocuments();
+loadDocuments().then(() => startGlobalPolling());

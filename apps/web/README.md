@@ -24,6 +24,8 @@ The page calls the API at:
 http://localhost:8080
 ```
 
+If port `3000` is busy, another local port such as `3001` can be used. The API allows local development origins on `localhost` and `127.0.0.1`.
+
 To override the API base URL in the browser console:
 
 ```js

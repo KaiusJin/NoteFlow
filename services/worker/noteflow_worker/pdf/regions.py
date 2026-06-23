@@ -16,6 +16,9 @@ from noteflow_worker.vision.providers import VisionAnalysis, make_vision_provide
 MIN_REGION_AREA_RATIO = 0.03
 FULL_PAGE_FALLBACK_MIN_IMAGE_COVERAGE = 0.12
 LOW_NATIVE_TEXT_LENGTH = 160
+LONG_DOCUMENT_PAGE_THRESHOLD = 120
+LONG_DOCUMENT_MAX_VLM_REGIONS = 8
+CRITICAL_REGION_TYPES = {"CODE_IMAGE", "HANDWRITTEN"}
 
 
 def compute_image_hash(image: Image.Image) -> str:
@@ -122,6 +125,47 @@ def build_visual_regions(
                 return filtered_regions[: settings.vision_max_regions_per_document]
                 
     return filtered_regions
+
+
+def select_regions_for_vlm(
+    regions: list[VisualRegion],
+    visual_pages: list[VisualPage],
+    document_type: str,
+) -> list[VisualRegion]:
+    if document_type == "HANDWRITTEN_NOTES":
+        return regions
+    if len(visual_pages) < LONG_DOCUMENT_PAGE_THRESHOLD:
+        return regions
+
+    page_by_number = {page.page_number: page for page in visual_pages}
+
+    def is_high_value(region: VisualRegion) -> bool:
+        if region.region_type in CRITICAL_REGION_TYPES:
+            return True
+        page = page_by_number.get(region.page_number)
+        if page is None:
+            return False
+        if page.text_length <= LOW_NATIVE_TEXT_LENGTH:
+            return True
+        if region.region_type == "DIAGRAM" and page.image_coverage >= FULL_PAGE_FALLBACK_MIN_IMAGE_COVERAGE:
+            return True
+        return False
+
+    selected = [region for region in regions if is_high_value(region)]
+    selected.sort(key=lambda region: region_priority(region, page_by_number.get(region.page_number)))
+    return selected[:LONG_DOCUMENT_MAX_VLM_REGIONS]
+
+
+def region_priority(region: VisualRegion, page: Optional[VisualPage]) -> tuple[int, int]:
+    type_priority = {
+        "HANDWRITTEN": 0,
+        "CODE_IMAGE": 1,
+        "DIAGRAM": 2,
+        "FULL_PAGE_VISUAL": 3,
+        "IMAGE": 4,
+    }.get(region.region_type, 5)
+    low_text_priority = 0 if page and page.text_length <= LOW_NATIVE_TEXT_LENGTH else 1
+    return (type_priority, low_text_priority, region.page_number)
 
 
 def can_drop_repeated_region(region: VisualRegion) -> bool:
