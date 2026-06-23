@@ -2,6 +2,35 @@
 
 这份文档说明 NoteFlow 的完整工作流、每一步要做什么、系统架构是什么，以及前端、后端、Worker、数据库、Redis、对象存储和 LLM API 之间如何连接。
 
+> Current implementation note:
+> The consolidated current technical specification is `docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md`.
+> This document still includes roadmap items such as embeddings, quiz generation, and production object storage. When this document differs from the current implementation, use the consolidated specification as the source of truth.
+
+## 0. 当前已实现主链路
+
+```text
+Web App
+  -> Spring Boot API
+  -> local upload storage
+  -> PostgreSQL documents/tasks
+  -> Redis queue
+  -> Python worker
+  -> PDF page rendering + visual regions + VLM
+  -> page Markdown + document Markdown
+  -> strategy-aware chunks
+  -> resumable AI notes generation
+  -> final AI notes Markdown
+  -> exported_ai_notes/*.md
+```
+
+当前实现的关键约束：
+
+1. API 负责可靠任务创建和入队，入队发生在数据库事务提交之后。
+2. Worker 最多同时处理 3 个 task。
+3. 单个 AI notes task 最多同时发送 3 个 provider 请求。
+4. AI note group 失败不会丢弃已保存 section；重试会断点继续。
+5. 最终 AI notes Markdown 可以从已保存 sections 离线重建，不需要重复调用 AI API。
+
 ## 1. 总体目标
 
 NoteFlow 的核心闭环是：

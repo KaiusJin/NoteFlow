@@ -31,3 +31,15 @@ class RedisTaskQueue:
             user_id=payload["userId"],
             task_type=payload["taskType"],
         )
+
+    def push(self, payload: TaskPayload) -> None:
+        raw_payload = json.dumps(
+            {
+                "taskId": payload.task_id,
+                "documentId": payload.document_id,
+                "userId": payload.user_id,
+                "taskType": payload.task_type,
+            },
+            separators=(",", ":"),
+        )
+        self._client.rpush(settings.document_queue, raw_payload)

@@ -2,6 +2,13 @@
 
 NoteFlow is publicly visible for reference and review only.
 
+## Current Technical Specification
+
+See [docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md](docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md)
+for the current source-of-truth workflow: upload, Spring Boot APIs, Redis tasks,
+PDF-to-Markdown, multi-modal visual handling, chunking, resumable AI notes,
+storage layout, exported notes, and quality gates.
+
 ## Project Plan
 
 See [docs/technical/PROJECT_PLAN.md](docs/technical/PROJECT_PLAN.md) for the product scope, MVP plan,
@@ -34,7 +41,7 @@ pipeline, metadata design, quality assessment, and known limitations.
 The first backend and worker modules live in:
 
 - [services/api](services/api): Spring Boot API for PDF upload and task tracking.
-- [services/worker](services/worker): Python worker for PDF parsing and chunk extraction.
+- [services/worker](services/worker): Python worker for PDF parsing, visual analysis, chunk extraction, and AI notes generation.
 - [apps/web](apps/web): Minimal static frontend for PDF upload and task progress.
 
 ## Local Development
@@ -56,6 +63,7 @@ POST /documents
   -> enqueue Redis task
   -> worker parses PDF
   -> worker writes Markdown, visual metadata, parse result, and chunks
+  -> user generates resumable AI notes
   -> task becomes COMPLETED
 ```
 

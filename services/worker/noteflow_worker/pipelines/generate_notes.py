@@ -1,5 +1,6 @@
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from noteflow_worker.config import settings
@@ -10,6 +11,7 @@ from noteflow_worker.queue.redis_queue import TaskPayload
 
 
 PROMPT_VERSION = "ai-notes-v1"
+SECTION_INDEX_STRIDE = 1000
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,7 @@ class GenerateNotesPipeline:
 
     def run(self, payload: TaskPayload) -> None:
         note_id = ""
+        sections: list[AiNoteSection] = []
         try:
             self._repository.mark_task_processing(payload.task_id, "GENERATING_NOTES", 10)
             self._repository.ensure_notes_schema()
@@ -57,30 +60,119 @@ class GenerateNotesPipeline:
             if not groups:
                 raise RuntimeError("Cannot generate notes because no source groups were produced.")
 
-            sections: list[AiNoteSection] = []
+            sections = self._repository.load_ai_note_sections(note_id)
+            completed_group_indexes = completed_source_group_indexes(sections)
             generations: list[NotesGeneration] = []
-            for group in groups:
-                progress = 15 + int((group.index / max(1, len(groups))) * 70)
-                self._repository.mark_task_processing(payload.task_id, "GENERATING_NOTES", progress)
-                prompt = build_section_prompt(document, group, len(groups))
-                generation = provider.generate_section(prompt)
-                if generation.error_message:
-                    raise RuntimeError(f"AI notes generation failed for source group {group.index + 1}: {generation.error_message}")
-                generation = normalize_generation(generation, group)
-                validate_generation(generation, group)
-                generations.append(generation)
-                sections.append(to_note_section(note_id, payload.document_id, group, generation))
+            pending_groups = [group for group in groups if group.index not in completed_group_indexes]
+            failed_groups: dict[int, str] = {}
+            if pending_groups:
+                max_workers = max(1, settings.notes_max_concurrent_requests)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {
+                        executor.submit(generate_group_sections, provider, document, group, len(groups)): group
+                        for group in pending_groups
+                    }
+                    for future in as_completed(futures):
+                        group = futures[future]
+                        try:
+                            group_generations = future.result()
+                            group_sections: list[AiNoteSection] = []
+                            group_section_count = len(group_generations)
+                            for group_section_index, normalized in enumerate(group_generations):
+                                generations.append(normalized)
+                                section = to_note_section(
+                                    note_id,
+                                    payload.document_id,
+                                    group,
+                                    normalized,
+                                    section_index_for_group(group.index, group_section_index),
+                                    group_section_index,
+                                    group_section_count,
+                                )
+                                self._repository.save_ai_note_section(section)
+                                group_sections.append(section)
+                            sections.extend(group_sections)
+                            completed_group_indexes.add(group.index)
+                        except Exception as exc:
+                            failed_groups[group.index] = str(exc)
+                        completed_count = len(completed_group_indexes)
+                        progress = 15 + int((completed_count / max(1, len(groups))) * 70)
+                        self._repository.mark_task_processing(payload.task_id, "GENERATING_NOTES", progress)
+                        self._repository.update_ai_note_generation_progress(
+                            note_id=note_id,
+                            summary=build_progress_summary(completed_group_indexes, len(groups)),
+                            provider=provider.provider_name,
+                            model=provider.model,
+                            prompt_version=PROMPT_VERSION,
+                            quality_report_json=json.dumps(
+                                build_quality_report(
+                                    sections,
+                                    [source_group for source_group in groups if source_group.index in completed_group_indexes],
+                                    provider.provider_name,
+                                    provider.model,
+                                    total_source_group_count=len(groups),
+                                    failed_source_group_indexes=sorted(failed_groups),
+                                    error_message=first_error_message(failed_groups),
+                                ),
+                                separators=(",", ":"),
+                            ),
+                            metadata_json=json.dumps(
+                                build_metadata(
+                                    document,
+                                    len(groups),
+                                    completed_group_indexes,
+                                    failed_source_group_indexes=sorted(failed_groups),
+                                ),
+                                separators=(",", ":"),
+                            ),
+                        )
+            if failed_groups:
+                first_failed_group_index = min(failed_groups)
+                error_message = failed_groups[first_failed_group_index]
+                self._repository.update_ai_note_generation_progress(
+                    note_id=note_id,
+                    summary=build_paused_summary(first_failed_group_index, len(groups), completed_group_indexes, error_message),
+                    provider=provider.provider_name,
+                    model=provider.model,
+                    prompt_version=PROMPT_VERSION,
+                    quality_report_json=json.dumps(
+                        build_quality_report(
+                            sections,
+                            [source_group for source_group in groups if source_group.index in completed_group_indexes],
+                            provider.provider_name,
+                            provider.model,
+                            total_source_group_count=len(groups),
+                            failed_source_group_indexes=sorted(failed_groups),
+                            error_message=error_message,
+                        ),
+                        separators=(",", ":"),
+                    ),
+                    metadata_json=json.dumps(
+                        build_metadata(
+                            document,
+                            len(groups),
+                            completed_group_indexes,
+                            failed_source_group_indexes=sorted(failed_groups),
+                        ),
+                        separators=(",", ":"),
+                    ),
+                )
+                raise RuntimeError(
+                    f"AI notes generation paused with {len(failed_groups)} failed source group(s). "
+                    f"First failed source group {first_failed_group_index + 1}: {error_message}"
+                )
 
+            sections = sort_note_sections(sections)
             markdown = assemble_note_markdown(document.title, sections)
-            summary = build_summary(generations)
-            quality_report = build_quality_report(sections, groups, provider.provider_name, provider.model)
-            metadata = {
-                "promptVersion": PROMPT_VERSION,
-                "documentType": document.document_type,
-                "contentSourceType": document.content_source_type,
-                "sourceGroupCount": len(groups),
-                "aiOnly": True,
-            }
+            summary = build_section_summary(sections)
+            quality_report = build_quality_report(
+                sections,
+                groups,
+                provider.provider_name,
+                provider.model,
+                total_source_group_count=len(groups),
+            )
+            metadata = build_metadata(document, len(groups), completed_group_indexes)
             self._repository.save_ai_note(
                 note_id=note_id,
                 document_id=payload.document_id,
@@ -95,7 +187,7 @@ class GenerateNotesPipeline:
             )
             self._repository.mark_task_completed(payload.task_id)
         except Exception as exc:
-            if note_id:
+            if note_id and not sections:
                 self._repository.fail_ai_note(note_id, str(exc))
             self._repository.mark_task_failed(payload.task_id, str(exc))
             raise
@@ -122,6 +214,124 @@ def build_source_groups(chunks: list[TextChunk]) -> list[SourceGroup]:
     return groups
 
 
+def completed_source_group_indexes(sections: list[AiNoteSection]) -> set[int]:
+    group_counts: dict[int, int] = {}
+    expected_counts: dict[int, int] = {}
+    for section in sections:
+        metadata = parse_json_object(section.metadata_json)
+        group_index = metadata.get("sourceGroupIndex")
+        section_count = metadata.get("sourceGroupSectionCount")
+        if not isinstance(group_index, int) or not isinstance(section_count, int):
+            continue
+        group_counts[group_index] = group_counts.get(group_index, 0) + 1
+        expected_counts[group_index] = max(expected_counts.get(group_index, 0), section_count)
+    return {
+        group_index
+        for group_index, count in group_counts.items()
+        if count >= expected_counts.get(group_index, 0) > 0
+    }
+
+
+def next_section_index(sections: list[AiNoteSection]) -> int:
+    if not sections:
+        return 0
+    return max(section.section_index for section in sections) + 1
+
+
+def parse_json_object(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def generate_group_sections(provider, document, group: SourceGroup, group_count: int) -> list[NotesGeneration]:
+    prompt = build_section_prompt(document, group, group_count)
+    group_generations = provider.generate_sections(prompt)
+    for generation in group_generations:
+        if generation.error_message:
+            raise RuntimeError(f"AI notes generation failed for source group {group.index + 1}: {generation.error_message}")
+    normalized_generations: list[NotesGeneration] = []
+    for generation in group_generations:
+        normalized = normalize_generation(generation, group)
+        validate_generation(normalized, group)
+        normalized_generations.append(normalized)
+    return normalized_generations
+
+
+def section_index_for_group(group_index: int, group_section_index: int) -> int:
+    return group_index * SECTION_INDEX_STRIDE + group_section_index
+
+
+def first_error_message(failed_groups: dict[int, str]) -> str | None:
+    if not failed_groups:
+        return None
+    return failed_groups[min(failed_groups)]
+
+
+def sort_note_sections(sections: list[AiNoteSection]) -> list[AiNoteSection]:
+    return sorted(sections, key=note_section_sort_key)
+
+
+def note_section_sort_key(section: AiNoteSection) -> tuple:
+    metadata = parse_json_object(section.metadata_json)
+    group_index = metadata.get("sourceGroupIndex")
+    group_section_index = metadata.get("sourceGroupSectionIndex")
+    if not isinstance(group_index, int):
+        group_index = section.section_index // SECTION_INDEX_STRIDE
+    if not isinstance(group_section_index, int):
+        group_section_index = section.section_index % SECTION_INDEX_STRIDE
+    return (
+        group_index,
+        group_section_index,
+        section.page_start if section.page_start is not None else 10**9,
+        section.page_end if section.page_end is not None else 10**9,
+        section.section_index,
+        section.heading,
+    )
+
+
+def build_metadata(
+    document,
+    source_group_count: int,
+    completed_group_indexes: set[int],
+    failed_source_group_indexes: list[int] | None = None,
+) -> dict:
+    metadata = {
+        "promptVersion": PROMPT_VERSION,
+        "documentType": document.document_type,
+        "contentSourceType": document.content_source_type,
+        "sourceGroupCount": source_group_count,
+        "completedSourceGroupCount": len(completed_group_indexes),
+        "completedSourceGroupIndexes": sorted(completed_group_indexes),
+        "aiOnly": True,
+        "resumable": True,
+    }
+    if failed_source_group_indexes:
+        metadata["failedSourceGroupIndexes"] = failed_source_group_indexes
+    return metadata
+
+
+def build_progress_summary(completed_group_indexes: set[int], source_group_count: int) -> str:
+    return f"AI note generation in progress: completed {len(completed_group_indexes)}/{source_group_count} source groups."
+
+
+def build_paused_summary(
+    failed_group_index: int,
+    source_group_count: int,
+    completed_group_indexes: set[int],
+    error_message: str,
+) -> str:
+    return (
+        f"AI note generation paused at source group {failed_group_index + 1}/{source_group_count}. "
+        f"Completed {len(completed_group_indexes)}/{source_group_count} groups. "
+        f"Retry Generate AI Notes to continue from the failed group. Error: {error_message[:1000]}"
+    )
+
+
 def build_section_prompt(document, group: SourceGroup, group_count: int) -> str:
     source_chunks = "\n\n".join(format_source_chunk(chunk) for chunk in group.chunks)
     return f"""You are generating organized, comprehensive, source-grounded study notes for students using NoteFlow.
@@ -140,19 +350,24 @@ Document metadata:
 
 Goal:
 Generate clear, educational study notes covering ALL topics, concepts, theorems, examples, and details present in the source chunks. Do not skip or drop any topic or section from the source chunks.
+To prevent information loss, you must split distinct topics, definitions, theorems, or examples into separate section objects in the "sections" JSON array.
 
 Return ONLY valid JSON:
 {{
-  "heading": "Summary heading of topics covered in this group",
-  "sectionType": "KEY_IDEAS | DEFINITION | THEOREM | FORMULA | EXAMPLE | PROOF | CODE_EXPLANATION | DIAGRAM_EXPLANATION | PITFALL | PAPER_SECTION | REVIEW_CHECKLIST",
-  "markdown": "Markdown section content containing all study notes. Start with a main heading or topic headings using ##, followed by content, examples, formulas, etc. as appropriate.",
-  "confidence": 0.0,
-  "warnings": []
+  "sections": [
+    {{
+      "heading": "Clear heading for this specific section topic",
+      "sectionType": "KEY_IDEAS | DEFINITION | THEOREM | FORMULA | EXAMPLE | PROOF | CODE_EXPLANATION | DIAGRAM_EXPLANATION | PITFALL | PAPER_SECTION | REVIEW_CHECKLIST",
+      "markdown": "Markdown content for this specific section. Start with ## heading, followed by content, formulas, examples, etc. Do not combine multiple distinct topics into one markdown block if they can be separate sections.",
+      "confidence": 0.0,
+      "warnings": []
+    }}
+  ]
 }}
 
 Markdown Formatting Requirements:
 - Write the notes entirely in ENGLISH.
-- Cover all topics/sections found in the source chunks. If the chunks contain multiple distinct topics (e.g. Loops, Efficiency, Classes), generate distinct ## headings for each topic in the single markdown output. Do not discard any topics.
+- Cover all topics/sections found in the source chunks. Generate a separate section object in the array for each distinct topic/concept (e.g. loops, efficiency, classes should be distinct items in the JSON array). Do not discard any topics.
 - Do NOT enforce any fixed subsection format (like '### Key Ideas' or '### Details'). Let the markdown section format and structure be determined dynamically and naturally by the actual document content.
 - Present concepts, definitions, and theories clearly. Include step-by-step reasoning where applicable.
 - For examples, format them clearly starting with 'E.g.' or 'Example:' or 'Worked Example:' (e.g. 'E.g.1', 'Example 2'). Show the problem statement and the step-by-step solution.
@@ -245,12 +460,20 @@ def dedupe_preserve_order(items: list[str]) -> list[str]:
     return result
 
 
-def to_note_section(note_id: str, document_id: str, group: SourceGroup, generation: NotesGeneration) -> AiNoteSection:
+def to_note_section(
+    note_id: str,
+    document_id: str,
+    group: SourceGroup,
+    generation: NotesGeneration,
+    section_index: int,
+    group_section_index: int,
+    group_section_count: int,
+) -> AiNoteSection:
     warnings = generation.warnings or []
     return AiNoteSection(
         note_id=note_id,
         document_id=document_id,
-        section_index=group.index,
+        section_index=section_index,
         section_type=sanitize_section_type(generation.section_type),
         heading=generation.heading.strip()[:500] or f"Source Group {group.index + 1}",
         markdown=generation.markdown.strip(),
@@ -264,6 +487,9 @@ def to_note_section(note_id: str, document_id: str, group: SourceGroup, generati
             {
                 "rawResponse": generation.raw_response_json,
                 "sourceChunkIndexes": group.chunk_indexes,
+                "sourceGroupIndex": group.index,
+                "sourceGroupSectionIndex": group_section_index,
+                "sourceGroupSectionCount": group_section_count,
             },
             separators=(",", ":"),
         ),
@@ -276,6 +502,7 @@ def sanitize_section_type(value: str) -> str:
 
 
 def assemble_note_markdown(title: str, sections: list[AiNoteSection]) -> str:
+    sections = sort_note_sections(sections)
     coverage = format_sections_coverage(sections)
     parts = [
         f"# {title} - AI Notes",
@@ -316,20 +543,46 @@ def build_summary(generations: list[NotesGeneration]) -> str:
     return "AI-generated notes covering " + str(len(headings)) + " sections, including: " + "; ".join(headings[:8]) + f"; and {len(headings) - 8} more."
 
 
-def build_quality_report(sections: list[AiNoteSection], groups: list[SourceGroup], provider: str, model: str) -> dict:
+def build_section_summary(sections: list[AiNoteSection]) -> str:
+    sections = sort_note_sections(sections)
+    headings = [section.heading for section in sections if section.heading]
+    if not headings:
+        return "AI-generated notes are ready."
+    page_start = min((section.page_start for section in sections if section.page_start is not None), default=None)
+    page_end = max((section.page_end for section in sections if section.page_end is not None), default=None)
+    coverage = f" across pages {page_start}-{page_end}" if page_start is not None and page_end is not None else ""
+    return f"AI-generated notes covering {len(headings)} sections{coverage}."
+
+
+def build_quality_report(
+    sections: list[AiNoteSection],
+    completed_groups: list[SourceGroup],
+    provider: str,
+    model: str,
+    total_source_group_count: int | None = None,
+    failed_source_group_indexes: list[int] | None = None,
+    error_message: str | None = None,
+) -> dict:
     warnings: dict[str, int] = {}
     for section in sections:
         for warning in json.loads(section.warnings_json or "[]"):
             warnings[warning] = warnings.get(warning, 0) + 1
-    return {
+    report = {
         "sectionCount": len(sections),
-        "sourceGroupCount": len(groups),
-        "coveredPageStart": min((group.page_start for group in groups), default=None),
-        "coveredPageEnd": max((group.page_end for group in groups), default=None),
-        "coveredChunkCount": sum(len(group.chunks) for group in groups),
+        "sourceGroupCount": total_source_group_count if total_source_group_count is not None else len(completed_groups),
+        "completedSourceGroupCount": len(completed_groups),
+        "coveredPageStart": min((group.page_start for group in completed_groups), default=None),
+        "coveredPageEnd": max((group.page_end for group in completed_groups), default=None),
+        "coveredChunkCount": sum(len(group.chunks) for group in completed_groups),
         "averageConfidence": round(sum(section.confidence for section in sections) / len(sections), 3) if sections else 0.0,
         "warningCounts": warnings,
         "provider": provider,
         "model": model,
         "aiOnly": True,
+        "resumable": True,
     }
+    if failed_source_group_indexes:
+        report["failedSourceGroupIndexes"] = failed_source_group_indexes
+    if error_message:
+        report["errorMessage"] = error_message[:1000]
+    return report

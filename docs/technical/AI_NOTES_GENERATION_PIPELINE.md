@@ -2,6 +2,12 @@
 
 This document defines how NoteFlow should generate AI study notes from already parsed document Markdown and chunks.
 
+For the full system-level workflow, see:
+
+```text
+docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md
+```
+
 The goal is:
 
 ```text
@@ -29,14 +35,16 @@ The generated notes are not a generic summary. They are source-grounded study ma
 
 ```text
 User clicks Generate Notes
-  -> Backend creates GENERATE_NOTES task
-  -> Backend enqueues Redis task
+  -> Backend reuses or creates a GENERATE_NOTES task
+  -> Backend enqueues Redis task after database commit
   -> Worker loads document metadata
-  -> Worker loads Markdown document and chunks
-  -> Worker builds note generation plan
-  -> Worker generates section notes with LLM
-  -> Worker validates source references
-  -> Worker stores AI notes Markdown and structured sections
+  -> Worker loads chunks and existing note sections
+  -> Worker builds source groups
+  -> Worker skips already completed source groups
+  -> Worker generates pending groups concurrently
+  -> Worker saves generated sections immediately
+  -> Worker validates source references and metadata
+  -> Worker assembles one final Markdown note in source order
   -> Backend returns notes to frontend
 ```
 
@@ -72,6 +80,8 @@ documents
 document_markdown_documents
 document_chunks
 ```
+
+Current implementation uses `documents` and `document_chunks` as the required generation source. Markdown, visual, and layout context are represented inside chunk content and metadata produced by the parse pipeline.
 
 ## 4. Outputs
 
@@ -244,6 +254,16 @@ Coverage rule:
 3. Long documents should produce more source groups, not truncated notes.
 4. If a generation budget or provider limit prevents full coverage, the task should fail or explicitly report incomplete coverage instead of returning a partial note as `READY`.
 
+Current group settings:
+
+```text
+notes_group_target_tokens = 3200
+notes_group_max_tokens = 4500
+notes_request_timeout_seconds = 120
+notes_request_max_attempts = 3
+notes_max_concurrent_requests = 3
+```
+
 ### 6.2 Generate Section Notes
 
 For each group:
@@ -251,8 +271,22 @@ For each group:
 1. Build source bundle.
 2. Call LLM with a document-type-specific prompt.
 3. Request Markdown plus structured metadata.
-4. Store provisional section result.
+4. Normalize/attach source citations if needed.
 5. Validate that cited source chunks exist.
+6. Store each generated section immediately in `document_ai_note_sections`.
+
+Each section stores resume metadata:
+
+```json
+{
+  "sourceGroupIndex": 4,
+  "sourceGroupSectionIndex": 2,
+  "sourceGroupSectionCount": 18,
+  "sourceChunkIndexes": [35, 36, 37]
+}
+```
+
+The worker treats a source group as completed when the saved section count for that group is at least `sourceGroupSectionCount`.
 
 ### 6.3 Synthesize Final Notes
 
@@ -264,7 +298,67 @@ After all section notes are generated:
 4. Remove repeated boilerplate.
 5. Store one final Markdown document in `document_ai_notes.markdown`.
 
+The current implementation sorts sections by:
+
+```text
+sourceGroupIndex
+sourceGroupSectionIndex
+page_start
+page_end
+section_index
+heading
+```
+
+This prevents concurrent or resumed groups from being appended out of order.
+
 The UI should present this final merged Markdown as the primary note. `document_ai_note_sections` are internal structured records for traceability, regeneration, source linking, and future editor features; they should not replace the single combined note display.
+
+## 6.4 Resume, Partial Failure, And Stale Task Recovery
+
+Partial generation is resumable.
+
+If one source group fails after provider retries:
+
+1. Already generated sections remain in `document_ai_note_sections`.
+2. `document_ai_notes.status` remains `GENERATING` when useful partial sections exist.
+3. The task is marked `FAILED` with a message explaining which source group failed.
+4. Clicking Generate Notes again creates or reuses a task for the same generating note.
+5. The worker skips completed source groups and regenerates only missing/failed groups.
+
+If a worker is interrupted after `BLPOP` removes a task from Redis, the database can be left with an orphaned `PROCESSING` task. The worker and script recover stale notes tasks:
+
+```text
+services/worker/scripts/recover_stale_notes_tasks.py
+```
+
+Stale threshold:
+
+```text
+notes_stale_task_after_minutes = 10
+```
+
+## 6.5 Offline Markdown Rebuild
+
+Some fixes are mechanical and should not call the AI provider again. For example:
+
+1. Final Markdown section ordering.
+2. Source index ordering.
+3. Summary text assembled from existing sections.
+
+Use:
+
+```text
+services/worker/scripts/rebuild_ai_note_markdown.py
+```
+
+This script:
+
+1. Reads existing `document_ai_note_sections`.
+2. Sorts sections using the same source-group sort as generation.
+3. Reassembles `document_ai_notes.markdown`.
+4. Updates `document_ai_notes.summary`.
+5. Does not enqueue tasks.
+6. Does not call Gemini/OpenAI.
 
 ## 7. Document Type Strategies
 

@@ -1,10 +1,9 @@
 package com.noteflow.documents;
 
-import com.noteflow.queue.DocumentTaskQueue;
 import com.noteflow.storage.LocalFileStorageService;
 import com.noteflow.storage.StoredFile;
 import com.noteflow.tasks.Task;
-import com.noteflow.tasks.TaskRepository;
+import com.noteflow.tasks.TaskDispatchService;
 import com.noteflow.tasks.TaskType;
 import com.noteflow.users.DevUserService;
 import com.noteflow.notes.DocumentAiNote;
@@ -19,18 +18,16 @@ import org.springframework.web.multipart.MultipartFile;
 public class DocumentService {
     private final DevUserService users;
     private final DocumentRepository documents;
-    private final TaskRepository tasks;
+    private final TaskDispatchService taskDispatcher;
     private final LocalFileStorageService storage;
-    private final DocumentTaskQueue queue;
     private final DocumentAiNoteRepository notes;
 
-    public DocumentService(DevUserService users, DocumentRepository documents, TaskRepository tasks,
-            LocalFileStorageService storage, DocumentTaskQueue queue, DocumentAiNoteRepository notes) {
+    public DocumentService(DevUserService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
+            LocalFileStorageService storage, DocumentAiNoteRepository notes) {
         this.users = users;
         this.documents = documents;
-        this.tasks = tasks;
+        this.taskDispatcher = taskDispatcher;
         this.storage = storage;
-        this.queue = queue;
         this.notes = notes;
     }
 
@@ -54,9 +51,7 @@ public class DocumentService {
         );
         documents.save(document);
 
-        Task task = new Task(UUID.randomUUID(), document.getId(), userId, TaskType.PARSE_DOCUMENT);
-        tasks.save(task);
-        queue.enqueue(task);
+        Task task = taskDispatcher.createAndEnqueue(document.getId(), userId, TaskType.PARSE_DOCUMENT);
         return new CreateDocumentResponse(document.getId(), task.getId(), document.getStatus());
     }
 

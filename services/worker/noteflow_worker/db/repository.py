@@ -132,6 +132,22 @@ class AiNoteSection:
     metadata_json: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class AiNoteRecord:
+    id: str
+    document_id: str
+    note_version: int
+    status: str
+    title: str
+    markdown: str
+    summary: Optional[str]
+    model_provider: Optional[str]
+    model_name: Optional[str]
+    prompt_version: Optional[str]
+    quality_report_json: Optional[str]
+    metadata_json: Optional[str]
+
+
 class CleanConnection:
     def __init__(self, conn):
         self._conn = conn
@@ -369,6 +385,139 @@ class Repository:
                     model,
                     prompt_version,
                     "chunks:v1",
+                    quality_report_json,
+                    metadata_json,
+                    note_id,
+                ),
+            )
+
+    def load_ai_note_sections(self, note_id: str) -> list[AiNoteSection]:
+        self.ensure_notes_schema()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  note_id,
+                  document_id,
+                  section_index,
+                  section_type,
+                  heading,
+                  markdown,
+                  page_start,
+                  page_end,
+                  source_chunk_ids_json,
+                  source_pages_json,
+                  confidence,
+                  warnings_json,
+                  metadata_json
+                FROM document_ai_note_sections
+                WHERE note_id = %s
+                ORDER BY section_index
+                """,
+                (note_id,),
+            ).fetchall()
+        return [
+            AiNoteSection(
+                note_id=str(row["note_id"]),
+                document_id=str(row["document_id"]),
+                section_index=row["section_index"],
+                section_type=row["section_type"],
+                heading=row["heading"] or "",
+                markdown=row["markdown"] or "",
+                page_start=row["page_start"],
+                page_end=row["page_end"],
+                source_chunk_ids_json=row["source_chunk_ids_json"] or "[]",
+                source_pages_json=row["source_pages_json"] or "[]",
+                confidence=float(row["confidence"] or 0.0),
+                warnings_json=row["warnings_json"] or "[]",
+                metadata_json=row["metadata_json"],
+            )
+            for row in rows
+        ]
+
+    def save_ai_note_section(self, section: AiNoteSection) -> None:
+        self.ensure_notes_schema()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO document_ai_note_sections (
+                  id,
+                  note_id,
+                  document_id,
+                  section_index,
+                  section_type,
+                  heading,
+                  markdown,
+                  page_start,
+                  page_end,
+                  source_chunk_ids_json,
+                  source_pages_json,
+                  confidence,
+                  warnings_json,
+                  metadata_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (note_id, section_index)
+                DO UPDATE SET
+                  section_type = EXCLUDED.section_type,
+                  heading = EXCLUDED.heading,
+                  markdown = EXCLUDED.markdown,
+                  page_start = EXCLUDED.page_start,
+                  page_end = EXCLUDED.page_end,
+                  source_chunk_ids_json = EXCLUDED.source_chunk_ids_json,
+                  source_pages_json = EXCLUDED.source_pages_json,
+                  confidence = EXCLUDED.confidence,
+                  warnings_json = EXCLUDED.warnings_json,
+                  metadata_json = EXCLUDED.metadata_json
+                """,
+                (
+                    str(uuid4()),
+                    section.note_id,
+                    section.document_id,
+                    section.section_index,
+                    section.section_type,
+                    section.heading,
+                    section.markdown,
+                    section.page_start,
+                    section.page_end,
+                    section.source_chunk_ids_json,
+                    section.source_pages_json,
+                    section.confidence,
+                    section.warnings_json,
+                    section.metadata_json,
+                ),
+            )
+
+    def update_ai_note_generation_progress(
+        self,
+        note_id: str,
+        summary: str,
+        provider: str,
+        model: str,
+        prompt_version: str,
+        metadata_json: str,
+        quality_report_json: str,
+    ) -> None:
+        self.ensure_notes_schema()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE document_ai_notes
+                SET status = 'GENERATING',
+                    summary = %s,
+                    model_provider = %s,
+                    model_name = %s,
+                    prompt_version = %s,
+                    quality_report_json = %s,
+                    metadata_json = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                """,
+                (
+                    summary[:4000],
+                    provider,
+                    model,
+                    prompt_version,
                     quality_report_json,
                     metadata_json,
                     note_id,
@@ -1131,3 +1280,30 @@ class Repository:
                 """,
                 (error_message[:4000], task_id),
             )
+
+    def recover_stale_generate_notes_tasks(self, stale_after_minutes: int) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH stale AS (
+                  SELECT id
+                  FROM tasks
+                  WHERE task_type = 'GENERATE_NOTES'
+                    AND status = 'PROCESSING'
+                    AND updated_at < NOW() - (%s::text || ' minutes')::interval
+                  ORDER BY updated_at
+                  FOR UPDATE SKIP LOCKED
+                )
+                UPDATE tasks t
+                SET status = 'RETRYING',
+                    current_step = 'GENERATING_NOTES',
+                    retry_count = retry_count + 1,
+                    error_message = 'Recovered stale PROCESSING task and re-enqueued it.',
+                    updated_at = NOW()
+                FROM stale
+                WHERE t.id = stale.id
+                RETURNING t.id, t.document_id, t.user_id, t.task_type
+                """,
+                (stale_after_minutes,),
+            ).fetchall()
+        return [dict(row) for row in rows]

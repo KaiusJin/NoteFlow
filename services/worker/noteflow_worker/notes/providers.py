@@ -26,7 +26,7 @@ class NotesProvider(Protocol):
     provider_name: str
     model: str
 
-    def generate_section(self, prompt: str) -> NotesGeneration:
+    def generate_sections(self, prompt: str) -> list[NotesGeneration]:
         ...
 
 
@@ -34,12 +34,14 @@ class DisabledNotesProvider:
     provider_name = "disabled"
     model = "none"
 
-    def generate_section(self, prompt: str) -> NotesGeneration:
-        return NotesGeneration(
-            provider=self.provider_name,
-            model=self.model,
-            error_message="Notes provider is not configured.",
-        )
+    def generate_sections(self, prompt: str) -> list[NotesGeneration]:
+        return [
+            NotesGeneration(
+                provider=self.provider_name,
+                model=self.model,
+                error_message="Notes provider is not configured.",
+            )
+        ]
 
 
 class GeminiNotesProvider:
@@ -49,9 +51,9 @@ class GeminiNotesProvider:
         self.api_key = settings.gemini_api_key
         self.model = settings.gemini_notes_model or settings.gemini_vision_model
 
-    def generate_section(self, prompt: str) -> NotesGeneration:
+    def generate_sections(self, prompt: str) -> list[NotesGeneration]:
         if not self.api_key:
-            return NotesGeneration(provider=self.provider_name, model=self.model, error_message="Gemini API key is not configured.")
+            return [NotesGeneration(provider=self.provider_name, model=self.model, error_message="Gemini API key is not configured.")]
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
@@ -66,7 +68,7 @@ class GeminiNotesProvider:
             + ":generateContent?key="
             + self.api_key
         )
-        return generation_with_retries(self.provider_name, self.model, lambda: post_json(url, payload))
+        return generations_with_retries(self.provider_name, self.model, lambda: post_json(url, payload))
 
 
 class OpenAINotesProvider:
@@ -76,9 +78,9 @@ class OpenAINotesProvider:
         self.api_key = settings.openai_api_key
         self.model = settings.openai_notes_model or settings.openai_vision_model
 
-    def generate_section(self, prompt: str) -> NotesGeneration:
+    def generate_sections(self, prompt: str) -> list[NotesGeneration]:
         if not self.api_key:
-            return NotesGeneration(provider=self.provider_name, model=self.model, error_message="OpenAI API key is not configured.")
+            return [NotesGeneration(provider=self.provider_name, model=self.model, error_message="OpenAI API key is not configured.")]
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -86,7 +88,7 @@ class OpenAINotesProvider:
             "response_format": {"type": "json_object"},
         }
         headers = {"Authorization": "Bearer " + self.api_key}
-        return generation_with_retries(
+        return generations_with_retries(
             self.provider_name,
             self.model,
             lambda: post_json("https://api.openai.com/v1/chat/completions", payload, headers=headers),
@@ -97,16 +99,25 @@ def notes_response_schema() -> dict:
     return {
         "type": "OBJECT",
         "properties": {
-            "heading": {"type": "STRING"},
-            "sectionType": {"type": "STRING"},
-            "markdown": {"type": "STRING"},
-            "confidence": {"type": "NUMBER"},
-            "warnings": {
+            "sections": {
                 "type": "ARRAY",
-                "items": {"type": "STRING"},
-            },
+                "items": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "heading": {"type": "STRING"},
+                        "sectionType": {"type": "STRING"},
+                        "markdown": {"type": "STRING"},
+                        "confidence": {"type": "NUMBER"},
+                        "warnings": {
+                            "type": "ARRAY",
+                            "items": {"type": "STRING"},
+                        },
+                    },
+                    "required": ["heading", "sectionType", "markdown", "confidence", "warnings"],
+                }
+            }
         },
-        "required": ["heading", "sectionType", "markdown", "confidence", "warnings"],
+        "required": ["sections"],
     }
 
 
@@ -126,19 +137,19 @@ def make_notes_provider() -> NotesProvider:
     return DisabledNotesProvider()
 
 
-def generation_with_retries(provider: str, model: str, request_fn) -> NotesGeneration:
+def generations_with_retries(provider: str, model: str, request_fn) -> list[NotesGeneration]:
     last_error = ""
     for attempt in range(1, max(1, settings.notes_request_max_attempts) + 1):
         try:
             response = request_fn()
             parsed = parse_provider_response(response)
-            return generation_from_dict(provider, model, parsed, response)
+            return generations_from_dict(provider, model, parsed, response)
         except Exception as exc:
             last_error = str(exc)[:2000]
             if attempt >= settings.notes_request_max_attempts or not is_retryable_error(last_error):
                 break
             time.sleep(settings.notes_retry_backoff_seconds * attempt)
-    return NotesGeneration(provider=provider, model=model, error_message=last_error or "Notes generation failed.")
+    return [NotesGeneration(provider=provider, model=model, error_message=last_error or "Notes generation failed.")]
 
 
 def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
@@ -193,24 +204,50 @@ def escape_invalid_json_backslashes(text: str) -> str:
     return re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
 
 
-def generation_from_dict(provider: str, model: str, parsed: dict, raw_response: dict) -> NotesGeneration:
-    if isinstance(parsed, list):
-        parsed = parsed[0] if parsed and isinstance(parsed[0], dict) else {}
+def generations_from_dict(provider: str, model: str, parsed: dict, raw_response: dict) -> list[NotesGeneration]:
     if not isinstance(parsed, dict):
         parsed = {}
-    warnings = parsed.get("warnings")
-    if not isinstance(warnings, list):
-        warnings = []
-    return NotesGeneration(
-        provider=provider,
-        model=model,
-        heading=str(parsed.get("heading", "")),
-        section_type=str(parsed.get("sectionType", "KEY_IDEAS")),
-        markdown=str(parsed.get("markdown", "")),
-        confidence=float(parsed.get("confidence") or 0.0),
-        warnings=[str(item) for item in warnings],
-        raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
-    )
+
+    sections_list = parsed.get("sections")
+    if not isinstance(sections_list, list):
+        if "heading" in parsed or "markdown" in parsed:
+            sections_list = [parsed]
+        else:
+            sections_list = []
+
+    generations = []
+    for sec in sections_list:
+        if not isinstance(sec, dict):
+            continue
+        warnings = sec.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        generations.append(
+            NotesGeneration(
+                provider=provider,
+                model=model,
+                heading=str(sec.get("heading", "")),
+                section_type=str(sec.get("sectionType", "KEY_IDEAS")),
+                markdown=str(sec.get("markdown", "")),
+                confidence=float(sec.get("confidence") or 0.0),
+                warnings=[str(item) for item in warnings],
+                raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
+            )
+        )
+    if not generations:
+        generations.append(
+            NotesGeneration(
+                provider=provider,
+                model=model,
+                heading="Study Notes Section",
+                section_type="KEY_IDEAS",
+                markdown="",
+                confidence=0.5,
+                warnings=["no_sections_generated"],
+                raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
+            )
+        )
+    return generations
 
 
 def redact_raw_response(response: dict) -> dict:

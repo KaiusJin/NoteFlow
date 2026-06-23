@@ -2,6 +2,12 @@
 
 This document describes the current NoteFlow flow from uploaded PDF to Markdown and chunks.
 
+For the full end-to-end contract, including HTTP interfaces, task dispatch, AI notes, exports, and quality gates, see:
+
+```text
+docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md
+```
+
 Scope:
 
 1. How uploaded PDFs are stored.
@@ -92,7 +98,10 @@ User-facing document types include:
 COURSE_NOTES
 RESEARCH_PAPER
 LECTURE_SLIDES
+ASSIGNMENT
+PAST_EXAM
 HANDWRITTEN_NOTES
+OTHER
 ```
 
 Detected content source types include:
@@ -106,6 +115,38 @@ UNKNOWN
 ```
 
 The detected source type controls the parser route.
+
+The important distinction is:
+
+```text
+document_type = user intent and academic structure
+content_source_type = detected PDF physical form
+```
+
+Routing priority:
+
+1. `HANDWRITTEN_NOTES` forces full-page VLM.
+2. `HANDWRITTEN_SCAN` and `SCANNED_PDF` force page-level visual/VLM Markdown.
+3. Otherwise the selected `document_type` chooses the academic chunk strategy.
+4. `OTHER` uses a conservative mixed fallback.
+
+Strategy resolver:
+
+```text
+services/worker/noteflow_worker/pdf/strategies.py
+```
+
+Current strategies:
+
+| Type/Condition | Markdown Strategy | Chunk Strategy | Required VLM |
+|---|---|---|---:|
+| `HANDWRITTEN_NOTES` | `FULL_PAGE_VLM` | `PAGE_AWARE` | Yes |
+| `SCANNED_PDF`, `HANDWRITTEN_SCAN` | `PAGE_LEVEL_VISUAL` | `PAGE_AWARE` | Yes |
+| `LECTURE_SLIDES` | `SLIDE_LAYOUT` | `SLIDE_AWARE` | No |
+| `COURSE_NOTES` | `STRUCTURAL_NOTES` | `TOPIC_AWARE` | No |
+| `RESEARCH_PAPER` | `PAPER_SECTIONS` | `PAPER_SECTION_AWARE` | No |
+| `ASSIGNMENT`, `PAST_EXAM` | `QUESTION_STRUCTURE` | `QUESTION_AWARE` | No |
+| `OTHER` | `MIXED_LAYOUT` | `MIXED_FALLBACK` | No |
 
 ## 5. PDF To Markdown: Common Preprocessing
 
@@ -246,6 +287,22 @@ Fallback trigger:
 1. Page has visual content.
 2. No regions survived filtering.
 3. Either image coverage is high enough or image count exists with low native text.
+
+## 8.1 Multi-Modal Region Policy
+
+The parser treats visual content differently depending on semantic value.
+
+| Region / Content | Handling |
+|---|---|
+| Pure text image | Transcribe with VLM/OCR and insert as Markdown text near its page position. |
+| Code screenshot | Classify as `CODE_IMAGE`, ask VLM for transcription and explanation, preserve code fences when possible. |
+| Formula image | Ask VLM for transcription and LaTeX; keep formula attached to nearby explanation. |
+| Diagram/chart/plot | Ask VLM for labels, relationships, axes, caption-like description, and conceptual interpretation. |
+| Handwritten derivation | Use full-page VLM for handwritten documents; preserve derivation order and uncertainty. |
+| Decorative/repeated image | Filter when low semantic value, but never drop code/handwritten/full-page fallback only because hashes repeat. |
+| Blank or low-content page | Skip or mark low content; do not create misleading chunks. |
+
+The Markdown layer is the source of truth for later chunks and AI notes. If a meaningful image, formula, table, or code screenshot is missing at this stage, retrieval and AI notes cannot reliably recover it.
 
 ## 9. VLM Output Handling
 

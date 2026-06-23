@@ -2,6 +2,12 @@
 
 This document defines how NoteFlow should use `document_type` when converting PDFs to Markdown and chunks.
 
+This is a supporting reference. The consolidated current specification is:
+
+```text
+docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md
+```
+
 The important design rule is:
 
 ```text
@@ -13,7 +19,7 @@ The pipeline should use both. `document_type` decides what structure we expect, 
 
 ## 1. Document Types
 
-The supported product-level document types should be:
+The supported product-level document types are:
 
 ```text
 COURSE_NOTES
@@ -25,11 +31,11 @@ HANDWRITTEN_NOTES
 OTHER
 ```
 
-`TEXTBOOK_CHAPTER` should be removed from the product type list for now. It is too broad and overlaps with `COURSE_NOTES`, `RESEARCH_PAPER`, and `OTHER`. If textbook support becomes important later, it should return with a clear strategy for chapters, exercises, margin notes, figures, and references.
+`TEXTBOOK_CHAPTER` is not supported for now. It is too broad and overlaps with `COURSE_NOTES`, `RESEARCH_PAPER`, and `OTHER`. If textbook support becomes important later, it should return with a clear strategy for chapters, exercises, margin notes, figures, and references.
 
 ## 2. Routing Priority
 
-The routing decision should follow this priority:
+The routing decision follows this priority:
 
 1. If `document_type == HANDWRITTEN_NOTES`, force full-page VLM Markdown.
 2. Else if `content_source_type == HANDWRITTEN_SCAN`, use full-page VLM Markdown.
@@ -50,6 +56,24 @@ This avoids a common failure mode: the user chooses "Lecture slides", but the up
 | `ASSIGNMENT` | Problem Markdown: instructions, question numbers, subparts, starter code, examples, constraints, submission notes. | Selective for screenshots, handwritten annotations, and code images. | Question-aware chunks. Prefer one question or one subpart per chunk. Keep starter code and examples with the relevant question. |
 | `PAST_EXAM` | Exam Markdown: question numbers, subparts, marks, formula sheets, answer space, diagrams. | Selective for scanned exams, handwritten notes, diagrams, and formula sheets. | Question-aware chunks. Prefer one question per chunk. Preserve marks and page provenance. Formula sheets can be standalone chunks. |
 | `OTHER` | Conservative mixed Markdown. Preserve page order and typed blocks. | Selective based on visual density and missing native text. | Conservative page/section chunks with larger token budget and minimal assumptions. |
+
+Implementation mapping:
+
+| Condition | `markdown_strategy` | `chunk_strategy` | `force_full_page_vlm` | `require_vlm_success` |
+|---|---|---|---:|---:|
+| `HANDWRITTEN_NOTES` | `FULL_PAGE_VLM` | `PAGE_AWARE` | true | true |
+| `SCANNED_PDF` / `HANDWRITTEN_SCAN` | `PAGE_LEVEL_VISUAL` | `PAGE_AWARE` | true | true |
+| `LECTURE_SLIDES` | `SLIDE_LAYOUT` | `SLIDE_AWARE` | false | false |
+| `COURSE_NOTES` | `STRUCTURAL_NOTES` | `TOPIC_AWARE` | false | false |
+| `RESEARCH_PAPER` | `PAPER_SECTIONS` | `PAPER_SECTION_AWARE` | false | false |
+| `ASSIGNMENT` / `PAST_EXAM` | `QUESTION_STRUCTURE` | `QUESTION_AWARE` | false | false |
+| `OTHER` | `MIXED_LAYOUT` | `MIXED_FALLBACK` | false | false |
+
+Code:
+
+```text
+services/worker/noteflow_worker/pdf/strategies.py
+```
 
 ## 4. Markdown Requirements
 
@@ -98,6 +122,8 @@ metadata_json
   "bboxRefs": []
 }
 ```
+
+The current implementation attaches this metadata in `document_chunks.metadata_json` through `chunk_from_elements(...)`.
 
 ## 6. Chunk Strategy Types
 
@@ -198,9 +224,12 @@ Implemented:
 4. Forced `HANDWRITTEN_NOTES` through full-page VLM even when native text exists.
 5. Added chunk metadata fields for `documentType`, `contentSourceType`, and `chunkStrategy`.
 6. Added first-pass strategy-specific chunk boundaries for slides, course notes, papers, assignments, and exams.
+7. Added full-page VLM failure policy for scanned and handwritten routes.
+8. Added visual fallback for meaningful pages that would otherwise lose code/images.
+9. Added AI notes resume and offline Markdown rebuild outside this strategy layer.
 
 Still needed after code deployment:
 
-1. Reprocess existing uploaded documents so old chunks receive the new metadata and boundaries.
-2. Add frontend filtering/inspection for `chunkStrategy`.
-3. Add evaluation metrics grouped by `document_type`.
+1. Add frontend filtering/inspection for `chunkStrategy`.
+2. Add evaluation metrics grouped by `document_type`.
+3. Improve source citation precision for small single-group documents.

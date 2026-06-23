@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     document_queue: str = "queue:document-analysis"
     block_timeout_seconds: int = 5
+    worker_max_concurrent_tasks: int = 3
     vision_provider: str = "disabled"
     gemini_api_key: str = ""
     gemini_vision_model: str = "gemini-2.5-flash"
@@ -24,9 +25,11 @@ class Settings(BaseSettings):
     notes_provider: str = ""
     gemini_notes_model: str = "gemini-2.5-flash"
     openai_notes_model: str = "gpt-4o-mini"
-    notes_request_timeout_seconds: int = 90
+    notes_request_timeout_seconds: int = 120
     notes_request_max_attempts: int = 3
     notes_retry_backoff_seconds: float = 2.0
+    notes_max_concurrent_requests: int = 3
+    notes_stale_task_after_minutes: int = 10
     notes_group_target_tokens: int = 3200
     notes_group_max_tokens: int = 4500
 
