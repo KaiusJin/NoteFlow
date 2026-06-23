@@ -7,6 +7,7 @@ const statusCard = document.querySelector("#status-card");
 const progressBar = document.querySelector("#progress-bar");
 const documentsList = document.querySelector("#documents-list");
 const refreshDocuments = document.querySelector("#refresh-documents");
+const openSearchButton = document.querySelector("#open-search");
 const parseOutput = document.querySelector("#parse-output");
 
 let documentsMap = new Map();
@@ -56,6 +57,7 @@ form.addEventListener("submit", async (event) => {
 });
 
 refreshDocuments.addEventListener("click", loadDocuments);
+openSearchButton.addEventListener("click", () => renderSearchPanel());
 
 documentsList.addEventListener("click", async (event) => {
   const parseButton = event.target.closest("[data-view-parse]");
@@ -71,6 +73,16 @@ documentsList.addEventListener("click", async (event) => {
   const viewNotesButton = event.target.closest("[data-view-notes]");
   if (viewNotesButton) {
     await loadNotes(viewNotesButton.dataset.viewNotes);
+    return;
+  }
+  const embeddingsButton = event.target.closest("[data-generate-embeddings]");
+  if (embeddingsButton) {
+    await generateEmbeddings(embeddingsButton.dataset.generateEmbeddings);
+    return;
+  }
+  const searchButton = event.target.closest("[data-search-document]");
+  if (searchButton) {
+    renderSearchPanel(searchButton.dataset.searchDocument);
   }
 });
 
@@ -102,7 +114,8 @@ function renderTaskStatus(tasks) {
     const doc = documentsMap.get(task.documentId);
     const docTitle = doc ? doc.title : (task.documentId ? `Document ${task.documentId.slice(0, 8)}` : "Unknown Document");
     const taskTypeLabel = task.taskType === "PARSE_DOCUMENT" ? "PDF to Markdown" : 
-                          task.taskType === "GENERATE_NOTES" ? "AI Notes Generation" : task.taskType;
+                          task.taskType === "GENERATE_NOTES" ? "AI Notes Generation" :
+                          task.taskType === "GENERATE_EMBEDDINGS" ? "Embedding Generation" : task.taskType;
     
     const statusClass = task.status.toLowerCase();
     const errorHtml = task.errorMessage ? `<div class="task-error-msg">${escapeHtml(task.errorMessage)}</div>` : "";
@@ -265,6 +278,8 @@ function renderDocuments(documents) {
           <div class="row-actions">
             <button class="secondary" type="button" data-view-parse="${escapeHtml(document.id)}">View Parsed Output</button>
             <button class="secondary" type="button" data-view-notes="${escapeHtml(document.id)}">View AI Notes</button>
+            <button class="secondary" type="button" data-search-document="${escapeHtml(document.id)}">Search</button>
+            <button class="secondary" type="button" data-generate-embeddings="${escapeHtml(document.id)}">Generate Embeddings</button>
             <button type="button" data-generate-notes="${escapeHtml(document.id)}">Generate AI Notes</button>
           </div>
         </article>
@@ -346,6 +361,22 @@ async function generateNotes(documentId) {
   }
 }
 
+async function generateEmbeddings(documentId) {
+  renderStatus("Creating embedding task...", 0);
+  try {
+    const response = await fetch(`${API_BASE_URL}/documents/${documentId}/embeddings`, {
+      method: "POST",
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new Error(payload.message || "Could not create embedding task");
+    }
+    renderStatus(`Embedding task ${payload.taskId}\nStatus ${payload.status}`, 5);
+  } catch (error) {
+    renderStatus(formatFetchError(error), 0);
+  }
+}
+
 async function loadNotes(documentId) {
   parseOutput.classList.remove("muted");
   parseOutput.innerHTML = `<div class="output-title">AI Notes</div><div class="status-card muted">Loading AI notes...</div>`;
@@ -360,6 +391,162 @@ async function loadNotes(documentId) {
     parseOutput.classList.add("muted");
     parseOutput.textContent = formatFetchError(error);
   }
+}
+
+function renderSearchPanel(documentId = null) {
+  const document = documentId ? documentsMap.get(documentId) : null;
+  const documents = Array.from(documentsMap.values());
+  const scopeLabel = document ? `Search ${document.title}` : "Search all documents";
+  parseOutput.classList.remove("muted");
+  parseOutput.innerHTML = `
+    <div class="output-title">${escapeHtml(scopeLabel)}</div>
+    <form id="search-form" class="search-form" data-document-id="${escapeHtml(documentId || "")}">
+      <label>
+        Query
+        <input id="search-query" name="query" type="search" placeholder="Ask about a theorem, formula, example, code snippet..." required />
+      </label>
+      <div class="search-controls">
+        <label>
+          Search type
+          <select id="search-mode" name="mode">
+            <option value="MIXED">Mixed: PDF + AI Note</option>
+            <option value="PDF">Original PDF only</option>
+            <option value="AI_NOTE">AI Note only</option>
+            <option value="CUSTOM">Custom selected files</option>
+          </select>
+        </label>
+        <label>
+          Top K
+          <input id="search-top-k" name="topK" type="number" min="1" max="30" value="8" />
+        </label>
+      </div>
+      <div id="custom-search-scope" class="custom-search-scope" hidden>
+        ${renderCustomSearchScope(documents)}
+      </div>
+      <div class="search-actions">
+        <button type="submit">Search</button>
+      </div>
+    </form>
+    <div id="search-results" class="search-results muted">Generate embeddings before searching a document.</div>
+  `;
+
+  const formEl = parseOutput.querySelector("#search-form");
+  const modeEl = parseOutput.querySelector("#search-mode");
+  const customScopeEl = parseOutput.querySelector("#custom-search-scope");
+  modeEl.addEventListener("change", () => {
+    customScopeEl.hidden = modeEl.value !== "CUSTOM";
+  });
+  formEl.addEventListener("submit", executeSearch);
+  parseOutput.querySelector("#search-query").focus();
+}
+
+function renderCustomSearchScope(documents) {
+  if (!documents.length) {
+    return `<div class="status-card muted">No documents are available for custom search.</div>`;
+  }
+  return `
+    <div class="source-picker">
+      ${documents.map((document) => {
+        const ready = document.status === "READY";
+        const aiNoteReady = document.aiNoteStatus === "READY";
+        return `
+          <article class="source-picker-row">
+            <div>
+              <strong>${escapeHtml(document.title)}</strong>
+              <div class="document-meta">${escapeHtml(document.documentType)} · ${escapeHtml(document.originalFilename)}</div>
+            </div>
+            <label class="checkbox-label">
+              <input type="checkbox" name="pdfDocumentIds" value="${escapeHtml(document.id)}" ${ready ? "" : "disabled"} />
+              PDF
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" name="aiNoteDocumentIds" value="${escapeHtml(document.id)}" ${aiNoteReady ? "" : "disabled"} />
+              AI Note
+            </label>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+async function executeSearch(event) {
+  event.preventDefault();
+  const formEl = event.currentTarget;
+  const resultsEl = parseOutput.querySelector("#search-results");
+  const documentId = formEl.dataset.documentId || null;
+  const mode = formEl.querySelector("#search-mode").value;
+  const query = formEl.querySelector("#search-query").value.trim();
+  const topK = Number(formEl.querySelector("#search-top-k").value || 8);
+  const body = { query, topK, mode };
+
+  if (mode === "CUSTOM") {
+    body.pdfDocumentIds = checkedValues(formEl, "pdfDocumentIds");
+    body.aiNoteDocumentIds = checkedValues(formEl, "aiNoteDocumentIds");
+    if (!body.pdfDocumentIds.length && !body.aiNoteDocumentIds.length) {
+      resultsEl.classList.add("muted");
+      resultsEl.textContent = "Choose at least one PDF or AI Note for custom search.";
+      return;
+    }
+  }
+
+  const endpoint = documentId && mode !== "CUSTOM"
+    ? `${API_BASE_URL}/documents/${documentId}/search`
+    : `${API_BASE_URL}/search`;
+
+  resultsEl.classList.remove("muted");
+  resultsEl.innerHTML = `<div class="status-card muted">Searching...</div>`;
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new Error(payload.message || "Search failed");
+    }
+    renderSearchResults(payload);
+  } catch (error) {
+    resultsEl.classList.add("muted");
+    resultsEl.textContent = formatFetchError(error);
+  }
+}
+
+function renderSearchResults(payload) {
+  const resultsEl = parseOutput.querySelector("#search-results");
+  if (!payload.results || !payload.results.length) {
+    resultsEl.classList.add("muted");
+    resultsEl.textContent = "No matching embedded source was found. Generate embeddings or broaden the search scope.";
+    return;
+  }
+  resultsEl.classList.remove("muted");
+  resultsEl.innerHTML = payload.results.map(renderSearchResult).join("");
+}
+
+function renderSearchResult(result) {
+  const sourceLabel = result.sourceDomain === "AI_NOTE" ? "AI Note" : "PDF";
+  const document = documentsMap.get(result.documentId);
+  const pageLabel = result.pageStart && result.pageEnd && result.pageEnd !== result.pageStart
+    ? `Pages ${result.pageStart}-${result.pageEnd}`
+    : result.pageStart
+      ? `Page ${result.pageStart}`
+      : "Page unknown";
+  return `
+    <article class="search-result-card">
+      <div class="search-result-header">
+        <span class="badge ${result.sourceDomain === "AI_NOTE" ? "note-source" : "pdf-source"}">${escapeHtml(sourceLabel)}</span>
+        <span>${escapeHtml(pageLabel)} · score ${Number(result.score || 0).toFixed(3)}</span>
+      </div>
+      <strong>${escapeHtml(result.title || sourceLabel)}</strong>
+      <div class="document-meta">${escapeHtml(document?.title || result.documentId)}</div>
+      <p>${escapeHtml(result.snippet || "No preview available.")}</p>
+    </article>
+  `;
+}
+
+function checkedValues(formEl, name) {
+  return Array.from(formEl.querySelectorAll(`input[name="${name}"]:checked`)).map((input) => input.value);
 }
 
 function renderNotes(note) {

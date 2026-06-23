@@ -2,6 +2,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 
 from noteflow_worker.config import settings
 from noteflow_worker.db.repository import Repository
+from noteflow_worker.pipelines.generate_embeddings import GenerateEmbeddingsPipeline
 from noteflow_worker.pipelines.generate_notes import GenerateNotesPipeline
 from noteflow_worker.pipelines.parse_document import ParseDocumentPipeline
 from noteflow_worker.queue.redis_queue import RedisTaskQueue, TaskPayload
@@ -10,10 +11,15 @@ from noteflow_worker.queue.redis_queue import RedisTaskQueue, TaskPayload
 def process_payload(payload: TaskPayload) -> None:
     repository = Repository()
     parse_pipeline = ParseDocumentPipeline(repository)
+    embeddings_pipeline = GenerateEmbeddingsPipeline(repository)
     notes_pipeline = GenerateNotesPipeline(repository)
     if payload.task_type == "PARSE_DOCUMENT":
         print(f"Processing parse task {payload.task_id} for document {payload.document_id}")
         parse_pipeline.run(payload)
+        return
+    if payload.task_type == "GENERATE_EMBEDDINGS":
+        print(f"Processing embeddings task {payload.task_id} for document {payload.document_id}")
+        embeddings_pipeline.run(payload)
         return
     if payload.task_type == "GENERATE_NOTES":
         print(f"Processing notes task {payload.task_id} for document {payload.document_id}")

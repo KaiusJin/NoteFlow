@@ -358,26 +358,46 @@ CREATE TABLE document_vlm_results (
 
 ### document_embeddings
 
-Reserved pgvector table for later text and image embedding generation.
+Planned pgvector table for dual-source semantic search.
+
+User-visible source domains:
+
+```text
+PDF
+AI_NOTE
+```
+
+Internal source object types:
+
+```text
+DOCUMENT_CHUNK
+AI_NOTE_SECTION
+```
+
+`DOCUMENT_CHUNK` is not a raw PDF chunk. It is generated from parsed PDF Markdown, layout blocks, and VLM-enriched visual content.
 
 ```sql
 CREATE TABLE document_embeddings (
   id UUID PRIMARY KEY,
   document_id UUID NOT NULL,
-  source_table VARCHAR(64) NOT NULL,
-  source_id UUID NOT NULL,
-  content_kind VARCHAR(64) NOT NULL,
-  provider VARCHAR(64) NOT NULL,
-  model VARCHAR(128) NOT NULL,
+  source_domain VARCHAR(32) NOT NULL,
+  source_object_type VARCHAR(64) NOT NULL,
+  source_object_id UUID NOT NULL,
+  embedding_provider VARCHAR(64) NOT NULL,
+  embedding_model VARCHAR(128) NOT NULL,
+  embedding_dimension INTEGER NOT NULL,
+  content_hash VARCHAR(128) NOT NULL,
+  embedding_text TEXT NOT NULL,
+  text_preview TEXT,
   embedding vector,
-  embedding_text TEXT,
   metadata_json TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(document_id, source_table, source_id, provider, model)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
 );
 ```
 
-When embeddings are implemented, add an index appropriate for the chosen vector dimension/model:
+When embeddings are implemented, add an index appropriate for the chosen vector dimension/model.
 
 ```sql
 CREATE INDEX idx_document_embeddings_vector
@@ -385,6 +405,8 @@ ON document_embeddings
 USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 ```
+
+See `docs/technical/EMBEDDING_SEARCH_RAG_PLAN.md` for provider selection, source text templates, search API, and RAG plan.
 
 ## 4. MVP Status Flow
 

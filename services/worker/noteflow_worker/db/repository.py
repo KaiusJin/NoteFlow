@@ -1,3 +1,5 @@
+import json
+import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from uuid import uuid4
@@ -130,6 +132,7 @@ class AiNoteSection:
     confidence: float
     warnings_json: str
     metadata_json: Optional[str] = None
+    id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +149,33 @@ class AiNoteRecord:
     prompt_version: Optional[str]
     quality_report_json: Optional[str]
     metadata_json: Optional[str]
+
+
+@dataclass(frozen=True)
+class EmbeddingSource:
+    document_id: str
+    source_domain: str
+    source_object_type: str
+    source_object_id: str
+    embedding_text: str
+    text_preview: str
+    metadata_json: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DocumentEmbedding:
+    document_id: str
+    source_domain: str
+    source_object_type: str
+    source_object_id: str
+    embedding_provider: str
+    embedding_model: str
+    embedding_dimension: int
+    content_hash: str
+    embedding_text: str
+    text_preview: str
+    embedding: list[float]
+    metadata_json: Optional[str] = None
 
 
 class CleanConnection:
@@ -397,6 +427,7 @@ class Repository:
             rows = conn.execute(
                 """
                 SELECT
+                  id,
                   note_id,
                   document_id,
                   section_index,
@@ -431,6 +462,7 @@ class Repository:
                 confidence=float(row["confidence"] or 0.0),
                 warnings_json=row["warnings_json"] or "[]",
                 metadata_json=row["metadata_json"],
+                id=str(row["id"]),
             )
             for row in rows
         ]
@@ -1172,19 +1204,249 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS document_embeddings (
                   id UUID PRIMARY KEY,
                   document_id UUID NOT NULL,
-                  source_table VARCHAR(64) NOT NULL,
-                  source_id UUID NOT NULL,
-                  content_kind VARCHAR(64) NOT NULL,
-                  provider VARCHAR(64) NOT NULL,
-                  model VARCHAR(128) NOT NULL,
+                  source_domain VARCHAR(32),
+                  source_object_type VARCHAR(64),
+                  source_object_id UUID,
+                  embedding_provider VARCHAR(64),
+                  embedding_model VARCHAR(128),
+                  embedding_dimension INTEGER,
+                  content_hash VARCHAR(128),
                   embedding vector,
                   embedding_text TEXT,
+                  text_preview TEXT,
                   metadata_json TEXT,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, source_table, source_id, provider, model)
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
+            for statement in [
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_domain VARCHAR(32)",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_object_type VARCHAR(64)",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_object_id UUID",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_provider VARCHAR(64)",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(128)",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_dimension INTEGER",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS text_preview TEXT",
+                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+            ]:
+                conn.execute(statement)
+            conn.execute(
+                """
+                DO $$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'document_embeddings' AND column_name = 'source_table'
+                  ) THEN
+                    ALTER TABLE document_embeddings ALTER COLUMN source_table DROP NOT NULL;
+                  END IF;
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'document_embeddings' AND column_name = 'source_id'
+                  ) THEN
+                    ALTER TABLE document_embeddings ALTER COLUMN source_id DROP NOT NULL;
+                  END IF;
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'document_embeddings' AND column_name = 'content_kind'
+                  ) THEN
+                    ALTER TABLE document_embeddings ALTER COLUMN content_kind DROP NOT NULL;
+                  END IF;
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'document_embeddings' AND column_name = 'provider'
+                  ) THEN
+                    ALTER TABLE document_embeddings ALTER COLUMN provider DROP NOT NULL;
+                  END IF;
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'document_embeddings' AND column_name = 'model'
+                  ) THEN
+                    ALTER TABLE document_embeddings ALTER COLUMN model DROP NOT NULL;
+                  END IF;
+                END $$;
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_document_embeddings_source_provider_model
+                ON document_embeddings(source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
+                """
+            )
+
+    def load_embedding_sources(self, document_id: str, include_pdf: bool = True, include_ai_note: bool = True) -> list[EmbeddingSource]:
+        sources: list[EmbeddingSource] = []
+        if include_pdf:
+            sources.extend(self.load_pdf_chunk_embedding_sources(document_id))
+        if include_ai_note:
+            sources.extend(self.load_ai_note_embedding_sources(document_id))
+        return sources
+
+    def load_pdf_chunk_embedding_sources(self, document_id: str) -> list[EmbeddingSource]:
+        chunks = self.load_chunks(document_id)
+        sources = []
+        for chunk in chunks:
+            page_start = chunk.page_start or chunk.page_number
+            page_end = chunk.page_end or page_start
+            title = chunk.section_title or f"Chunk {chunk.chunk_index}"
+            embedding_text = "\n".join(
+                [
+                    "Source: PDF",
+                    f"Pages: {page_start}-{page_end}",
+                    f"Section: {title}",
+                    f"Type: {chunk.chunk_type}",
+                    "",
+                    chunk.content,
+                ]
+            )
+            metadata = {
+                "pageStart": page_start,
+                "pageEnd": page_end,
+                "title": title,
+                "chunkIndex": chunk.chunk_index,
+                "chunkType": chunk.chunk_type,
+                "tokenCount": chunk.token_count,
+            }
+            sources.append(
+                EmbeddingSource(
+                    document_id=document_id,
+                    source_domain="PDF",
+                    source_object_type="DOCUMENT_CHUNK",
+                    source_object_id=chunk.id or "",
+                    embedding_text=embedding_text,
+                    text_preview=compact_preview(chunk.content),
+                    metadata_json=json_dumps_compact(metadata),
+                )
+            )
+        return [source for source in sources if source.source_object_id]
+
+    def load_ai_note_embedding_sources(self, document_id: str) -> list[EmbeddingSource]:
+        with self.connect() as conn:
+            note = conn.execute(
+                """
+                SELECT id, note_version
+                FROM document_ai_notes
+                WHERE document_id = %s AND status = 'READY'
+                ORDER BY note_version DESC
+                LIMIT 1
+                """,
+                (document_id,),
+            ).fetchone()
+        if note is None:
+            return []
+        sections = self.load_ai_note_sections(str(note["id"]))
+        sources = []
+        for section in sections:
+            page_start = section.page_start
+            page_end = section.page_end or page_start
+            title = section.heading or f"AI Note Section {section.section_index}"
+            embedding_text = "\n".join(
+                [
+                    "Source: AI Note",
+                    f"Pages: {page_start}-{page_end}",
+                    f"Heading: {title}",
+                    f"Type: {section.section_type}",
+                    "",
+                    section.markdown,
+                ]
+            )
+            metadata = {
+                "pageStart": page_start,
+                "pageEnd": page_end,
+                "title": title,
+                "noteId": str(note["id"]),
+                "noteVersion": note["note_version"],
+                "sectionIndex": section.section_index,
+                "sectionType": section.section_type,
+            }
+            sources.append(
+                EmbeddingSource(
+                    document_id=document_id,
+                    source_domain="AI_NOTE",
+                    source_object_type="AI_NOTE_SECTION",
+                    source_object_id=section.id or "",
+                    embedding_text=embedding_text,
+                    text_preview=compact_preview(section.markdown),
+                    metadata_json=json_dumps_compact(metadata),
+                )
+            )
+        return sources
+
+    def existing_embedding_hashes(self, provider: str, model: str, sources: list[EmbeddingSource]) -> dict[tuple[str, str, str], str]:
+        if not sources:
+            return {}
+        source_ids = [source.source_object_id for source in sources]
+        placeholders = ",".join(["%s"] * len(source_ids))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT source_domain, source_object_type, source_object_id, content_hash
+                FROM document_embeddings
+                WHERE embedding_provider = %s
+                  AND embedding_model = %s
+                  AND source_object_id IN ({placeholders})
+                """,
+                (provider, model, *source_ids),
+            ).fetchall()
+        return {
+            (row["source_domain"], row["source_object_type"], str(row["source_object_id"])): row["content_hash"]
+            for row in rows
+        }
+
+    def upsert_embeddings(self, embeddings: Iterable[DocumentEmbedding]) -> None:
+        rows = list(embeddings)
+        if not rows:
+            return
+        self.ensure_embedding_schema()
+        with self.connect() as conn:
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO document_embeddings (
+                      id,
+                      document_id,
+                      source_domain,
+                      source_object_type,
+                      source_object_id,
+                      embedding_provider,
+                      embedding_model,
+                      embedding_dimension,
+                      content_hash,
+                      embedding_text,
+                      text_preview,
+                      embedding,
+                      metadata_json
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
+                    ON CONFLICT (source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
+                    DO UPDATE SET
+                      document_id = EXCLUDED.document_id,
+                      embedding_dimension = EXCLUDED.embedding_dimension,
+                      content_hash = EXCLUDED.content_hash,
+                      embedding_text = EXCLUDED.embedding_text,
+                      text_preview = EXCLUDED.text_preview,
+                      embedding = EXCLUDED.embedding,
+                      metadata_json = EXCLUDED.metadata_json,
+                      updated_at = NOW()
+                    """,
+                    (
+                        str(uuid4()),
+                        row.document_id,
+                        row.source_domain,
+                        row.source_object_type,
+                        row.source_object_id,
+                        row.embedding_provider,
+                        row.embedding_model,
+                        row.embedding_dimension,
+                        row.content_hash,
+                        row.embedding_text,
+                        row.text_preview,
+                        vector_literal(row.embedding),
+                        row.metadata_json,
+                    ),
+                )
 
     def mark_completed(self, task_id: str, document_id: str) -> None:
         with self.connect() as conn:
@@ -1307,3 +1569,15 @@ class Repository:
                 (stale_after_minutes,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+def compact_preview(text: str, limit: int = 600) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()[:limit]
+
+
+def json_dumps_compact(value: dict) -> str:
+    return json.dumps(value, separators=(",", ":"))
+
+
+def vector_literal(values: list[float]) -> str:
+    return "[" + ",".join(format(float(value), ".10g") for value in values) + "]"

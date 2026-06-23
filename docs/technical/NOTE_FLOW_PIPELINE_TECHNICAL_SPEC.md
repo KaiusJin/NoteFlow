@@ -677,7 +677,7 @@ Before considering AI notes student-usable:
 1. Some short documents have coarse source citations, such as `pages 1-17`.
 2. Native text extraction can still produce imperfect math; the math normalizer improves but does not fully solve all formulas.
 3. Selective visual regions for native text PDFs can fail without failing the parse.
-4. Embeddings and semantic search are planned but not yet the primary completed workflow.
+4. Embeddings and semantic search are planned but not yet the primary completed workflow. See `docs/technical/EMBEDDING_SEARCH_RAG_PLAN.md`.
 5. Exported debug/test notes should be filtered before student-facing release.
 
 ## 14. Configuration Summary
