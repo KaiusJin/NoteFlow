@@ -22,9 +22,49 @@ spring:
       port: ${REDIS_PORT:6379}
 
 noteflow:
+  embedding:
+    provider: ${EMBEDDING_PROVIDER:disabled}
+    gemini-api-key: ${GEMINI_API_KEY:}
+    gemini-model: ${GEMINI_EMBEDDING_MODEL:gemini-embedding-001}
+    openai-api-key: ${OPENAI_API_KEY:}
+    openai-model: ${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}
   storage:
     upload-dir: ${NOTEFLOW_UPLOAD_DIR:storage/uploads}
   queue:
     document-analysis: ${NOTEFLOW_DOCUMENT_QUEUE:queue:document-analysis}
   dev:
     user-id: ${NOTEFLOW_DEV_USER_ID:00000000-0000-0000-0000-000000000001}
+  retrieval:
+    vector-candidate-limit: ${RETRIEVAL_VECTOR_CANDIDATE_LIMIT:30}
+    lexical-candidate-limit: ${RETRIEVAL_LEXICAL_CANDIDATE_LIMIT:30}
+    exact-candidate-limit: ${RETRIEVAL_EXACT_CANDIDATE_LIMIT:15}
+    channel-concurrency: ${RETRIEVAL_CHANNEL_CONCURRENCY:3}
+    channel-timeout-seconds: ${RETRIEVAL_CHANNEL_TIMEOUT_SECONDS:20}
+    default-context-tokens: ${RETRIEVAL_DEFAULT_CONTEXT_TOKENS:6000}
+    max-tokens-per-item: ${RETRIEVAL_MAX_TOKENS_PER_ITEM:1400}
+    minimum-score: ${RETRIEVAL_MINIMUM_SCORE:0.48}
+    minimum-lexical-score: ${RETRIEVAL_MINIMUM_LEXICAL_SCORE:0.01}
+    minimum-exact-score: ${RETRIEVAL_MINIMUM_EXACT_SCORE:0.25}
+    strong-score: ${RETRIEVAL_STRONG_SCORE:0.60}
+    weak-score: ${RETRIEVAL_WEAK_SCORE:0.52}
+    minimum-informative-characters: ${RETRIEVAL_MINIMUM_INFORMATIVE_CHARACTERS:20}
+    near-duplicate-threshold: ${RETRIEVAL_NEAR_DUPLICATE_THRESHOLD:0.88}
+    rerank-vector-weight: ${RETRIEVAL_RERANK_VECTOR_WEIGHT:0.75}
+    rerank-lexical-weight: ${RETRIEVAL_RERANK_LEXICAL_WEIGHT:0.25}
+    rerank-minimum-query-coverage: ${RETRIEVAL_RERANK_MINIMUM_QUERY_COVERAGE:0.20}
+    rerank-minimum-fusion-score: ${RETRIEVAL_RERANK_MINIMUM_FUSION_SCORE:0.45}
+    rrf-rank-constant: ${RETRIEVAL_RRF_RANK_CONSTANT:60}
+    rrf-vector-weight: ${RETRIEVAL_RRF_VECTOR_WEIGHT:1.0}
+    rrf-lexical-weight: ${RETRIEVAL_RRF_LEXICAL_WEIGHT:1.0}
+    rrf-exact-weight: ${RETRIEVAL_RRF_EXACT_WEIGHT:1.2}
+    reranker-provider: ${RETRIEVAL_RERANKER_PROVIDER:disabled}
+    gemini-api-key: ${GEMINI_API_KEY:}
+    gemini-reranker-model: ${GEMINI_RERANK_MODEL:gemini-2.5-flash}
+    external-reranker-timeout-seconds: ${RETRIEVAL_EXTERNAL_RERANKER_TIMEOUT_SECONDS:20}
+    external-reranker-candidate-limit: ${RETRIEVAL_EXTERNAL_RERANKER_CANDIDATE_LIMIT:12}
+    hyde-provider: ${HYDE_PROVIDER:auto}
+    hyde-gemini-model: ${HYDE_GEMINI_MODEL:gemini-2.5-flash}
+    openai-api-key: ${OPENAI_API_KEY:}
+    hyde-openai-model: ${HYDE_OPENAI_MODEL:gpt-4o-mini}
+    hyde-timeout-seconds: ${HYDE_TIMEOUT_SECONDS:20}
+    hyde-max-query-tokens: ${HYDE_MAX_QUERY_TOKENS:8}

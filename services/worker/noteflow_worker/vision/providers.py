@@ -9,6 +9,7 @@ from typing import Protocol
 from noteflow_worker.config import settings
 from noteflow_worker.db.repository import VisualRegion, VlmResult
 
+VISION_KEYS = {"transcription", "description", "latex", "code", "uncertainty", "search_text"}
 
 VISION_PROMPT = """You are analyzing a cropped region from an academic PDF for a RAG system.
 
@@ -90,6 +91,7 @@ class GeminiVisionProvider:
             "generationConfig": {
                 "temperature": 0.1,
                 "response_mime_type": "application/json",
+                "response_schema": vision_response_schema(),
             },
         }
         url = (
@@ -144,7 +146,14 @@ class OpenAIVisionProvider:
                 }
             ],
             "temperature": 0.1,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "noteflow_visual_analysis",
+                    "strict": True,
+                    "schema": openai_vision_response_schema(),
+                },
+            },
         }
         headers = {"Authorization": "Bearer " + self.api_key}
         try:
@@ -168,6 +177,23 @@ def make_vision_provider() -> VisionProvider:
     if provider == "openai":
         return OpenAIVisionProvider()
     return DisabledVisionProvider()
+
+
+def vision_response_schema() -> dict:
+    return {
+        "type": "OBJECT",
+        "properties": {key: {"type": "STRING"} for key in sorted(VISION_KEYS)},
+        "required": sorted(VISION_KEYS),
+    }
+
+
+def openai_vision_response_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {key: {"type": "string"} for key in sorted(VISION_KEYS)},
+        "required": sorted(VISION_KEYS),
+        "additionalProperties": False,
+    }
 
 
 def prompt_for_region(region: VisualRegion) -> str:
@@ -225,6 +251,7 @@ def parse_json_object(text: str) -> dict:
 
 
 def analysis_from_dict(provider: str, model: str, parsed: dict, raw_response: dict) -> VisionAnalysis:
+    validate_vision_response(parsed)
     return VisionAnalysis(
         provider=provider,
         model=model,
@@ -236,6 +263,15 @@ def analysis_from_dict(provider: str, model: str, parsed: dict, raw_response: di
         search_text=str(parsed.get("search_text", "")),
         raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
     )
+
+
+def validate_vision_response(parsed: dict) -> None:
+    if not isinstance(parsed, dict) or set(parsed) != VISION_KEYS:
+        raise ValueError("Vision response has invalid or missing fields.")
+    if any(not isinstance(parsed[key], str) for key in VISION_KEYS):
+        raise ValueError("Every vision response field must be a string.")
+    if not any(parsed[key].strip() for key in ("transcription", "description", "latex", "code", "search_text")):
+        raise ValueError("Vision response contains no usable extracted content.")
 
 
 def redact_raw_response(response: dict) -> dict:

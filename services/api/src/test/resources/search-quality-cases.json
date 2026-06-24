@@ -73,5 +73,45 @@
     "allowedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
     "expectedTerms": ["geometric", "success"],
     "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "exact_theorem_number",
+    "query": "Explain Theorem 4.4.10 Taylor inequality",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["c7f965e0-aba3-4eb5-8e1c-18e7fd72a8bc"],
+    "expectedTerms": ["4.4.10", "taylor"],
+    "requiredChannels": ["EXACT", "LEXICAL", "VECTOR"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "exact_code_identifier",
+    "query": "Why is list_cp_bad a shallow copy?",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["67c052ac-25cb-4571-8d9e-38bc3d9cb478"],
+    "expectedTerms": ["list_cp_bad", "shallow"],
+    "requiredChannels": ["EXACT", "LEXICAL", "VECTOR"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "normalized_math_formula",
+    "query": "geometric distribution P[X=6]",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedTerms": ["p(x=6)", "geometric"],
+    "requiredChannels": ["EXACT", "VECTOR"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "short_ambiguous_hyde_trigger",
+    "query": "PMF",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedTerms": ["pmf", "probability"],
+    "expectedHydeTriggered": true,
+    "allowedDomains": ["PDF", "AI_NOTE"]
   }
 ]

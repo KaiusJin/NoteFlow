@@ -2,6 +2,48 @@
 
 This document defines the next NoteFlow implementation phase after PDF-to-Markdown, chunking, and AI notes generation.
 
+Implementation status:
+
+```text
+Embedding generation: implemented
+Vector semantic search: implemented
+Search modes and custom source selection: implemented
+Hybrid retrieval and context construction: implemented
+```
+
+The first vector-retrieval context layer is now implemented:
+
+```text
+Top-30 vector candidate recall
+quality filtering
+near-duplicate removal
+query-aware deterministic reranking
+soft PDF source retention
+adjacent PDF chunk expansion
+token-bounded context
+stable citations and evidence status
+```
+
+The completed hybrid retrieval layer now also includes:
+
+```text
+PostgreSQL full-text recall with tsvector + GIN
+exact theorem/code/formula recall with normalized pg_trgm indexing
+bounded concurrent vector/lexical/exact execution
+weighted Reciprocal Rank Fusion
+per-channel timeout and graceful degradation
+precision cutoff that does not pad results with weak evidence
+```
+
+The next phase is source-grounded answer generation and conditional RAG
+orchestration.
+
+The completed retrieval design and implementation reference is:
+
+```text
+docs/technical/HYBRID_RETRIEVAL_CONTEXT_PIPELINE.md
+```
+
 Goal:
 
 ```text

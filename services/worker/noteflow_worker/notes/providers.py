@@ -8,6 +8,21 @@ from typing import Protocol
 
 from noteflow_worker.config import settings
 
+ALLOWED_SECTION_TYPES = {
+    "KEY_IDEAS",
+    "DEFINITION",
+    "THEOREM",
+    "FORMULA",
+    "EXAMPLE",
+    "PROOF",
+    "CODE_EXPLANATION",
+    "DIAGRAM_EXPLANATION",
+    "PITFALL",
+    "PAPER_SECTION",
+    "REVIEW_CHECKLIST",
+}
+SECTION_KEYS = {"heading", "sectionType", "markdown", "confidence", "warnings"}
+
 
 @dataclass(frozen=True)
 class NotesGeneration:
@@ -85,7 +100,14 @@ class OpenAINotesProvider:
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "response_format": {"type": "json_object"},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "noteflow_note_sections",
+                    "strict": True,
+                    "schema": openai_notes_response_schema(),
+                },
+            },
         }
         headers = {"Authorization": "Bearer " + self.api_key}
         return generations_with_retries(
@@ -105,7 +127,10 @@ def notes_response_schema() -> dict:
                     "type": "OBJECT",
                     "properties": {
                         "heading": {"type": "STRING"},
-                        "sectionType": {"type": "STRING"},
+                        "sectionType": {
+                            "type": "STRING",
+                            "enum": sorted(ALLOWED_SECTION_TYPES),
+                        },
                         "markdown": {"type": "STRING"},
                         "confidence": {"type": "NUMBER"},
                         "warnings": {
@@ -119,6 +144,27 @@ def notes_response_schema() -> dict:
         },
         "required": ["sections"],
     }
+
+
+def openai_notes_response_schema() -> dict:
+    schema = notes_response_schema()
+    return convert_gemini_schema_to_json_schema(schema)
+
+
+def convert_gemini_schema_to_json_schema(value):
+    if isinstance(value, list):
+        return [convert_gemini_schema_to_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    converted = {}
+    for key, item in value.items():
+        if key == "type" and isinstance(item, str):
+            converted[key] = item.lower()
+        else:
+            converted[key] = convert_gemini_schema_to_json_schema(item)
+    if converted.get("type") == "object":
+        converted["additionalProperties"] = False
+    return converted
 
 
 def make_notes_provider() -> NotesProvider:
@@ -205,49 +251,48 @@ def escape_invalid_json_backslashes(text: str) -> str:
 
 
 def generations_from_dict(provider: str, model: str, parsed: dict, raw_response: dict) -> list[NotesGeneration]:
-    if not isinstance(parsed, dict):
-        parsed = {}
-
+    validate_notes_response(parsed)
     sections_list = parsed.get("sections")
-    if not isinstance(sections_list, list):
-        if "heading" in parsed or "markdown" in parsed:
-            sections_list = [parsed]
-        else:
-            sections_list = []
 
     generations = []
     for sec in sections_list:
-        if not isinstance(sec, dict):
-            continue
-        warnings = sec.get("warnings")
-        if not isinstance(warnings, list):
-            warnings = []
+        warnings = sec["warnings"]
         generations.append(
             NotesGeneration(
                 provider=provider,
                 model=model,
-                heading=str(sec.get("heading", "")),
-                section_type=str(sec.get("sectionType", "KEY_IDEAS")),
-                markdown=str(sec.get("markdown", "")),
-                confidence=float(sec.get("confidence") or 0.0),
-                warnings=[str(item) for item in warnings],
-                raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
-            )
-        )
-    if not generations:
-        generations.append(
-            NotesGeneration(
-                provider=provider,
-                model=model,
-                heading="Study Notes Section",
-                section_type="KEY_IDEAS",
-                markdown="",
-                confidence=0.5,
-                warnings=["no_sections_generated"],
+                heading=sec["heading"],
+                section_type=sec["sectionType"],
+                markdown=sec["markdown"],
+                confidence=float(sec["confidence"]),
+                warnings=warnings,
                 raw_response_json=json.dumps(redact_raw_response(raw_response), separators=(",", ":")),
             )
         )
     return generations
+
+
+def validate_notes_response(parsed: dict) -> None:
+    if not isinstance(parsed, dict) or set(parsed) != {"sections"}:
+        raise ValueError("Notes response must be an object containing only 'sections'.")
+    sections = parsed["sections"]
+    if not isinstance(sections, list) or not sections:
+        raise ValueError("Notes response sections must be a non-empty array.")
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict) or set(section) != SECTION_KEYS:
+            raise ValueError(f"Notes section {index} has invalid or missing fields.")
+        if not isinstance(section["heading"], str) or not section["heading"].strip():
+            raise ValueError(f"Notes section {index} heading must be a non-empty string.")
+        if section["sectionType"] not in ALLOWED_SECTION_TYPES:
+            raise ValueError(f"Notes section {index} has unsupported sectionType.")
+        if not isinstance(section["markdown"], str) or not section["markdown"].strip():
+            raise ValueError(f"Notes section {index} markdown must be a non-empty string.")
+        confidence = section["confidence"]
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+            raise ValueError(f"Notes section {index} confidence must be between 0 and 1.")
+        warnings = section["warnings"]
+        if not isinstance(warnings, list) or any(not isinstance(item, str) for item in warnings):
+            raise ValueError(f"Notes section {index} warnings must be an array of strings.")
 
 
 def redact_raw_response(response: dict) -> dict:

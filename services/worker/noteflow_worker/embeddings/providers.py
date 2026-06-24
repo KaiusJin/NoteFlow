@@ -84,7 +84,24 @@ class OpenAIEmbeddingProvider:
         self.model = settings.openai_embedding_model
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
-        return [EmbeddingResult([], "OpenAI embedding provider is reserved but not implemented yet.") for _ in texts]
+        if not self.api_key:
+            return [EmbeddingResult([], "OpenAI API key is not configured.") for _ in texts]
+        payload = {"model": self.model, "input": texts}
+        response = post_json(
+            "https://api.openai.com/v1/embeddings",
+            payload,
+            headers={"Authorization": "Bearer " + self.api_key},
+        )
+        data = response.get("data", [])
+        if not isinstance(data, list) or len(data) != len(texts):
+            return [EmbeddingResult([], "OpenAI embedding response count mismatch.") for _ in texts]
+        ordered = sorted(data, key=lambda item: int(item.get("index", 0)))
+        return [
+            EmbeddingResult([float(value) for value in item.get("embedding", [])])
+            if item.get("embedding")
+            else EmbeddingResult([], "OpenAI embedding response contained an empty vector.")
+            for item in ordered
+        ]
 
 
 class LocalEmbeddingProvider:
@@ -122,12 +139,12 @@ def embedding_with_retries(request_fn) -> EmbeddingResult:
     return EmbeddingResult([], last_error or "Embedding request failed.")
 
 
-def post_json(url: str, payload: dict) -> dict:
+def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     try:
