@@ -1,0 +1,77 @@
+[
+  {
+    "name": "handwritten_probability_pmf",
+    "query": "What is the probability mass function of a geometric distribution?",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedTerms": ["geometric", "probability", "pmf"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "alternating_series_test",
+    "query": "How does the alternating series test determine convergence?",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["f5aec0e6-748d-442f-8e2d-2b659cc75803"],
+    "expectedTerms": ["alternating", "conver"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "taylor_series_remainder",
+    "query": "Taylor polynomial remainder and error bound",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["c7f965e0-aba3-4eb5-8e1c-18e7fd72a8bc"],
+    "expectedTerms": ["taylor", "remainder"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "power_series_interval",
+    "query": "Find the radius and interval of convergence of a power series",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["ba90d200-d47c-4b63-9ae6-87f2b81ba36e"],
+    "expectedTerms": ["power series", "convergence"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "linked_list_node_sharing",
+    "query": "Why is sharing linked-list nodes unsafe when mutation is allowed?",
+    "mode": "MIXED",
+    "topK": 5,
+    "expectedDocumentIds": ["67c052ac-25cb-4571-8d9e-38bc3d9cb478"],
+    "expectedTerms": ["node", "mutat"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  },
+  {
+    "name": "source_filter_pdf_only",
+    "query": "geometric distribution first success",
+    "mode": "PDF",
+    "topK": 5,
+    "expectedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedTerms": ["geometric", "success"],
+    "allowedDomains": ["PDF"]
+  },
+  {
+    "name": "source_filter_note_only",
+    "query": "pass by reference versus pass by value",
+    "mode": "AI_NOTE",
+    "topK": 5,
+    "expectedDocumentIds": ["0115aede-b964-47a1-a3b6-461dcf6b941e"],
+    "expectedTerms": ["reference", "value"],
+    "allowedDomains": ["AI_NOTE"]
+  },
+  {
+    "name": "custom_scope_isolation",
+    "query": "probability mass function for the number of trials until first success",
+    "mode": "CUSTOM",
+    "topK": 5,
+    "pdfDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "aiNoteDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "allowedDocumentIds": ["bf74186d-8467-4aa7-9c34-ac48274b8928"],
+    "expectedTerms": ["geometric", "success"],
+    "allowedDomains": ["PDF", "AI_NOTE"]
+  }
+]
