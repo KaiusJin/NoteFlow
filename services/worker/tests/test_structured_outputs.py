@@ -68,6 +68,10 @@ class VisionStructuredOutputTest(unittest.TestCase):
                 "code": "",
                 "uncertainty": "",
                 "search_text": "handwritten x equals one",
+                "content_kind": "handwriting",
+                "importance": "high",
+                "reading_order": "top to bottom",
+                "language": "en",
             }
         )
 

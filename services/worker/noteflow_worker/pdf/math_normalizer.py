@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 
 CASES_GLYPH_RUN_RE = re.compile(r"[\uf8f1\uf8f2\uf8f3\uf8f4]+")
@@ -24,8 +25,50 @@ def normalize_pdf_math_text(text: str) -> str:
     normalized = RIGHT_PAREN_GLYPH_RUN_RE.sub(")", normalized)
     normalized = remove_unsupported_control_chars(normalized)
     normalized = cleanup_cases_markers(normalized)
+    normalized = restore_math_text_boundaries(normalized)
     normalized = normalize_math_spacing(normalized)
     return normalized.strip()
+
+
+def restore_math_text_boundaries(text: str) -> str:
+    """Restore word boundaries lost at math-font / prose-font transitions.
+
+    TeX PDFs frequently encode an italic variable and the following Roman word
+    as separate glyph runs without a space character (for example ``𝑣is``).
+    The Unicode mathematical alphabet is reliable evidence of a font-role
+    transition; it is not a course- or template-specific string rule.
+    """
+    if not text:
+        return text
+    output: list[str] = []
+    for char in text:
+        previous = output[-1] if output else ""
+        if (
+            previous
+            and previous != " "
+            and previous != "\n"
+            and (
+                (is_math_alphanumeric(previous) and is_ascii_letter(char))
+                or (is_ascii_letter(previous) and is_math_alphanumeric(char))
+            )
+        ):
+            output.append(" ")
+        output.append(char)
+    return "".join(output)
+
+
+def is_math_alphanumeric(char: str) -> bool:
+    if len(char) != 1:
+        return False
+    codepoint = ord(char)
+    if 0x1D400 <= codepoint <= 0x1D7FF:
+        return True
+    name = unicodedata.name(char, "")
+    return "MATHEMATICAL" in name and ("CAPITAL" in name or "SMALL" in name)
+
+
+def is_ascii_letter(char: str) -> bool:
+    return len(char) == 1 and ("A" <= char <= "Z" or "a" <= char <= "z")
 
 
 def remove_unsupported_control_chars(text: str) -> str:

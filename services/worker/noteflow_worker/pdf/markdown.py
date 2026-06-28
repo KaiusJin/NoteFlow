@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from noteflow_worker.db.repository import LayoutBlock, MarkdownDocument, MarkdownPage, VlmResult
 from noteflow_worker.pdf.math_normalizer import balance_cases_environment, normalize_pdf_math_text
 from noteflow_worker.pdf.parser import estimate_tokens
+from noteflow_worker.pdf.code_normalizer import detect_code_language
 
 
 TEXT_BLOCK_TYPES = {"PARAGRAPH", "HEADING", "LIST", "CODE", "FORMULA", "TABLE"}
@@ -31,6 +32,7 @@ def build_markdown_document(
     document_id: str,
     layout_blocks: list[LayoutBlock],
     vlm_results: list[VlmResult],
+    document_type: str | None = None,
 ) -> MarkdownBuildResult:
     blocks_by_page: dict[int, list[LayoutBlock]] = {}
     for block in layout_blocks:
@@ -48,6 +50,7 @@ def build_markdown_document(
     pages: list[MarkdownPage] = []
     document_parts: list[str] = []
     headings: list[dict] = []
+    page_index: list[dict] = []
     quality_scores: list[float] = []
     warning_counts: dict[str, int] = {}
 
@@ -57,11 +60,22 @@ def build_markdown_document(
             page_number,
             sorted(blocks_by_page.get(page_number, []), key=lambda block: block.block_index),
             sorted(vlm_by_page.get(page_number, []), key=lambda result: result.region_index),
+            document_type=document_type,
         )
         pages.append(page)
         quality_scores.append(page.quality_score)
         document_parts.append(f"<!-- page:{page.page_number} -->\n\n{page.markdown}")
         page_structure = json.loads(page.structure_json or "{}")
+        page_index.append(
+            {
+                "page": page.page_number,
+                "description": page_structure.get("description", ""),
+                "retrievalTags": page_structure.get("retrievalTags", []),
+                "applicableScenarios": page_structure.get("applicableScenarios", []),
+                "sourceType": page.source_type,
+                "qualityScore": page.quality_score,
+            }
+        )
         headings.extend(
             {"page": page.page_number, "text": heading}
             for heading in page_structure.get("headings", [])
@@ -70,16 +84,65 @@ def build_markdown_document(
             warning_counts[warning] = warning_counts.get(warning, 0) + 1
 
     markdown = "\n\n---\n\n".join(part for part in document_parts if part.strip())
+    semantic_source = "\n".join(
+        block.content
+        for block in layout_blocks
+        if block.block_type not in {"BOILERPLATE", *VISUAL_BLOCK_TYPES} and block.content
+    )
+    source_tokens = set(normalize_for_similarity(semantic_source).split())
+    markdown_tokens = set(normalize_for_similarity(markdown).split())
+    native_token_coverage = (
+        len(source_tokens & markdown_tokens) / len(source_tokens)
+        if source_tokens else 1.0
+    )
+    empty_page_count = sum("empty_markdown_page" in json.loads(page.warnings_json or "[]") for page in pages)
+    unbalanced_math = markdown.count("$$") % 2 != 0
+    unbalanced_code = markdown.count("```") % 2 != 0
+    duplicate_line_ratio = repeated_line_ratio(markdown)
+    unprocessed_visual_blocks = [
+        block for block in layout_blocks
+        if block.block_type in VISUAL_BLOCK_TYPES
+        and not (block.content or "").strip()
+        and visual_block_status(block) != "completed"
+    ]
+    gate_issues = []
+    if native_token_coverage < 0.82:
+        gate_issues.append("low_native_text_coverage")
+    if unbalanced_math:
+        gate_issues.append("unbalanced_math_fence")
+    if unbalanced_code:
+        gate_issues.append("unbalanced_code_fence")
+    if duplicate_line_ratio > 0.18:
+        gate_issues.append("excessive_repeated_lines")
+    if unprocessed_visual_blocks:
+        gate_issues.append("unprocessed_visual_regions")
     quality_report = {
         "pageCount": len(pages),
         "averageQualityScore": round(sum(quality_scores) / len(quality_scores), 3) if quality_scores else 0.0,
         "warningCounts": warning_counts,
         "estimatedTokens": estimate_tokens(markdown),
+        "nativeTokenCoverage": round(native_token_coverage, 4),
+        "emptyPageCount": empty_page_count,
+        "failedVlmRegionCount": sum(bool(result.error_message) for result in vlm_results),
+        "unprocessedVisualBlockCount": len(unprocessed_visual_blocks),
+        "duplicateLineRatio": round(duplicate_line_ratio, 4),
+        "balancedMathFences": not unbalanced_math,
+        "balancedCodeFences": not unbalanced_code,
+        "qualityGatePassed": not gate_issues,
+        "qualityGateIssues": gate_issues,
     }
     document = MarkdownDocument(
         document_id=document_id,
         markdown=markdown,
-        structure_json=json.dumps({"headings": headings}, separators=(",", ":")),
+        structure_json=json.dumps(
+            {
+                "schemaVersion": "raw-markdown-index-v2",
+                "documentType": document_type or "OTHER",
+                "headings": headings,
+                "pages": page_index,
+            },
+            separators=(",", ":"),
+        ),
         quality_report_json=json.dumps(quality_report, separators=(",", ":")),
     )
     return MarkdownBuildResult(pages=pages, document=document)
@@ -90,13 +153,21 @@ def build_markdown_page(
     page_number: int,
     blocks: list[LayoutBlock],
     vlm_results: list[VlmResult],
+    document_type: str | None = None,
 ) -> MarkdownPage:
     text_parts: list[str] = []
     headings: list[str] = []
     block_types: list[str] = []
+    fallback_visual_parts: list[str] = []
+    vlm_layout_block_count = 0
+    native_layout_block_count = 0
 
     for block in blocks:
         if block.block_type in VISUAL_BLOCK_TYPES:
+            fallback = render_visual_layout_fallback(block)
+            if fallback:
+                fallback_visual_parts.append(fallback)
+                block_types.append(block.block_type)
             continue
         if block.block_type not in TEXT_BLOCK_TYPES:
             continue
@@ -105,6 +176,14 @@ def build_markdown_page(
             continue
         text_parts.append(rendered)
         block_types.append(block.block_type)
+        try:
+            block_metadata = json.loads(block.metadata_json or "{}")
+        except json.JSONDecodeError:
+            block_metadata = {}
+        if block_metadata.get("source") == "page_level_vlm":
+            vlm_layout_block_count += 1
+        else:
+            native_layout_block_count += 1
         if block.block_type == "HEADING":
             headings.append(strip_markdown(rendered))
 
@@ -133,20 +212,27 @@ def build_markdown_page(
         if visual.warning:
             warnings.append(visual.warning)
 
-    markdown_parts = [part for part in [page_text, *visual_parts] if part.strip()]
+    markdown_parts = [part for part in [page_text, *visual_parts, *fallback_visual_parts] if part.strip()]
     markdown = "\n\n".join(markdown_parts).strip()
     if not markdown:
         warnings.append("empty_markdown_page")
         markdown = f"<!-- No extractable content on page {page_number}. -->"
 
-    source_type = infer_page_source_type(block_types, visual_types)
+    if vlm_layout_block_count and not native_layout_block_count:
+        source_type = "vlm"
+        if "TEXT_IMAGE" not in visual_types:
+            visual_types.append("TEXT_IMAGE")
+    else:
+        source_type = infer_page_source_type(block_types, visual_types)
     quality_score = score_page_quality(markdown, warnings, filtered_count)
+    retrieval_profile = build_retrieval_profile(headings, block_types, visual_types, markdown, document_type)
     structure = {
         "headings": headings,
         "blockTypes": sorted(set(block_types)),
         "visualTypes": sorted(set(visual_types)),
         "filteredVisualRegions": filtered_count,
         "estimatedTokens": estimate_tokens(markdown),
+        **retrieval_profile,
     }
     return MarkdownPage(
         document_id=document_id,
@@ -163,12 +249,46 @@ def render_text_block(block: LayoutBlock) -> str:
     content = normalize_markdown_spacing(balance_cases_environment(normalize_pdf_math_text(block.content or "")))
     if not content:
         return ""
+    if block.block_type == "FORMULA":
+        try:
+            source = json.loads(block.metadata_json or "{}").get("source")
+        except json.JSONDecodeError:
+            source = None
+        if "---FORMULA---" in content or source == "vlm_formula_layout_recovery":
+            return render_latex_blocks(content)
     if block.block_type == "HEADING":
         heading = strip_markdown(content)
         if not heading:
             return ""
         return f"## {heading}"
     return content
+
+
+def render_visual_layout_fallback(block: LayoutBlock) -> str:
+    """Keep useful local OCR when VLM was skipped or failed."""
+    try:
+        metadata = json.loads(block.metadata_json or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    if metadata.get("vlmStatus") == "completed":
+        return ""
+    content = normalize_markdown_spacing(block.content or "")
+    if not content or not metadata.get("ocrAvailable"):
+        return ""
+    return (
+        f'<figure data-page="{block.page_number}" data-type="ocr-fallback" '
+        'data-confidence="low">\n\n'
+        "**OCR transcription (VLM unavailable)**\n\n"
+        + content
+        + "\n\n</figure>"
+    )
+
+
+def visual_block_status(block: LayoutBlock) -> str:
+    try:
+        return str(json.loads(block.metadata_json or "{}").get("vlmStatus") or "unknown")
+    except json.JSONDecodeError:
+        return "unknown"
 
 
 def render_visuals(results: list[VlmResult], page_text_fingerprint: str) -> list[RenderedVisual]:
@@ -182,7 +302,19 @@ def render_visuals(results: list[VlmResult], page_text_fingerprint: str) -> list
             result.region_type in {"FULL_PAGE_VISUAL", "HANDWRITTEN"}
             and page_text_fingerprint
         ):
-            rendered.append(RenderedVisual("", visual_type, "vlm", "", "full_page_visual_duplicate_of_text"))
+            supplement = render_full_page_supplement(result, visual_type)
+            if supplement:
+                rendered.append(
+                    RenderedVisual(
+                        supplement,
+                        visual_type,
+                        "vlm",
+                        normalize_for_similarity(supplement),
+                        "full_page_transcription_deduplicated_structured_content_preserved",
+                    )
+                )
+            else:
+                rendered.append(RenderedVisual("", visual_type, "vlm", "", "full_page_visual_duplicate_of_text"))
             continue
         markdown = render_visual_result(result, visual_type)
         normalized = normalize_for_similarity(markdown)
@@ -199,6 +331,22 @@ def render_visuals(results: list[VlmResult], page_text_fingerprint: str) -> list
     return rendered
 
 
+def render_full_page_supplement(result: VlmResult, visual_type: str) -> str:
+    parts: list[str] = []
+    latex = normalize_latex(result.latex)
+    code = normalize_code(result.code)
+    description = normalize_markdown_spacing(result.description)
+    if latex:
+        parts.append(render_latex_blocks(latex))
+    if code:
+        parts.append("```" + detect_code_language(code) + "\n" + code + "\n```")
+    if description and visual_type in {"DIAGRAM", "UNKNOWN_VISUAL"}:
+        parts.append("*Figure explanation: " + description + "*")
+    if result.uncertainty:
+        parts.append("*Transcription uncertainty: " + normalize_markdown_spacing(result.uncertainty) + "*")
+    return "\n\n".join(parts)
+
+
 def classify_visual_result(result: VlmResult) -> str:
     text = "\n".join(
         item
@@ -207,6 +355,20 @@ def classify_visual_result(result: VlmResult) -> str:
     )
     normalized = text.lower()
     transcription = result.transcription.strip()
+    declared_kind = (result.content_kind or "unknown").lower()
+    if declared_kind == "decorative" or (result.importance == "low" and not transcription and is_decorative_text(normalized)):
+        return "DECORATIVE_IMAGE"
+    declared_mapping = {
+        "formula": "FORMULA_IMAGE",
+        "code": "CODE_IMAGE",
+        "table": "TABLE_IMAGE",
+        "diagram": "DIAGRAM",
+        "chart": "DIAGRAM",
+        "prose": "TEXT_IMAGE",
+        "handwriting": "TEXT_IMAGE",
+    }
+    if declared_kind in declared_mapping:
+        return declared_mapping[declared_kind]
     if not transcription and is_decorative_text(normalized):
         return "DECORATIVE_IMAGE"
     if looks_like_code(result.code) or looks_like_code(result.transcription):
@@ -230,6 +392,13 @@ def render_visual_result(result: VlmResult, visual_type: str) -> str:
     latex = normalize_latex(result.latex)
     code = normalize_code(result.code or result.transcription)
 
+    if visual_type == "FORMULA_IMAGE":
+        formula = latex or normalize_latex(transcription)
+        rendered_formula = render_latex_blocks(formula) if formula else ""
+        if transcription and latex and normalize_for_similarity(transcription) != normalize_for_similarity(latex):
+            return rendered_formula + "\n\nFormula transcription: " + transcription
+        return rendered_formula or transcription
+
     # If the region represents a full page visual fallback or a handwritten note,
     # the transcription is the entire content of the page. We must return it.
     if result.region_type in {"FULL_PAGE_VISUAL", "HANDWRITTEN"} or len(transcription.split()) > 12:
@@ -239,11 +408,8 @@ def render_visual_result(result: VlmResult, visual_type: str) -> str:
 
     if visual_type == "TEXT_IMAGE":
         return transcription
-    if visual_type == "FORMULA_IMAGE":
-        formula = latex or normalize_latex(transcription)
-        return "$$\n" + formula + "\n$$" if formula else transcription
     if visual_type == "CODE_IMAGE":
-        return "```c\n" + code + "\n```" if code else transcription
+        return "```" + detect_code_language(code) + "\n" + code + "\n```" if code else transcription
     if visual_type == "TABLE_IMAGE":
         return table_text_to_markdown(transcription)
     if visual_type in {"DIAGRAM", "UNKNOWN_VISUAL"}:
@@ -273,6 +439,50 @@ def infer_page_source_type(block_types: list[str], visual_types: list[str]) -> s
     if has_text:
         return "text"
     return "unknown"
+
+
+def build_retrieval_profile(
+    headings: list[str],
+    block_types: list[str],
+    visual_types: list[str],
+    markdown: str,
+    document_type: str | None = None,
+) -> dict:
+    types = sorted(set(block_types) | set(visual_types))
+    tags: list[str] = []
+    scenarios = ["semantic_search", "page_citation"]
+    if any(item in types for item in ("FORMULA", "FORMULA_IMAGE")):
+        tags.append("mathematics")
+        scenarios.extend(("formula_lookup", "derivation_qa"))
+    if any(item in types for item in ("CODE", "CODE_IMAGE")):
+        tags.append("code")
+        scenarios.extend(("code_search", "implementation_qa"))
+    if any(item in types for item in ("TABLE", "TABLE_IMAGE")):
+        tags.append("table")
+        scenarios.append("structured_fact_lookup")
+    if any(item in types for item in ("DIAGRAM", "MIXED_VISUAL", "TEXT_IMAGE")):
+        tags.append("visual")
+        scenarios.append("visual_explanation")
+    if not tags:
+        tags.append("prose")
+    document_scenarios = {
+        "LECTURE_SLIDES": ("slide_lookup", "lecture_review"),
+        "COURSE_NOTES": ("concept_explanation", "theorem_lookup"),
+        "RESEARCH_PAPER": ("methodology_lookup", "evidence_synthesis"),
+        "ASSIGNMENT": ("question_lookup", "solution_context"),
+        "PAST_EXAM": ("question_lookup", "exam_review"),
+        "HANDWRITTEN_NOTES": ("handwritten_derivation", "lecture_review"),
+    }
+    scenarios.extend(document_scenarios.get(document_type or "OTHER", ()))
+    first_line = next((line.strip(" #") for line in markdown.splitlines() if line.strip()), "")
+    description = headings[0] if headings else first_line[:180]
+    return {
+        "description": description,
+        "retrievalTags": tags,
+        "applicableScenarios": list(dict.fromkeys(scenarios)),
+        "contentTypes": types,
+        "documentType": document_type or "OTHER",
+    }
 
 
 def score_page_quality(markdown: str, warnings: list[str], filtered_count: int) -> float:
@@ -385,6 +595,24 @@ def normalize_for_similarity(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def repeated_line_ratio(markdown: str) -> float:
+    pages_by_line: dict[str, set[int]] = {}
+    current_page = 0
+    for raw_line in markdown.splitlines():
+        page_match = re.match(r"^<!--\s*page:(\d+)\s*-->$", raw_line.strip())
+        if page_match:
+            current_page = int(page_match.group(1))
+            continue
+        line = normalize_for_similarity(raw_line)
+        if len(line) < 12:
+            continue
+        pages_by_line.setdefault(line, set()).add(current_page)
+    if not pages_by_line:
+        return 0.0
+    cross_page_repeats = sum(len(pages) >= 2 for pages in pages_by_line.values())
+    return cross_page_repeats / len(pages_by_line)
+
+
 def normalize_markdown_spacing(text: str) -> str:
     lines = [line.rstrip() for line in text.strip().splitlines()]
     compact: list[str] = []
@@ -410,7 +638,26 @@ def strip_markdown(text: str) -> str:
 def normalize_latex(text: str) -> str:
     text = normalize_markdown_spacing(text)
     text = text.replace("$$", "").strip()
+    # The field itself is rendered inside display math, so nested inline-dollar
+    # delimiters from model responses are invalid and unnecessary.
+    text = re.sub(r"(?<!\\)\$", "", text)
+    text = text.replace("\\begin{tabular}", "\\begin{array}")
+    text = text.replace("\\end{tabular}", "\\end{array}")
     return text
+
+
+def render_latex_blocks(text: str) -> str:
+    """Render independent VLM formulas as independent display blocks."""
+    latex = normalize_latex(text)
+    if not latex:
+        return ""
+    formulas = []
+    for part in re.split(r"\s*---FORMULA---\s*", latex):
+        formula = part.strip()
+        formula = re.sub(r"^\$|\$$", "", formula).strip()
+        if formula:
+            formulas.append(formula)
+    return "\n\n".join("$$\n" + formula + "\n$$" for formula in formulas)
 
 
 def normalize_code(text: str) -> str:

@@ -12,6 +12,7 @@ public record TaskResponse(
     int progress,
     String errorMessage,
     int retryCount,
+    int priority,
     Instant createdAt
 ) {
     public static TaskResponse from(Task task) {
@@ -24,6 +25,7 @@ public record TaskResponse(
             task.getProgress(),
             task.getErrorMessage(),
             task.getRetryCount(),
+            task.getPriority(),
             task.getCreatedAt()
         );
     }

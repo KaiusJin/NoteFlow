@@ -25,6 +25,9 @@ public class DocumentParseResult {
 
     @Enumerated(EnumType.STRING)
     private ContentSourceType detectedContentSourceType;
+    private Double sourceConfidence;
+    @Column(columnDefinition = "TEXT")
+    private String sourceDistributionJson;
 
     private Instant createdAt;
     private Instant updatedAt;
@@ -58,5 +61,13 @@ public class DocumentParseResult {
 
     public Instant getCreatedAt() {
         return createdAt;
+    }
+
+    public Double getSourceConfidence() {
+        return sourceConfidence;
+    }
+
+    public String getSourceDistributionJson() {
+        return sourceDistributionJson;
     }
 }

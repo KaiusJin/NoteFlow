@@ -16,14 +16,24 @@ public class DocumentParseController {
     private final DocumentRepository documents;
     private final DocumentParseResultRepository parseResults;
     private final DocumentChunkRepository chunks;
+    private final DocumentParseManifestRepository parseManifests;
     private final DevUserService users;
 
     public DocumentParseController(DocumentRepository documents, DocumentParseResultRepository parseResults,
-            DocumentChunkRepository chunks, DevUserService users) {
+            DocumentChunkRepository chunks, DocumentParseManifestRepository parseManifests, DevUserService users) {
         this.documents = documents;
         this.parseResults = parseResults;
         this.chunks = chunks;
+        this.parseManifests = parseManifests;
         this.users = users;
+    }
+
+    @GetMapping("/documents/{documentId}/parse-manifest")
+    public DocumentParseManifestResponse getParseManifest(@PathVariable UUID documentId) {
+        ensureDocumentAccess(documentId);
+        return parseManifests.findById(documentId)
+            .map(DocumentParseManifestResponse::from)
+            .orElseThrow(() -> new IllegalArgumentException("Parse manifest not found"));
     }
 
     @GetMapping("/documents/{documentId}/parse-result")

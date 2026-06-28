@@ -11,6 +11,8 @@ public record DocumentParseResultResponse(
     int extractedTextLength,
     String extractedTextPreview,
     ContentSourceType detectedContentSourceType,
+    Double sourceConfidence,
+    String sourceDistributionJson,
     Instant createdAt
 ) {
     public static DocumentParseResultResponse from(DocumentParseResult result) {
@@ -21,6 +23,8 @@ public record DocumentParseResultResponse(
             result.getExtractedTextLength(),
             result.getExtractedTextPreview(),
             result.getDetectedContentSourceType(),
+            result.getSourceConfidence(),
+            result.getSourceDistributionJson(),
             result.getCreatedAt()
         );
     }

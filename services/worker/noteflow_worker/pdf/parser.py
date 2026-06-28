@@ -24,12 +24,33 @@ class ParsedPdf:
     preview: str
     content_source_type: str
     chunks: list[TextChunk]
+    page_profiles: list["PageTextProfile"]
+    source_confidence: float
+    source_distribution: dict[str, int]
 
 
 @dataclass(frozen=True)
 class PageText:
     page_number: int
     text: str
+
+
+@dataclass(frozen=True)
+class PageTextProfile:
+    page_number: int
+    native_text_length: int
+    word_count: int
+    alphanumeric_ratio: float
+    replacement_character_count: int
+    text_quality: float
+
+    @property
+    def has_reliable_text(self) -> bool:
+        return self.native_text_length >= 120 and self.text_quality >= 0.55
+
+    @property
+    def has_weak_text(self) -> bool:
+        return self.native_text_length < 60 or self.text_quality < 0.35
 
 
 @dataclass(frozen=True)
@@ -67,10 +88,10 @@ def parse_pdf(path: str, document_type: str) -> ParsedPdf:
     reader = PdfReader(path)
     pages = extract_pages(reader)
     full_text = "\n\n".join(page.text for page in pages if page.text)
-    source_type = detect_content_source_type(
-        page_count=len(reader.pages),
-        extracted_text_length=len(full_text),
-        document_type=document_type,
+    page_profiles = [build_page_text_profile(page) for page in pages]
+    source_type, source_confidence, source_distribution = classify_document_source(
+        page_profiles,
+        document_type,
     )
 
     chunks: list[TextChunk] = []
@@ -87,6 +108,9 @@ def parse_pdf(path: str, document_type: str) -> ParsedPdf:
         preview=preview_text(preview_source),
         content_source_type=source_type,
         chunks=chunks,
+        page_profiles=page_profiles,
+        source_confidence=source_confidence,
+        source_distribution=source_distribution,
     )
 
 
@@ -95,9 +119,58 @@ def extract_pages(reader: PdfReader) -> list[PageText]:
     for index, page in enumerate(reader.pages, start=1):
         extracted = page.extract_text() or ""
         normalized = normalize_page_text(extracted)
-        if normalized:
-            pages.append(PageText(page_number=index, text=normalized))
+        pages.append(PageText(page_number=index, text=normalized))
     return pages
+
+
+def build_page_text_profile(page: PageText) -> PageTextProfile:
+    text = page.text or ""
+    visible = [char for char in text if not char.isspace()]
+    alphanumeric = sum(1 for char in visible if char.isalnum())
+    replacement_count = text.count("�") + sum(1 for char in text if 0xE000 <= ord(char) <= 0xF8FF)
+    alphanumeric_ratio = alphanumeric / max(1, len(visible))
+    length_score = min(1.0, len(text) / 240.0)
+    glyph_penalty = min(0.6, replacement_count / max(1, len(visible)) * 4.0)
+    quality = max(0.0, min(1.0, 0.55 * length_score + 0.45 * alphanumeric_ratio - glyph_penalty))
+    return PageTextProfile(
+        page_number=page.page_number,
+        native_text_length=len(text),
+        word_count=len(text.split()),
+        alphanumeric_ratio=round(alphanumeric_ratio, 4),
+        replacement_character_count=replacement_count,
+        text_quality=round(quality, 4),
+    )
+
+
+def classify_document_source(
+    profiles: list[PageTextProfile],
+    document_type: str,
+) -> tuple[str, float, dict[str, int]]:
+    """Summarize page evidence without forcing every page down one route."""
+    if not profiles:
+        return "UNKNOWN", 0.0, {"reliable": 0, "intermediate": 0, "weak": 0}
+    weak = sum(profile.has_weak_text for profile in profiles)
+    reliable = sum(profile.has_reliable_text for profile in profiles)
+    intermediate = len(profiles) - weak - reliable
+    distribution = {"reliable": reliable, "intermediate": intermediate, "weak": weak}
+    weak_ratio = weak / len(profiles)
+    reliable_ratio = reliable / len(profiles)
+
+    if document_type == "HANDWRITTEN_NOTES":
+        # User intent is authoritative for routing, but the physical-source label
+        # still reflects the observed text layer.
+        source = "HANDWRITTEN_SCAN" if weak_ratio >= 0.5 else "MIXED"
+        confidence = max(weak_ratio, 1.0 - weak_ratio)
+    elif weak_ratio >= 0.85:
+        source = "SCANNED_PDF"
+        confidence = weak_ratio
+    elif reliable_ratio >= 0.85 and weak == 0:
+        source = "TEXT_PDF"
+        confidence = reliable_ratio
+    else:
+        source = "MIXED"
+        confidence = 1.0 - abs(reliable_ratio - weak_ratio) * 0.25
+    return source, round(confidence, 4), distribution
 
 
 def normalize_page_text(text: str) -> str:
@@ -153,12 +226,26 @@ def classify_line(line: str) -> str:
 def is_code_like(line: str) -> bool:
     if line in {"{", "}", "};"}:
         return True
-    if re.match(r"^\s*(class|def|struct)\s+[A-Za-z_][A-Za-z0-9_]*", line):
+    if re.match(r"^\s*(async\s+def|class|def|struct|interface|enum)\s+[A-Za-z_][A-Za-z0-9_]*", line):
+        return True
+    if re.match(r"^\s*function\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\(", line):
+        return True
+    if re.match(
+        r"^\s*(from\s+[A-Za-z0-9_.]+\s+import|import\s+[A-Za-z0-9_.]+|"
+        r"for\s+.+\s+in\s+.+:|while\s+.+:|if\s+.+:|elif\s+.+:|else:|"
+        r"try:|except(?:\s+.+)?:|with\s+.+:)",
+        line,
+    ):
+        return True
+    if re.match(r"^\s*\((define|lambda|let\*?|cond|map|fold[lr]?)\b", line):
+        return True
+    if re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER)\b", line, re.IGNORECASE):
+        return True
+    if line.startswith("#!"):
         return True
     code_tokens = (
         "#include",
         ";;",
-        "return ",
         "malloc",
         "printf",
         "->",
@@ -168,13 +255,33 @@ def is_code_like(line: str) -> bool:
         "//",
         "/*",
         "*/",
+        "console.log(",
+        "std::",
+        "public static ",
+        "System.out.",
+        "=>",
+        "<- function(",
     )
     if any(token in line for token in code_tokens):
         return True
+    if re.match(r"^\s*(return|yield|raise|throw)\b", line):
+        return True
     if line.endswith(";") and re.search(r"\b(int|void|char|float|double|bool|size_t|const)\b", line):
         return True
-    symbol_count = sum(1 for char in line if char in "{}[]();=*&|<>")
-    return len(line) <= 120 and symbol_count >= 5 and bool(re.search(r"[A-Za-z_]", line))
+    if re.search(r"\^[A-Za-z0-9]|[≤≥∑∫]", line) and not any(
+        token in line for token in (";", "{", "}", "#include", "return ")
+    ):
+        return False
+    statement_pattern = re.search(
+        r"\b(if|for|while|switch)\s*\([^)]*\)\s*\{|"
+        r"\belse\s*\{|"
+        r"\b(new|delete)\s+[A-Za-z_]|"
+        r"^\s*(let|var|const)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=|"
+        r"\bstd::[A-Za-z_]|"
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*\([^)]*\)\s*[{;]",
+        line,
+    )
+    return bool(statement_pattern) and (line.rstrip().endswith(";") or "{" in line or "}" in line)
 
 
 def is_formula_like(line: str) -> bool:
@@ -197,12 +304,30 @@ def is_formula_like(line: str) -> bool:
         "σ",
         "\\begin{cases}",
         "\\end{cases}",
+        "\\begin{matrix}",
+        "\\begin{pmatrix}",
+        "\\begin{bmatrix}",
+        "\\begin{aligned}",
+        "\\lim",
+        "\\prod",
+        "\\sqrt",
+        "det(",
+        "∞",
+        "√",
+        "∂",
+        "∇",
     )
-    if any(token in line for token in math_tokens):
+    prose_words = re.findall(r"[A-Za-z]{2,}", line)
+    tokens = re.findall(r"\S+", line)
+    prose_dominant = len(prose_words) >= 6 and len(prose_words) / max(1, len(tokens)) >= 0.45
+    explicit_latex = any(token.startswith("\\") and token in line for token in math_tokens)
+    if explicit_latex:
         return True
+    if any(token in line for token in math_tokens) and not prose_dominant:
+        return len(tokens) <= 28 or bool(re.search(r"[=<>≤≥]", line))
     has_operator = bool(re.search(r"[=^]|[A-Za-z]\s*/\s*[A-Za-z0-9]", line))
     compact_expression = len(line.split()) <= 16 and bool(re.search(r"[A-Za-z0-9\]\)]", line))
-    return has_operator and compact_expression and not is_code_like(line)
+    return has_operator and compact_expression and not prose_dominant and not is_code_like(line)
 
 
 def is_table_like(line: str) -> bool:
@@ -261,8 +386,10 @@ def mark_repeated_boilerplate(lines: list[TextLine]) -> list[TextLine]:
             pages_by_family[boilerplate_family_key(line.normalized)].add(line.page_number)
 
     total_pages = len({line.page_number for line in lines})
-    min_pages = max(3, math.ceil(total_pages * 0.18))
-    min_family_pages = max(5, math.ceil(total_pages * 0.30))
+    if total_pages < 8:
+        return lines
+    min_pages = max(5, math.ceil(total_pages * 0.25))
+    min_family_pages = max(6, math.ceil(total_pages * 0.40))
     repeated_patterns = {
         pattern
         for pattern, pages in pages_by_pattern.items()
@@ -303,6 +430,14 @@ def can_be_boilerplate_candidate(line: TextLine) -> bool:
     if len(line.text) > 140:
         return False
     if line.line_type in {"CODE", "FORMULA", "TABLE"}:
+        return False
+    # Re-check raw content because the coarse line classifier can be wrong.
+    # Repetition and edge position never override math/code semantics.
+    if is_formula_like(line.text) or is_code_like(line.text):
+        return False
+    symbols = sum(char in "=+−-*/^_{}[]()<>|∑∫√∞≤≥" for char in line.text)
+    non_space = sum(not char.isspace() for char in line.text)
+    if non_space and symbols / non_space >= 0.12:
         return False
     return True
 
@@ -495,6 +630,7 @@ def estimate_tokens(text: str) -> int:
 
 
 def detect_content_source_type(page_count: int, extracted_text_length: int, document_type: str) -> str:
+    """Legacy compatibility helper; routing uses per-page profiles instead."""
     if page_count == 0:
         return "UNKNOWN"
     chars_per_page = extracted_text_length / page_count

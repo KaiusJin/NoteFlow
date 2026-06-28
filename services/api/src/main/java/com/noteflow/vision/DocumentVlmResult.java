@@ -31,6 +31,12 @@ public class DocumentVlmResult {
     private String uncertainty;
     @Column(columnDefinition = "TEXT")
     private String searchText;
+    private String contentKind;
+    private String importance;
+    @Column(columnDefinition = "TEXT")
+    private String readingOrder;
+    private String language;
+    private int attemptCount;
     @Column(columnDefinition = "TEXT")
     private String errorMessage;
     private Instant createdAt;
@@ -92,5 +98,25 @@ public class DocumentVlmResult {
 
     public String getErrorMessage() {
         return errorMessage;
+    }
+
+    public String getContentKind() {
+        return contentKind;
+    }
+
+    public String getImportance() {
+        return importance;
+    }
+
+    public String getReadingOrder() {
+        return readingOrder;
+    }
+
+    public String getLanguage() {
+        return language;
+    }
+
+    public int getAttemptCount() {
+        return attemptCount;
     }
 }

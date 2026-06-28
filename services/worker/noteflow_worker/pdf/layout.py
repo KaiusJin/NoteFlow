@@ -1,19 +1,23 @@
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Optional
 
 import fitz
 
-from noteflow_worker.db.repository import LayoutBlock, TextChunk, VlmResult
+from noteflow_worker.db.repository import LayoutBlock, TextChunk, VisualRegion, VlmResult
 from noteflow_worker.pdf.parser import (
     MAX_TOKENS,
     TARGET_TOKENS,
     classify_line,
     estimate_tokens,
+    is_code_like,
+    is_formula_like,
     preview_text,
 )
 from noteflow_worker.pdf.math_normalizer import balance_cases_environment, normalize_pdf_math_text
+from noteflow_worker.pdf.code_normalizer import detect_code_language, normalize_code_source
 from noteflow_worker.pdf.visual import VisualPage
 
 
@@ -65,18 +69,29 @@ def build_layout_parse(
     visual_pages: list[VisualPage],
     page_asset_ids: dict[int, str],
     vlm_results: list[VlmResult] | None = None,
+    suppress_native_text_pages: set[int] | None = None,
+    visual_regions: list[VisualRegion] | None = None,
 ) -> LayoutParseResult:
+    suppress_native_text_pages = suppress_native_text_pages or set()
     visual_by_page = {page.page_number: page for page in visual_pages}
     vlm_by_page: dict[int, list[VlmResult]] = {}
     for result in vlm_results or []:
         vlm_by_page.setdefault(result.page_number, []).append(result)
+    regions_by_page: dict[int, list[VisualRegion]] = {}
+    for region in visual_regions or []:
+        regions_by_page.setdefault(region.page_number, []).append(region)
     working_blocks: list[WorkingBlock] = []
     current_heading: Optional[str] = None
     heading_path: list[str] = []
 
     with fitz.open(path) as document:
         for page_index, page in enumerate(document, start=1):
-            page_blocks = extract_page_text_blocks(page, page_index)
+            page_blocks = [] if page_index in suppress_native_text_pages else extract_page_text_blocks(page, page_index)
+            page_blocks = apply_vlm_formula_recovery(
+                page_blocks,
+                vlm_by_page.get(page_index, []),
+                regions_by_page.get(page_index, []),
+            )
             for block in page_blocks:
                 if block.block_type == "HEADING":
                     current_heading = block.content
@@ -135,6 +150,96 @@ def build_layout_parse(
     )
 
 
+def apply_vlm_formula_recovery(
+    blocks: list[WorkingBlock],
+    results: list[VlmResult],
+    regions: list[VisualRegion],
+) -> list[WorkingBlock]:
+    """Replace only native formula blocks covered by successful formula crops."""
+    region_by_key = {
+        (region.page_number, region.region_index): region
+        for region in regions
+        if region.region_type == "FORMULA_IMAGE" and region.bbox_json
+    }
+    replacements: list[tuple[list[WorkingBlock], WorkingBlock]] = []
+    already_replaced: set[int] = set()
+    for result in results:
+        if result.region_type != "FORMULA_IMAGE" or result.error_message or not result.latex.strip():
+            continue
+        region = region_by_key.get((result.page_number, result.region_index))
+        if region is None:
+            continue
+        try:
+            region_bbox = [float(value) for value in json.loads(region.bbox_json or "[]")]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if len(region_bbox) != 4:
+            continue
+        covered = [
+            block for block in blocks
+            if id(block) not in already_replaced
+            and block.block_type == "FORMULA"
+            and block.bbox
+            and bbox_coverage(block.bbox, region_bbox) >= 0.45
+        ]
+        if not covered:
+            continue
+        for block in covered:
+            already_replaced.add(id(block))
+        first = min(covered, key=lambda block: block.order)
+        latex = normalize_vlm_formula_latex(result.latex)
+        if not latex:
+            continue
+        replacement = WorkingBlock(
+            page_number=first.page_number,
+            order=first.order,
+            block_type="FORMULA",
+            content="$$\n" + latex + "\n$$",
+            bbox=union_bbox([block.bbox for block in covered]) or region_bbox,
+            section_title=first.section_title,
+            heading_path=first.heading_path,
+            source_asset_id=region.page_asset_id,
+            confidence=0.92,
+            metadata={
+                **first.metadata,
+                "source": "vlm_formula_layout_recovery",
+                "regionIndex": result.region_index,
+                "vlmProvider": result.provider,
+                "vlmModel": result.model,
+                "nativeBlockCountReplaced": len(covered),
+            },
+        )
+        replacements.append((covered, replacement))
+    if not replacements:
+        return blocks
+    removed = {id(block) for covered, _ in replacements for block in covered}
+    output = [block for block in blocks if id(block) not in removed]
+    output.extend(replacement for _, replacement in replacements)
+    return sorted(output, key=lambda block: block.order)
+
+
+def bbox_coverage(block_bbox: list[float], region_bbox: list[float]) -> float:
+    intersection_width = max(0.0, min(block_bbox[2], region_bbox[2]) - max(block_bbox[0], region_bbox[0]))
+    intersection_height = max(0.0, min(block_bbox[3], region_bbox[3]) - max(block_bbox[1], region_bbox[1]))
+    block_area = max(1.0, (block_bbox[2] - block_bbox[0]) * (block_bbox[3] - block_bbox[1]))
+    return intersection_width * intersection_height / block_area
+
+
+def normalize_vlm_formula_latex(text: str) -> str:
+    normalized = text.strip().replace("\\[", "").replace("\\]", "")
+    normalized = normalized.replace("$$", "").strip()
+    # A crop represents one display formula. Preserve explicit LaTeX row
+    # separators and newlines; only collapse excessive blank lines that would
+    # otherwise create invalid nested display blocks.
+    parts = []
+    for part in re.split(r"\s*---FORMULA---\s*", normalized):
+        formula = part.strip()
+        formula = re.sub(r"^\$|\$$", "", formula).strip()
+        if formula:
+            parts.append(formula)
+    return "\n$$\n\n$$\n".join(parts)
+
+
 def extract_page_text_blocks(page, page_number: int) -> list[WorkingBlock]:
     extracted: list[WorkingBlock] = []
     text_dict = page.get_text("dict", sort=True)
@@ -144,10 +249,11 @@ def extract_page_text_blocks(page, page_number: int) -> list[WorkingBlock]:
         lines = block_lines(block)
         if not lines:
             continue
-        raw_text = normalize_pdf_math_text("\n".join(lines))
+        source_text = "\n".join(lines)
+        raw_text = normalize_pdf_math_text(source_text)
         normalized_lines = [line for line in raw_text.splitlines() if line.strip()]
         block_type = classify_text_block(normalized_lines)
-        content = format_block_content(raw_text, block_type)
+        content = format_block_content(source_text if block_type == "CODE" else raw_text, block_type)
         bbox = normalize_bbox(block.get("bbox"))
         y0 = bbox[1] if bbox else 0.0
         x0 = bbox[0] if bbox else 0.0
@@ -166,20 +272,120 @@ def extract_page_text_blocks(page, page_number: int) -> list[WorkingBlock]:
                     "source": "pymupdf_text_block",
                     "lineCount": len(lines),
                     "rawType": block.get("type"),
+                    "pageWidth": float(page.rect.width),
+                    "pageHeight": float(page.rect.height),
                 },
             )
         )
+    extracted = apply_multi_column_reading_order(extracted, float(page.rect.width))
     return merge_adjacent_small_text_blocks(extracted)
+
+
+def apply_multi_column_reading_order(
+    blocks: list[WorkingBlock],
+    page_width: float,
+) -> list[WorkingBlock]:
+    """Order two-column body text by column while preserving wide separators."""
+    boxed = [block for block in blocks if block.bbox]
+    if len(boxed) < 4 or page_width <= 0:
+        return blocks
+    body_text = [
+        block for block in boxed
+        if block.block_type in {"PARAGRAPH", "LIST"}
+        and block.token_count >= 10
+        and is_prose_column_candidate(block.content)
+        and (block.bbox[2] - block.bbox[0]) <= page_width * 0.52
+    ]
+    left = [block for block in body_text if (block.bbox[0] + block.bbox[2]) / 2 <= page_width * 0.42]
+    right = [block for block in body_text if (block.bbox[0] + block.bbox[2]) / 2 >= page_width * 0.58]
+    if not left or not right:
+        return blocks
+    if len(left) + len(right) < 4 and not (
+        sum(block.token_count for block in left) >= 25
+        and sum(block.token_count for block in right) >= 25
+    ):
+        return blocks
+
+    left_span = (min(block.bbox[1] for block in left), max(block.bbox[3] for block in left))
+    right_span = (min(block.bbox[1] for block in right), max(block.bbox[3] for block in right))
+    overlap = max(0.0, min(left_span[1], right_span[1]) - max(left_span[0], right_span[0]))
+    smaller_span = max(1.0, min(left_span[1] - left_span[0], right_span[1] - right_span[0]))
+    if overlap / smaller_span < 0.35:
+        return blocks
+
+    wide = sorted(
+        [block for block in boxed if (block.bbox[2] - block.bbox[0]) > page_width * 0.72],
+        key=lambda block: block.bbox[1],
+    )
+
+    def reading_key(block: WorkingBlock) -> tuple[int, int, float, float]:
+        if not block.bbox:
+            return (999, 0, block.order[0], block.order[1])
+        y0, x0 = block.bbox[1], block.bbox[0]
+        if block in wide:
+            position = wide.index(block)
+            return (position * 2, 0, y0, x0)
+        preceding_wide = sum(item.bbox[1] < y0 for item in wide)
+        column = 0 if (block.bbox[0] + block.bbox[2]) / 2 < page_width / 2 else 1
+        return (preceding_wide * 2 + 1, column, y0, x0)
+
+    ordered = sorted(blocks, key=reading_key)
+    return [
+        WorkingBlock(
+            page_number=block.page_number,
+            order=(float(index), 0.0, block.order[2]),
+            block_type=block.block_type,
+            content=block.content,
+            bbox=block.bbox,
+            section_title=block.section_title,
+            heading_path=block.heading_path,
+            source_asset_id=block.source_asset_id,
+            confidence=block.confidence,
+            metadata={**block.metadata, "readingOrder": "two_column"},
+        )
+        for index, block in enumerate(ordered)
+    ]
+
+
+def is_prose_column_candidate(text: str) -> bool:
+    words = re.findall(r"\S+", text)
+    alphabetic = [word for word in words if re.search(r"[A-Za-z]{2}", word)]
+    return len(alphabetic) >= 8 and len(alphabetic) / max(1, len(words)) >= 0.62
 
 
 def block_lines(block: dict) -> list[str]:
     lines: list[str] = []
     for line in block.get("lines", []):
         spans = line.get("spans", [])
-        text = "".join(span.get("text", "") for span in spans).strip()
-        if text:
+        text = join_line_spans(spans).rstrip()
+        if text.strip():
             lines.append(text)
     return lines
+
+
+def join_line_spans(spans: list[dict]) -> str:
+    """Join PDF glyph runs using their measured horizontal separation.
+
+    PDF producers often omit an actual U+0020 between math and Roman fonts.
+    Reconstructing a space from coordinates avoids vocabulary-destroying forms
+    such as ``𝑡denotes`` without guessing particular words.
+    """
+    output = ""
+    previous: dict | None = None
+    for span in spans:
+        value = str(span.get("text", ""))
+        if not value:
+            continue
+        if previous is not None and output and not output[-1].isspace() and not value[0].isspace():
+            previous_bbox = previous.get("bbox") or (0, 0, 0, 0)
+            bbox = span.get("bbox") or (0, 0, 0, 0)
+            gap = float(bbox[0]) - float(previous_bbox[2])
+            reference_size = min(float(previous.get("size") or 10), float(span.get("size") or 10))
+            if gap >= max(0.8, reference_size * 0.16):
+                output += " "
+        output += value
+        previous = span
+    return output
 
 
 def classify_text_block(lines: list[str]) -> str:
@@ -187,17 +393,37 @@ def classify_text_block(lines: list[str]) -> str:
     if not non_empty:
         return "PARAGRAPH"
     line_types = [classify_line(line) for line in non_empty]
+    if looks_like_sql_block(non_empty):
+        return "CODE"
+    majority = max(1, (len(non_empty) + 1) // 2)
+    if line_types.count("CODE") >= majority:
+        return "CODE"
+    if line_types.count("FORMULA") >= majority and not is_prose_dominant_block(non_empty):
+        return "FORMULA"
     if is_markdown_table_candidate(non_empty):
         return "TABLE"
-    if line_types.count("CODE") >= max(1, len(non_empty) // 2):
-        return "CODE"
-    if line_types.count("FORMULA") >= max(1, len(non_empty) // 2):
-        return "FORMULA"
     if len(non_empty) <= 2 and line_types[0] == "HEADING":
         return "HEADING"
     if line_types.count("LIST") >= max(1, len(non_empty) // 2):
         return "LIST"
     return most_common_text_type(line_types)
+
+
+def is_prose_dominant_block(lines: list[str]) -> bool:
+    text = " ".join(lines)
+    words = re.findall(r"[A-Za-z]{2,}", text)
+    tokens = re.findall(r"\S+", text)
+    sentence_marks = len(re.findall(r"[.!?](?:\s|$)", text))
+    return len(words) >= 8 and len(words) / max(1, len(tokens)) >= 0.48 and sentence_marks >= 1
+
+
+def looks_like_sql_block(lines: list[str]) -> bool:
+    joined = "\n".join(lines)
+    starts_sql = bool(re.match(r"^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER)\b", joined, re.IGNORECASE))
+    structural_keywords = len(
+        re.findall(r"^\s*(FROM|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING|VALUES|SET)\b", joined, re.IGNORECASE | re.MULTILINE)
+    )
+    return starts_sql and structural_keywords >= 1
 
 
 def most_common_text_type(line_types: list[str]) -> str:
@@ -229,17 +455,54 @@ def split_table_row(line: str) -> list[str]:
 
 
 def format_block_content(text: str, block_type: str) -> str:
+    if block_type == "CODE":
+        code = normalize_code_source(text)
+        language = detect_code_language(code)
+        return f"```{language}\n{code}\n```"
     text = normalize_pdf_math_text(text)
     if "\\begin{cases}" in text or "\\end{cases}" in text:
         block_type = "FORMULA"
-        text = balance_cases_environment(text)
+        text = normalize_cases_rows(balance_cases_environment(text))
     if block_type == "TABLE":
         return table_to_markdown(text)
-    if block_type == "CODE":
-        return "```text\n" + text.strip() + "\n```"
     if block_type == "FORMULA":
-        return "$$\n" + text.strip() + "\n$$"
+        return "$$\n" + linearize_native_formula(text) + "\n$$"
     return text.strip()
+
+
+def linearize_native_formula(text: str) -> str:
+    """Produce a retrieval-safe fallback when native math is vertically split.
+
+    VLM/geometry recovery can later replace this block with LaTeX. Until then,
+    keeping fragments on one semantic line is substantially less destructive
+    for tokenization than emitting a column of one-character Markdown lines.
+    """
+    if "\\begin{" in text:
+        return text.strip()
+    fragments = [fragment.strip() for fragment in text.splitlines() if fragment.strip()]
+    return re.sub(r"\s+", " ", " ".join(fragments)).strip()
+
+
+def normalize_cases_rows(text: str) -> str:
+    if "\\begin{cases}" not in text:
+        return text
+    output: list[str] = []
+    inside = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "\\begin{cases}":
+            inside = True
+            output.append(stripped)
+            continue
+        if stripped == "\\end{cases}":
+            inside = False
+            output.append(stripped)
+            continue
+        if inside and stripped and not stripped.endswith("\\\\"):
+            output.append(stripped + r" \\")
+        else:
+            output.append(line)
+    return "\n".join(output)
 
 
 def table_to_markdown(text: str) -> str:
@@ -376,7 +639,7 @@ def visual_region_content(page: VisualPage, result: VlmResult) -> str:
 
 def visual_block_content(page: VisualPage, vlm_results: list[VlmResult]) -> str:
     if not vlm_results:
-        return page.summary
+        return page.ocr_text or ""
     parts = [
         f"Rendered page image captured for page {page.page_number}.",
         f"Embedded images: {page.image_count}.",
@@ -428,7 +691,12 @@ def merge_adjacent_small_text_blocks(blocks: list[WorkingBlock]) -> list[Working
                     heading_path=first.heading_path,
                     source_asset_id=None,
                     confidence=min(item.confidence for item in buffer),
-                    metadata={"source": "merged_small_text_blocks", "blockCount": len(buffer)},
+                    metadata={
+                        "source": "merged_small_text_blocks",
+                        "blockCount": len(buffer),
+                        "pageWidth": first.metadata.get("pageWidth"),
+                        "pageHeight": first.metadata.get("pageHeight"),
+                    },
                 )
             )
         buffer = []
@@ -446,60 +714,221 @@ def merge_adjacent_small_text_blocks(blocks: list[WorkingBlock]) -> list[Working
 
 
 def mark_layout_boilerplate(blocks: list[WorkingBlock]) -> list[WorkingBlock]:
-    pages_by_fingerprint: dict[str, set[int]] = {}
+    total_pages = len({block.page_number for block in blocks})
+    # Fewer than eight pages do not provide enough independent evidence for
+    # automatic deletion. Candidates may still be annotated by later stages.
+    minimum_pages = max(5, math.ceil(total_pages * 0.25))
+    pages_by_exact: dict[str, set[int]] = {}
+    pages_by_family: dict[str, set[int]] = {}
+    texts_by_family: dict[str, set[str]] = {}
+    pages_by_line_exact: dict[str, set[int]] = {}
+    pages_by_line_family: dict[str, set[int]] = {}
+    line_variants_by_family: dict[str, set[str]] = {}
     for block in blocks:
-        if not can_be_layout_boilerplate(block):
+        if not is_noise_shape_candidate(block):
             continue
-        fingerprint = layout_boilerplate_fingerprint(block.content)
-        if not fingerprint:
+        exact = exact_noise_fingerprint(block.content)
+        family = numeric_family_fingerprint(block.content)
+        if not exact:
             continue
-        pages_by_fingerprint.setdefault(fingerprint, set()).add(block.page_number)
+        pages_by_exact.setdefault(exact, set()).add(block.page_number)
+        pages_by_family.setdefault(family, set()).add(block.page_number)
+        texts_by_family.setdefault(family, set()).add(exact)
+        for line in noise_lines(block.content):
+            line_exact = exact_noise_fingerprint(line)
+            line_family = numeric_family_fingerprint(line)
+            pages_by_line_exact.setdefault(line_exact, set()).add(block.page_number)
+            pages_by_line_family.setdefault(line_family, set()).add(block.page_number)
+            line_variants_by_family.setdefault(line_family, set()).add(line_exact)
 
-    repeated = {
-        fingerprint
-        for fingerprint, pages in pages_by_fingerprint.items()
-        if len(pages) >= 3
-    }
     marked: list[WorkingBlock] = []
     for block in blocks:
-        fingerprint = layout_boilerplate_fingerprint(block.content)
-        if fingerprint in repeated and can_be_layout_boilerplate(block):
-            marked.append(
-                WorkingBlock(
-                    page_number=block.page_number,
-                    order=block.order,
-                    block_type="BOILERPLATE",
-                    content=block.content,
-                    bbox=block.bbox,
-                    section_title=block.section_title,
-                    heading_path=block.heading_path,
-                    source_asset_id=block.source_asset_id,
-                    confidence=block.confidence,
-                    metadata={**block.metadata, "excludedFromChunks": True},
-                )
-            )
-        else:
+        decision = assess_noise_candidate(
+            block,
+            total_pages=total_pages,
+            minimum_pages=minimum_pages,
+            exact_pages=pages_by_exact.get(exact_noise_fingerprint(block.content), set()),
+            family_pages=pages_by_family.get(numeric_family_fingerprint(block.content), set()),
+            family_variants=texts_by_family.get(numeric_family_fingerprint(block.content), set()),
+            repeated_line_evidence=repeated_line_evidence(
+                block.content,
+                minimum_pages,
+                pages_by_line_exact,
+                pages_by_line_family,
+                line_variants_by_family,
+            ),
+        )
+        if decision["action"] == "keep" and not decision["reasons"]:
             marked.append(block)
+            continue
+        marked.append(
+            WorkingBlock(
+                page_number=block.page_number,
+                order=block.order,
+                block_type="BOILERPLATE" if decision["action"] == "exclude" else block.block_type,
+                content=block.content,
+                bbox=block.bbox,
+                section_title=block.section_title,
+                heading_path=block.heading_path,
+                source_asset_id=block.source_asset_id,
+                confidence=block.confidence,
+                metadata={
+                    **block.metadata,
+                    "noiseAssessment": {
+                        "action": decision["action"],
+                        "score": decision["score"],
+                        "reasons": decision["reasons"],
+                        "protected": decision["protected"],
+                    },
+                    "excludedFromChunks": decision["action"] == "exclude",
+                },
+            )
+        )
     return marked
 
 
-def can_be_layout_boilerplate(block: WorkingBlock) -> bool:
+def is_noise_shape_candidate(block: WorkingBlock) -> bool:
     if block.source_asset_id:
         return False
-    if block.block_type not in {"PARAGRAPH", "HEADING"}:
+    if block.block_type != "PARAGRAPH":
         return False
-    if block.token_count > 35:
+    if block.token_count > 28:
         return False
     text = block.content.strip()
     if not text:
         return False
     lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) > 4:
+    if len(lines) > 3:
         return False
-    return True
+    if not block.bbox:
+        return False
+    page_height = float(block.metadata.get("pageHeight") or 0.0)
+    if page_height <= 0:
+        return False
+    return block.bbox[1] <= page_height * 0.12 or block.bbox[3] >= page_height * 0.88
+
+
+def assess_noise_candidate(
+    block: WorkingBlock,
+    *,
+    total_pages: int,
+    minimum_pages: int,
+    exact_pages: set[int],
+    family_pages: set[int],
+    family_variants: set[str],
+    repeated_line_evidence: dict,
+) -> dict:
+    if total_pages < 8 or not is_noise_shape_candidate(block):
+        return {"action": "keep", "score": 0.0, "reasons": [], "protected": False}
+    protected_reasons = semantic_protection_reasons(block)
+    if protected_reasons:
+        return {
+            "action": "keep",
+            "score": 0.0,
+            "reasons": ["semantic_content_protected", *protected_reasons],
+            "protected": True,
+        }
+
+    score = 0.30  # edge-position evidence; never sufficient on its own
+    reasons = ["repeated_edge_candidate"]
+    exact_ratio = len(exact_pages) / max(1, total_pages)
+    family_ratio = len(family_pages) / max(1, total_pages)
+    if len(exact_pages) >= minimum_pages:
+        score += 0.50
+        reasons.append("exact_cross_page_repetition")
+    elif len(family_pages) >= minimum_pages:
+        score += 0.32
+        reasons.append("numeric_family_repetition")
+        if len(family_variants) >= 3:
+            score += 0.12
+            reasons.append("multiple_numeric_variants")
+    if repeated_line_evidence["coverage"] >= 0.66:
+        score += 0.46
+        reasons.append("majority_lines_repeat_across_pages")
+        if repeated_line_evidence["numericVariantLines"]:
+            score += 0.08
+            reasons.append("repeated_lines_have_numeric_variants")
+    if block.token_count <= 12:
+        score += 0.08
+        reasons.append("short_low_context_text")
+    if exact_ratio >= 0.65 or family_ratio >= 0.75:
+        score += 0.08
+        reasons.append("dominant_document_repetition")
+    score = round(min(1.0, score), 3)
+    if score >= 0.84:
+        action = "exclude"
+    elif score >= 0.62:
+        action = "annotate"
+    else:
+        action = "keep"
+    return {"action": action, "score": score, "reasons": reasons, "protected": False}
+
+
+def semantic_protection_reasons(block: WorkingBlock) -> list[str]:
+    if block.block_type in {"FORMULA", "CODE", "TABLE", "HEADING", "LIST"}:
+        return [f"block_type={block.block_type.lower()}"]
+    text = block.content.strip()
+    reasons: list[str] = []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if any(is_formula_like(line) for line in lines):
+        reasons.append("formula_like_content")
+    if any(is_code_like(line) for line in lines) or "```" in text:
+        reasons.append("code_like_content")
+    if any(token in text for token in ("\\frac", "\\sum", "\\int", "\\begin{", "∑", "∫", "≤", "≥")):
+        reasons.append("explicit_math_notation")
+    symbols = sum(char in "=+−-*/^_{}[]()<>|∑∫√∞≤≥" for char in text)
+    non_space = sum(not char.isspace() for char in text)
+    if non_space and symbols / non_space >= 0.12:
+        reasons.append("high_symbol_density")
+    if re.search(r"\b(class|struct|def|function|return|import|include)\b", text, re.IGNORECASE):
+        reasons.append("programming_language_signal")
+    return list(dict.fromkeys(reasons))
+
+
+def noise_lines(text: str) -> list[str]:
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def repeated_line_evidence(
+    text: str,
+    minimum_pages: int,
+    pages_by_exact: dict[str, set[int]],
+    pages_by_family: dict[str, set[int]],
+    variants_by_family: dict[str, set[str]],
+) -> dict:
+    lines = noise_lines(text)
+    if not lines:
+        return {"coverage": 0.0, "numericVariantLines": 0}
+    repeated = 0
+    numeric_variants = 0
+    for line in lines:
+        exact = exact_noise_fingerprint(line)
+        family = numeric_family_fingerprint(line)
+        if len(pages_by_exact.get(exact, set())) >= minimum_pages:
+            repeated += 1
+            continue
+        if len(pages_by_family.get(family, set())) >= minimum_pages:
+            repeated += 1
+            if len(variants_by_family.get(family, set())) >= 3:
+                numeric_variants += 1
+    return {
+        "coverage": repeated / len(lines),
+        "numericVariantLines": numeric_variants,
+    }
+
+
+def exact_noise_fingerprint(text: str) -> str:
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def numeric_family_fingerprint(text: str) -> str:
+    # Numeric normalization is deliberately weak evidence and is never allowed
+    # to override semantic formula/code protection.
+    return re.sub(r"\d+", "#", exact_noise_fingerprint(text))
 
 
 def layout_boilerplate_fingerprint(text: str) -> str:
+    """Compatibility alias for scripts; not an exclusion decision by itself."""
     lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
     cleaned_lines: list[str] = []
     for line in lines:
@@ -1313,6 +1742,7 @@ def chunk_from_elements(
     
     bbox_refs = []
     asset_ids = set()
+    has_linked_visual_asset = False
     
     for el in elements:
         bbox, asset_id = link_element_metadata(el, layout_blocks, vlm_results)
@@ -1324,11 +1754,13 @@ def chunk_from_elements(
             })
         if asset_id:
             asset_ids.add(asset_id)
+            has_linked_visual_asset = True
         else:
             page_asset_id = asset_ids_by_page.get(el.page_number)
             if page_asset_id:
                 asset_ids.add(page_asset_id)
-                
+
+    contains_image = contains_image or has_linked_visual_asset
     sorted_asset_ids = sorted(list(asset_ids))
     
     metadata = {

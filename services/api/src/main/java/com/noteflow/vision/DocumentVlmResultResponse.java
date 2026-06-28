@@ -16,6 +16,11 @@ public record DocumentVlmResultResponse(
     String code,
     String uncertainty,
     String searchText,
+    String contentKind,
+    String importance,
+    String readingOrder,
+    String language,
+    int attemptCount,
     String errorMessage
 ) {
     public static DocumentVlmResultResponse from(DocumentVlmResult result) {
@@ -33,6 +38,11 @@ public record DocumentVlmResultResponse(
             result.getCode(),
             result.getUncertainty(),
             result.getSearchText(),
+            result.getContentKind(),
+            result.getImportance(),
+            result.getReadingOrder(),
+            result.getLanguage(),
+            result.getAttemptCount(),
             result.getErrorMessage()
         );
     }

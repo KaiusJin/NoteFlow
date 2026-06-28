@@ -1,21 +1,27 @@
 import json
-import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 import fitz
 
 from noteflow_worker.db.repository import PageAsset, TextChunk
 from noteflow_worker.pdf.parser import estimate_tokens
+from noteflow_worker.pdf.ocr import clean_ocr_text, make_ocr_backend
+from noteflow_worker.runtime.resource_pools import ResourcePoolPlan
+from noteflow_worker.runtime.limits import process_resource_slot
 
 
 RENDER_DPI = 144
 MIN_DRAWINGS_FOR_VISUAL_PAGE = 8
 MIN_IMAGE_COVERAGE = 0.04
-MIN_OCR_CHARS_FOR_SUMMARY = 20
 MIN_NATIVE_TEXT_CHARS_TO_SKIP_OCR = 160
 MIN_IMAGE_COVERAGE_FOR_OCR = 0.12
+_gpu_backend_cache: list = []
+_gpu_backend_cache_lock = Lock()
 
 
 @dataclass(frozen=True)
@@ -29,6 +35,7 @@ class VisualPage:
     image_coverage: float
     text_length: int
     ocr_text: Optional[str]
+    native_text_preview: str = ""
 
     @property
     def has_visual_content(self) -> bool:
@@ -57,14 +64,92 @@ class VisualPage:
         return "\n".join(parts)
 
 
-def analyze_pdf_visuals(path: str, document_id: str) -> list[VisualPage]:
+def analyze_pdf_visuals(
+    path: str,
+    document_id: str,
+    resource_plan: ResourcePoolPlan | None = None,
+) -> list[VisualPage]:
     pdf_path = Path(path)
     output_dir = pdf_path.parent.parent / "rendered" / document_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    visual_pages: list[VisualPage] = []
     with fitz.open(str(pdf_path)) as document:
-        for page_index, page in enumerate(document, start=1):
+        page_count = len(document)
+    render_workers = max(1, min(resource_plan.cpu_workers if resource_plan else 1, page_count or 1))
+    batches = [list(range(start, page_count + 1, render_workers)) for start in range(1, render_workers + 1)]
+    visual_pages: list[VisualPage] = []
+    with ThreadPoolExecutor(max_workers=render_workers, thread_name_prefix="pdf-render") as executor:
+        futures = [
+            executor.submit(_render_page_batch_with_limit, str(pdf_path), output_dir, batch, render_workers)
+            for batch in batches if batch
+        ]
+        for future in as_completed(futures):
+            visual_pages.extend(future.result())
+    visual_pages.sort(key=lambda page: page.page_number)
+
+    backend = make_ocr_backend(resource_plan.accelerator if resource_plan else None)
+    candidates = [
+        page for page in visual_pages
+        if should_run_ocr(
+            "x" * page.text_length,
+            [{}] * page.image_count,
+            page.image_coverage,
+        )
+    ]
+    if not candidates or backend.name == "disabled":
+        return visual_pages
+    configured_workers = (
+        resource_plan.gpu_workers if backend.uses_gpu and resource_plan else
+        resource_plan.cpu_workers if resource_plan else 1
+    )
+    workers = max(1, min(configured_workers, len(candidates)))
+    backends = shared_ocr_backends(backend, workers, resource_plan)
+    workers = len(backends)
+    ocr_by_page: dict[int, str | None] = {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"ocr-{backend.name}") as executor:
+        futures = {
+            executor.submit(
+                recognize_with_global_limit,
+                backends[index % len(backends)],
+                page.image_path,
+                workers,
+            ): page.page_number
+            for index, page in enumerate(candidates)
+        }
+        for future in as_completed(futures):
+            page_number = futures[future]
+            try:
+                ocr_by_page[page_number] = clean_ocr_text(future.result())
+            except Exception:
+                ocr_by_page[page_number] = None
+    return [replace(page, ocr_text=ocr_by_page.get(page.page_number)) for page in visual_pages]
+
+
+def shared_ocr_backends(backend, workers: int, resource_plan: ResourcePoolPlan | None) -> list:
+    if not backend.uses_gpu:
+        return [backend] * workers
+    with _gpu_backend_cache_lock:
+        if not _gpu_backend_cache:
+            _gpu_backend_cache.append(backend)
+        while len(_gpu_backend_cache) < workers:
+            try:
+                _gpu_backend_cache.append(make_ocr_backend(resource_plan.accelerator if resource_plan else None))
+            except (ImportError, RuntimeError, OSError):
+                break
+        return list(_gpu_backend_cache[:workers])
+
+
+def recognize_with_global_limit(backend, image_path: str, workers: int) -> str:
+    resource_name = "gpu_ocr" if backend.uses_gpu else "cpu_ocr"
+    with process_resource_slot(resource_name, workers):
+        return backend.recognize(image_path)
+
+
+def _render_page_batch(pdf_path: str, output_dir: Path, page_numbers: list[int]) -> list[VisualPage]:
+    rendered: list[VisualPage] = []
+    with fitz.open(pdf_path) as document:
+        for page_index in page_numbers:
+            page = document[page_index - 1]
             pixmap = page.get_pixmap(dpi=RENDER_DPI, alpha=False)
             image_path = output_dir / f"page-{page_index:03d}.png"
             pixmap.save(str(image_path))
@@ -72,9 +157,7 @@ def analyze_pdf_visuals(path: str, document_id: str) -> list[VisualPage]:
             image_blocks, image_coverage = image_block_stats(page)
             drawings = page.get_drawings()
             text = page.get_text("text") or ""
-            ocr_text = run_ocr_if_available(image_path) if should_run_ocr(text, image_blocks, image_coverage) else None
-
-            visual_pages.append(
+            rendered.append(
                 VisualPage(
                     page_number=page_index,
                     image_path=str(image_path),
@@ -84,12 +167,21 @@ def analyze_pdf_visuals(path: str, document_id: str) -> list[VisualPage]:
                     drawing_count=len(drawings),
                     image_coverage=image_coverage,
                     text_length=len(text),
-                    ocr_text=ocr_text,
+                    ocr_text=None,
+                    native_text_preview=" ".join(text.split())[:2000],
                 )
             )
-    return visual_pages
+    return rendered
 
 
+def _render_page_batch_with_limit(
+    pdf_path: str,
+    output_dir: Path,
+    page_numbers: list[int],
+    render_workers: int,
+) -> list[VisualPage]:
+    with process_resource_slot("pdf_render", render_workers):
+        return _render_page_batch(pdf_path, output_dir, page_numbers)
 def should_run_ocr(text: str, image_blocks: list[dict], image_coverage: float) -> bool:
     if len(text.strip()) < MIN_NATIVE_TEXT_CHARS_TO_SKIP_OCR:
         return True
@@ -112,24 +204,6 @@ def image_block_stats(page) -> tuple[list[dict], float]:
         image_area += area
         image_blocks.append(block)
     return image_blocks, min(image_area / page_area, 1.0)
-
-
-def run_ocr_if_available(image_path: Path) -> Optional[str]:
-    if shutil.which("tesseract") is None:
-        return None
-    try:
-        import pytesseract
-        from PIL import Image
-
-        text = pytesseract.image_to_string(Image.open(image_path))
-    except Exception:
-        return None
-    cleaned = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-    if len(cleaned) < MIN_OCR_CHARS_FOR_SUMMARY:
-        return None
-    return cleaned[:4000]
-
-
 def to_page_assets(document_id: str, pages: list[VisualPage]) -> list[PageAsset]:
     return [
         PageAsset(

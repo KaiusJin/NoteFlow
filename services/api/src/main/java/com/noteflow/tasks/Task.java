@@ -32,6 +32,7 @@ public class Task {
     @Column(columnDefinition = "TEXT")
     private String errorMessage;
     private int retryCount;
+    private Integer priority;
     private Instant createdAt;
     private Instant startedAt;
     private Instant completedAt;
@@ -49,6 +50,7 @@ public class Task {
         this.currentStep = TaskStep.UPLOADED;
         this.progress = 0;
         this.retryCount = 0;
+        this.priority = priorityFor(taskType);
         this.createdAt = Instant.now();
         this.updatedAt = this.createdAt;
     }
@@ -87,6 +89,18 @@ public class Task {
 
     public int getRetryCount() {
         return retryCount;
+    }
+
+    public int getPriority() {
+        return priority == null ? priorityFor(taskType) : priority;
+    }
+
+    public static int priorityFor(TaskType taskType) {
+        return switch (taskType) {
+            case ASK_DOCUMENT, EXPORT_MARKDOWN -> 0;
+            case GENERATE_EMBEDDINGS -> 2;
+            default -> 1;
+        };
     }
 
     public Instant getCreatedAt() {

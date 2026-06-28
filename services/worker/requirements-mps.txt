@@ -1,0 +1,6 @@
+# Optional Apple Silicon Metal/MPS OCR runtime.
+# Use a Python version supported by the current PyTorch macOS wheels.
+-r requirements.txt
+torch
+torchvision
+easyocr>=1.7,<2

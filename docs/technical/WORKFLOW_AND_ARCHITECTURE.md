@@ -5,6 +5,13 @@
 > Current implementation note:
 > The consolidated current technical specification is `docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md`.
 > This document still includes roadmap items such as embeddings, quiz generation, and production object storage. When this document differs from the current implementation, use the consolidated specification as the source of truth.
+>
+> RAG architecture update:
+> The old `POST /documents/{id}/ask` sections describe an earlier stateless
+> draft. The next implementation is conversation-first and multi-turn. Use
+> `docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` as the source
+> of truth for conversation APIs, streaming, memory, prompt strategy, LangGraph,
+> local SLM deployment, and context compression.
 
 ## 0. 当前已实现主链路
 

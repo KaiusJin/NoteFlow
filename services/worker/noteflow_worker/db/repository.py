@@ -96,6 +96,12 @@ class VlmResult:
     search_text: str
     raw_response_json: Optional[str] = None
     error_message: Optional[str] = None
+    input_fingerprint: Optional[str] = None
+    attempt_count: int = 1
+    content_kind: str = "unknown"
+    importance: str = "medium"
+    reading_order: str = ""
+    language: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -602,6 +608,8 @@ class Repository:
         extracted_text_length: int,
         extracted_text_preview: str,
         detected_content_source_type: str,
+        source_confidence: float | None = None,
+        source_distribution_json: str | None = None,
     ) -> None:
         with self.connect() as conn:
             conn.execute(
@@ -614,11 +622,15 @@ class Repository:
                   extracted_text_length INTEGER NOT NULL,
                   extracted_text_preview TEXT,
                   detected_content_source_type VARCHAR(64) NOT NULL,
+                  source_confidence DOUBLE PRECISION,
+                  source_distribution_json TEXT,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
+            conn.execute("ALTER TABLE document_parse_results ADD COLUMN IF NOT EXISTS source_confidence DOUBLE PRECISION")
+            conn.execute("ALTER TABLE document_parse_results ADD COLUMN IF NOT EXISTS source_distribution_json TEXT")
             conn.execute(
                 """
                 INSERT INTO document_parse_results (
@@ -628,9 +640,11 @@ class Repository:
                   page_count,
                   extracted_text_length,
                   extracted_text_preview,
-                  detected_content_source_type
+                  detected_content_source_type,
+                  source_confidence,
+                  source_distribution_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (document_id)
                 DO UPDATE SET
                   parser_name = EXCLUDED.parser_name,
@@ -638,6 +652,8 @@ class Repository:
                   extracted_text_length = EXCLUDED.extracted_text_length,
                   extracted_text_preview = EXCLUDED.extracted_text_preview,
                   detected_content_source_type = EXCLUDED.detected_content_source_type,
+                  source_confidence = EXCLUDED.source_confidence,
+                  source_distribution_json = EXCLUDED.source_distribution_json,
                   updated_at = NOW()
                 """,
                 (
@@ -648,6 +664,8 @@ class Repository:
                     extracted_text_length,
                     extracted_text_preview,
                     detected_content_source_type,
+                    source_confidence,
+                    source_distribution_json,
                 ),
             )
             conn.execute(
@@ -659,6 +677,27 @@ class Repository:
                 WHERE id = %s
                 """,
                 (page_count, detected_content_source_type, document_id),
+            )
+
+    def save_parse_manifest(self, document_id: str, manifest_json: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_parse_manifests (
+                  document_id UUID PRIMARY KEY,
+                  manifest_json TEXT NOT NULL,
+                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO document_parse_manifests (document_id, manifest_json)
+                VALUES (%s, %s)
+                ON CONFLICT (document_id)
+                DO UPDATE SET manifest_json = EXCLUDED.manifest_json, updated_at = NOW()
+                """,
+                (document_id, manifest_json),
             )
 
     def replace_chunks(self, document_id: str, chunks: Iterable[TextChunk]) -> None:
@@ -1004,52 +1043,99 @@ class Repository:
                   search_text TEXT,
                   raw_response_json TEXT,
                   error_message TEXT,
+                  input_fingerprint VARCHAR(64),
+                  attempt_count INTEGER NOT NULL DEFAULT 1,
+                  content_kind VARCHAR(32),
+                  importance VARCHAR(16),
+                  reading_order TEXT,
+                  language VARCHAR(32),
                   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                   UNIQUE(document_id, page_number, region_index, provider, model)
                 )
                 """
             )
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS input_fingerprint VARCHAR(64)")
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1")
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS content_kind VARCHAR(32)")
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS importance VARCHAR(16)")
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS reading_order TEXT")
+            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS language VARCHAR(32)")
             conn.execute("DELETE FROM document_vlm_results WHERE document_id = %s", (document_id,))
             for result in results:
-                conn.execute(
-                    """
-                    INSERT INTO document_vlm_results (
-                      id,
-                      document_id,
-                      page_number,
-                      region_index,
-                      region_type,
-                      provider,
-                      model,
-                      transcription,
-                      description,
-                      latex,
-                      code,
-                      uncertainty,
-                      search_text,
-                      raw_response_json,
-                      error_message
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        str(uuid4()),
-                        result.document_id,
-                        result.page_number,
-                        result.region_index,
-                        result.region_type,
-                        result.provider,
-                        result.model,
-                        result.transcription,
-                        result.description,
-                        result.latex,
-                        result.code,
-                        result.uncertainty,
-                        result.search_text,
-                        result.raw_response_json,
-                        result.error_message,
-                    ),
+                self._upsert_vlm_result_on_connection(conn, result)
+
+    def ensure_vlm_schema(self) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS document_vlm_results (
+                  id UUID PRIMARY KEY,
+                  document_id UUID NOT NULL,
+                  page_number INTEGER NOT NULL,
+                  region_index INTEGER NOT NULL,
+                  region_type VARCHAR(64) NOT NULL,
+                  provider VARCHAR(64) NOT NULL,
+                  model VARCHAR(128) NOT NULL,
+                  transcription TEXT,
+                  description TEXT,
+                  latex TEXT,
+                  code TEXT,
+                  uncertainty TEXT,
+                  search_text TEXT,
+                  raw_response_json TEXT,
+                  error_message TEXT,
+                  input_fingerprint VARCHAR(64),
+                  attempt_count INTEGER NOT NULL DEFAULT 1,
+                  content_kind VARCHAR(32),
+                  importance VARCHAR(16),
+                  reading_order TEXT,
+                  language VARCHAR(32),
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE(document_id, page_number, region_index, provider, model)
                 )
+                """
+            )
+            self._ensure_vlm_schema_on_connection(conn)
+
+    def upsert_vlm_result(self, result: VlmResult) -> None:
+        """Persist one region immediately so retries never regenerate successes."""
+        with self.connect() as conn:
+            self._ensure_vlm_schema_on_connection(conn)
+            self._upsert_vlm_result_on_connection(conn, result)
+
+    def _ensure_vlm_schema_on_connection(self, conn) -> None:
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS input_fingerprint VARCHAR(64)")
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1")
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS content_kind VARCHAR(32)")
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS importance VARCHAR(16)")
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS reading_order TEXT")
+        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS language VARCHAR(32)")
+
+    def _upsert_vlm_result_on_connection(self, conn, result: VlmResult) -> None:
+        conn.execute(
+            "DELETE FROM document_vlm_results WHERE document_id = %s AND page_number = %s AND region_index = %s",
+            (result.document_id, result.page_number, result.region_index),
+        )
+        conn.execute(
+            """
+            INSERT INTO document_vlm_results (
+              id, document_id, page_number, region_index, region_type,
+              provider, model, transcription, description, latex, code,
+              uncertainty, search_text, raw_response_json, error_message,
+              input_fingerprint, attempt_count
+              , content_kind, importance, reading_order, language
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                str(uuid4()), result.document_id, result.page_number, result.region_index,
+                result.region_type, result.provider, result.model, result.transcription,
+                result.description, result.latex, result.code, result.uncertainty,
+                result.search_text, result.raw_response_json, result.error_message,
+                result.input_fingerprint, result.attempt_count,
+                result.content_kind, result.importance, result.reading_order, result.language,
+            ),
+        )
 
     def load_vlm_results(self, document_id: str) -> list[VlmResult]:
         with self.connect() as conn:
@@ -1069,7 +1155,10 @@ class Repository:
                   uncertainty,
                   search_text,
                   raw_response_json,
-                  error_message
+                  error_message,
+                  input_fingerprint,
+                  attempt_count
+                  , content_kind, importance, reading_order, language
                 FROM document_vlm_results
                 WHERE document_id = %s
                 ORDER BY page_number, region_index
@@ -1092,6 +1181,12 @@ class Repository:
                 search_text=row["search_text"] or "",
                 raw_response_json=row["raw_response_json"],
                 error_message=row["error_message"],
+                input_fingerprint=row.get("input_fingerprint"),
+                attempt_count=int(row.get("attempt_count") or 1),
+                content_kind=row.get("content_kind") or "unknown",
+                importance=row.get("importance") or "medium",
+                reading_order=row.get("reading_order") or "",
+                language=row.get("language") or "unknown",
             )
             for row in rows
         ]
@@ -1567,6 +1662,34 @@ class Repository:
                 RETURNING t.id, t.document_id, t.user_id, t.task_type
                 """,
                 (stale_after_minutes,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def recover_stale_parse_tasks(self, stale_after_minutes: int, max_retries: int) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH stale AS (
+                  SELECT id
+                  FROM tasks
+                  WHERE task_type = 'PARSE_DOCUMENT'
+                    AND status = 'PROCESSING'
+                    AND updated_at < NOW() - (%s::text || ' minutes')::interval
+                    AND retry_count < %s
+                  ORDER BY updated_at
+                  FOR UPDATE SKIP LOCKED
+                )
+                UPDATE tasks t
+                SET status = 'RETRYING',
+                    current_step = 'PARSING_PDF',
+                    retry_count = retry_count + 1,
+                    error_message = 'Recovered stale parse task; successful region checkpoints will be reused.',
+                    updated_at = NOW()
+                FROM stale
+                WHERE t.id = stale.id
+                RETURNING t.id, t.document_id, t.user_id, t.task_type
+                """,
+                (stale_after_minutes, max_retries),
             ).fetchall()
         return [dict(row) for row in rows]
 

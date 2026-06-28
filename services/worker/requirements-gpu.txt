@@ -1,0 +1,6 @@
+# Optional NVIDIA GPU OCR runtime. Install in the GPU worker image only.
+# Keep it separate because paddlepaddle-gpu wheels are CUDA/platform-specific.
+-r requirements.txt
+paddleocr>=2.8,<4
+# Install the paddlepaddle-gpu wheel matching the deployment CUDA version from:
+# https://www.paddlepaddle.org.cn/install/quick

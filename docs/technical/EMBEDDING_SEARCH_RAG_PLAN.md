@@ -38,6 +38,17 @@ precision cutoff that does not pad results with weak evidence
 The next phase is source-grounded answer generation and conditional RAG
 orchestration.
 
+The answer architecture is multi-turn and conversation-first. Do not implement
+the earlier stateless `/documents/{documentId}/ask` draft as the primary API.
+Use:
+
+```text
+docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md
+```
+
+for conversation persistence, streaming, prompt strategy, memory, compression,
+LangGraph, local SLM deployment, and speculative decoding.
+
 The completed retrieval design and implementation reference is:
 
 ```text

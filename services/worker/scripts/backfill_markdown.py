@@ -14,9 +14,15 @@ def main() -> int:
 
     repository = Repository()
     for document_id in document_ids:
+        document = repository.load_document(document_id)
         blocks = repository.load_layout_blocks(document_id)
         vlm_results = repository.load_vlm_results(document_id)
-        markdown = build_markdown_document(document_id, blocks, vlm_results)
+        markdown = build_markdown_document(
+            document_id,
+            blocks,
+            vlm_results,
+            document_type=document.document_type,
+        )
         repository.replace_markdown_pages(document_id, markdown.pages)
         repository.save_markdown_document(markdown.document)
         print(f"{document_id} pages={len(markdown.pages)} chars={len(markdown.document.markdown)}")

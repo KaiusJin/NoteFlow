@@ -8,6 +8,17 @@
 
 NoteFlow 面向大学生和技术学习者，提供从 PDF 上传、AI 解析、结构化笔记生成、题库生成、RAG 问答、数学公式编辑到 Markdown / PDF 导出的完整学习资料工作流。
 
+当前 RAG 产品决策：
+
+```text
+不以彼此隔离的单轮问答作为最终形态。
+下一阶段采用多轮 conversation-first RAG，包含流式回答、上下文窗口、
+摘要压缩、显式记忆、引用验证和条件式 LangGraph 工作流。
+```
+
+具体实现以
+`docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` 为准。
+
 项目的核心不是做一个简单的 PDF summarizer，而是做一个可以真实使用、可以展示工程能力的学习资料处理平台。
 
 ## 2. 项目背景
