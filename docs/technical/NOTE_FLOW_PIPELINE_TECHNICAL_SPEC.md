@@ -17,9 +17,11 @@ Current downstream progress:
 Embedding generation: implemented
 Hybrid vector/lexical/exact retrieval: implemented
 RRF, reranking, HyDE, citations, and context construction: implemented
-Multi-turn conversational answer generation: designed, implementation paused
-pending the conversation-first contracts in
-MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md
+Multi-turn conversational answer generation: first vertical implemented
+(persistent messages, source scope, memory context, vector evidence, structured
+LLM answer, durable citations, Java REST, browser polling). Streaming and the
+broader LangGraph/tool workflow remain planned in
+MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md.
 ```
 
 It consolidates the older workflow, architecture, document type, PDF Markdown, chunking, and AI notes documents into one layered technical reference. Historical audit reports remain useful, but this document describes the current intended implementation.

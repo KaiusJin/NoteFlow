@@ -150,5 +150,21 @@ class Settings(BaseSettings):
     srs_first_interval_days: int = 1
     srs_second_interval_days: int = 6
 
+    # Conversation answering: LLM (empty falls back to notes provider/models)
+    answer_llm_provider: str = ""
+    answer_gemini_model: str = ""
+    answer_openai_model: str = ""
+    answer_request_timeout_seconds: int = 90
+    answer_request_max_attempts: int = 3
+    answer_retry_backoff_seconds: float = 2.0
+
+    # Conversation answering: evidence retrieval budgets
+    answer_evidence_top_k: int = 8
+    answer_evidence_candidate_limit: int = 32
+    answer_evidence_min_similarity: float = 0.30
+    answer_evidence_max_tokens: int = 2800
+    answer_evidence_item_max_tokens: int = 700
+    answer_stale_task_after_minutes: int = 5
+
 
 settings = Settings()

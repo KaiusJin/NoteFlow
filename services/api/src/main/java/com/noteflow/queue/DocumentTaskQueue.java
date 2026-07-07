@@ -21,17 +21,25 @@ public class DocumentTaskQueue {
     }
 
     public void enqueue(Task task, java.util.UUID attemptId) {
+        enqueue(task, attemptId, null, null);
+    }
+
+    public void enqueue(Task task, java.util.UUID attemptId, java.util.UUID conversationId, java.util.UUID messageId) {
         String attemptField = attemptId == null ? "" : ",\"attemptId\":\"" + attemptId + "\"";
+        String conversationField = conversationId == null ? "" : ",\"conversationId\":\"" + conversationId + "\"";
+        String messageField = messageId == null ? "" : ",\"messageId\":\"" + messageId + "\"";
         String payload = """
-            {"taskId":"%s","documentId":"%s","userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s}
+            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s%s%s}
             """.formatted(
                 task.getId(),
-                task.getDocumentId(),
+                task.getDocumentId() == null ? "null" : "\"" + task.getDocumentId() + "\"",
                 task.getUserId(),
                 task.getTaskType(),
                 task.getPriority(),
                 Instant.now().toEpochMilli() / 1000.0,
-                attemptField
+                attemptField,
+                conversationField,
+                messageField
             ).trim();
         redis.opsForList().rightPush(priorityQueueName(task.getPriority()), payload);
     }

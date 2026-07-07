@@ -242,6 +242,10 @@ class ConversationMemoryManager:
             maintenance_needed = False
         return TurnRecord(message_id=message_id, token_count=token_count, maintenance_needed=maintenance_needed)
 
+    def maintenance_due(self, conversation_id: str) -> bool:
+        """Public trigger check for callers that persist messages themselves."""
+        return self._maintenance_due(self._store.load_conversation_state(conversation_id))
+
     def _maintenance_due(self, state: ConversationState) -> bool:
         conversation_id = state.conversation_id
         summary_backlog = self._store.unsummarized_token_count(

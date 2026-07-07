@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from noteflow_worker.db.repository import Repository
+from noteflow_worker.db.repository import Repository, ensure_task_constraints
 from noteflow_worker.study.models import Flashcard, QuizAnswerToGrade, QuizQuestion, ReviewState
 
 
@@ -111,21 +111,7 @@ class StudyRepository(Repository):
                       EXECUTE FUNCTION cleanup_study_generation_checkpoints()""")
             # Hibernate-generated enum checks in existing installations must be
             # widened before the worker can update new task types/steps.
-            type_check = conn.execute("""SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
-              WHERE conrelid='tasks'::regclass AND conname='tasks_task_type_check'""").fetchone()
-            if not type_check or "GENERATE_FLASHCARDS" not in type_check["definition"]:
-                conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check")
-                conn.execute("""ALTER TABLE tasks ADD CONSTRAINT tasks_task_type_check CHECK (task_type IN
-                  ('PARSE_DOCUMENT','GENERATE_EMBEDDINGS','GENERATE_NOTES','GENERATE_FLASHCARDS','GENERATE_QUIZ',
-                   'GRADE_QUIZ_ATTEMPT','ASK_DOCUMENT','EXPORT_MARKDOWN'))""")
-            step_check = conn.execute("""SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
-              WHERE conrelid='tasks'::regclass AND conname='tasks_current_step_check'""").fetchone()
-            if not step_check or "GENERATING_FLASHCARDS" not in step_check["definition"]:
-                conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_current_step_check")
-                conn.execute("""ALTER TABLE tasks ADD CONSTRAINT tasks_current_step_check CHECK (current_step IN
-                  ('UPLOADED','PARSING_PDF','EXTRACTING_TEXT','ANALYZING_VISUAL_CONTENT','CROPPING_VISUAL_REGIONS',
-                   'VLM_ANALYSIS','LAYOUT_CHUNKING','CHUNKING','GENERATING_EMBEDDINGS','GENERATING_NOTES',
-                   'GENERATING_FLASHCARDS','GENERATING_QUIZ','GRADING_QUIZ','COMPLETED','FAILED'))""")
+            ensure_task_constraints(conn)
 
     def latest_generating_deck_id(self, document_id: str, user_id: str) -> str:
         return self._latest_id("flashcard_decks", document_id, user_id)

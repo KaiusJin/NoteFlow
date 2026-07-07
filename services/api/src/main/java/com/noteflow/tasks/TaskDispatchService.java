@@ -35,6 +35,13 @@ public class TaskDispatchService {
         return task;
     }
 
+    public Task createConversationAndEnqueue(UUID userId, UUID conversationId, UUID messageId) {
+        Task task = new Task(UUID.randomUUID(), null, userId, TaskType.ANSWER_CONVERSATION_TURN);
+        tasks.save(task);
+        enqueueAfterCommit(task, null, conversationId, messageId);
+        return task;
+    }
+
     public Task latestActiveTask(UUID documentId, TaskType taskType) {
         return tasks.findByDocumentIdOrderByCreatedAtDesc(documentId).stream()
             .filter(task -> task.getTaskType() == taskType)
@@ -50,14 +57,18 @@ public class TaskDispatchService {
     }
 
     private void enqueueAfterCommit(Task task, UUID attemptId) {
+        enqueueAfterCommit(task, attemptId, null, null);
+    }
+
+    private void enqueueAfterCommit(Task task, UUID attemptId, UUID conversationId, UUID messageId) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            queue.enqueue(task, attemptId);
+            queue.enqueue(task, attemptId, conversationId, messageId);
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                queue.enqueue(task, attemptId);
+                queue.enqueue(task, attemptId, conversationId, messageId);
             }
         });
     }

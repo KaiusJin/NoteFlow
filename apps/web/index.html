@@ -3,100 +3,52 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>NoteFlow Upload</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <title>NoteFlow</title>
+    <link rel="stylesheet" href="./styles.css?v=sidebar-1" />
   </head>
   <body>
-    <main class="shell">
-      <section class="panel">
-        <div class="eyebrow">NoteFlow MVP</div>
-        <h1>Upload a PDF</h1>
-        <p class="lede">
-          Start the first workflow: save a PDF, create a parse task, and watch the processing status.
-        </p>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">N</span>
+          <span class="brand-name">NoteFlow</span>
+        </div>
 
-        <form id="upload-form" class="form">
-          <label>
-            Title
-            <input id="title" name="title" type="text" placeholder="Week 1 probability notes" />
-          </label>
+        <nav class="side-nav" aria-label="Modules">
+          <button type="button" data-nav="agent">
+            <span class="nav-icon">✦</span> AI Agent
+          </button>
+          <button type="button" data-nav="flashcards">
+            <span class="nav-icon">▣</span> Flashcards
+          </button>
+          <button type="button" data-nav="quiz">
+            <span class="nav-icon">?</span> Quiz
+          </button>
+          <button type="button" data-nav="general">
+            <span class="nav-icon">☰</span> General
+          </button>
+        </nav>
 
-          <label>
-            Document type
-            <select id="document-type" name="documentType">
-              <option value="COURSE_NOTES">Course notes</option>
-              <option value="LECTURE_SLIDES">Lecture slides</option>
-              <option value="RESEARCH_PAPER">Research paper</option>
-              <option value="ASSIGNMENT">Assignment</option>
-              <option value="PAST_EXAM">Past exam</option>
-              <option value="HANDWRITTEN_NOTES">Handwritten notes</option>
-              <option value="OTHER">Other</option>
-            </select>
-          </label>
-
-          <label class="file-drop" for="pdf-file">
-            <span id="file-label">Choose a PDF</span>
-            <input id="pdf-file" name="file" type="file" accept="application/pdf,.pdf" required />
-          </label>
-
-          <button type="submit">Upload and Parse</button>
-        </form>
-      </section>
-
-      <section class="panel">
-        <div class="section-header">
-          <div>
-            <div class="eyebrow">Task Status</div>
-            <h2>Processing</h2>
+        <div class="side-section">
+          <div class="side-label">
+            Documents
+            <button id="sidebar-refresh" class="icon-button" type="button" title="Refresh documents">↻</button>
           </div>
-          <button id="refresh-documents" class="secondary" type="button">Refresh</button>
-        </div>
-
-        <div id="status-card" class="status-card muted">
-          Upload a PDF to create a parsing task.
-        </div>
-
-        <div class="progress-shell" aria-label="Task progress">
-          <div id="progress-bar" class="progress-bar"></div>
-        </div>
-      </section>
-
-      <section class="panel wide">
-        <div class="section-header">
-          <div>
-            <div class="eyebrow">Documents</div>
-            <h2>Recent uploads</h2>
-          </div>
-          <button id="open-search" class="secondary" type="button">Search</button>
-        </div>
-        <div id="documents-list" class="documents-list"></div>
-      </section>
-
-      <section class="panel wide">
-        <div class="section-header">
-          <div>
-            <div class="eyebrow">Document Output</div>
-            <h2>Parsed Output / AI Notes</h2>
+          <div id="sidebar-documents" class="side-documents">
+            <div class="side-empty">Loading…</div>
           </div>
         </div>
-        <div id="parse-output" class="parse-output muted">
-          Select a document, then use View Parsed Output, AI Notes, Embeddings, or Search.
-        </div>
-      </section>
 
-      <section class="panel wide study-panel">
-        <div class="section-header">
-          <div>
-            <div class="eyebrow">Study Workspace</div>
-            <h2>Flashcards & Quiz</h2>
-          </div>
+        <div class="side-footer">
+          <div id="sidebar-tasks" class="side-tasks"></div>
         </div>
-        <div id="study-output" class="study-output muted">
-          Choose a document and open its Study section.
-        </div>
-      </section>
-    </main>
+      </aside>
 
-    <script src="./app.js?v=study-workspace-1"></script>
+      <main class="content">
+        <div id="view-root" class="view-root"></div>
+      </main>
+    </div>
+
+    <script src="./app.js?v=sidebar-1"></script>
   </body>
 </html>

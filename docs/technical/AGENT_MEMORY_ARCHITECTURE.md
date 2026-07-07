@@ -259,13 +259,16 @@ The pipeline logs it as structured JSON and derives task success from it.
 - All DDL is `CREATE TABLE/INDEX IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS`:
   either the conversation service or the worker may start first.
 
-### 4.5 Boundary with the future conversation service
+### 4.5 Implemented conversation answer vertical
 
-This subsystem does not own: answer generation, retrieval (hybrid recall),
-streaming, or authentication. Per turn, the conversation service runs:
+The conversation service is now connected end to end. Spring owns user-bound
+conversation/message persistence and dispatch; the Python
+`AnswerConversationTurnPipeline` owns context assembly, vector evidence recall,
+structured answer generation, citation validation, and memory-maintenance
+scheduling. Per turn it runs:
 
 ```text
-① record_turn(USER message)
+① API atomically persists USER + GENERATING ASSISTANT messages and task target
 ② build_context(query, query_embedding)   ← embedding shared with retrieval
 ③ retrieval: MUST filter by context.source_scope
      (document_embeddings WHERE document_id = ANY(scope), applying the two
@@ -273,7 +276,7 @@ streaming, or authentication. Per turn, the conversation service runs:
 ④ answer generation: preferences (authoritative settings) → summary/window
    (conversation state) → recalled_memories (user profile) → retrieved
    evidence, each in its own prompt tier
-⑤ record_turn(ASSISTANT message)
+⑤ atomically complete the ASSISTANT placeholder + immutable citation snapshots
 ⑥ if ①/⑤ returned maintenance_needed → enqueue MAINTAIN_CONVERSATION_MEMORY
 ```
 
@@ -281,6 +284,13 @@ Summaries and recalled memories are always labeled as conversation state /
 user profile in prompts and **must never be cited as academic evidence** —
 factual answers still require retrieved source evidence, per the multi-turn
 RAG contract.
+
+The browser uses `POST /conversations/{id}/messages` and polls the assistant
+resource until `COMPLETED` or `FAILED`. This first vertical deliberately uses
+polling rather than SSE; message and citation state is durable, so browser
+navigation or reload does not lose a turn. The implementation is an explicit
+pipeline, not LangGraph. LangGraph remains an optional orchestration direction
+for later branching/tool workflows and is not required by this linear contract.
 
 ---
 
@@ -318,4 +328,10 @@ MEMORY_RETRY_BACKOFF_SECONDS=2
 # Maintenance execution
 MEMORY_MAINTENANCE_INLINE=false      MEMORY_MAINTENANCE_STALE_AFTER_MINUTES=10
 MEMORY_MAINTENANCE_FETCH_LIMIT=200
+
+# Answer generation and grounded evidence
+ANSWER_LLM_PROVIDER=                 ANSWER_GEMINI_MODEL= / ANSWER_OPENAI_MODEL=
+ANSWER_REQUEST_TIMEOUT_SECONDS=90    ANSWER_REQUEST_MAX_ATTEMPTS=3
+ANSWER_EVIDENCE_TOP_K=8              ANSWER_EVIDENCE_CANDIDATE_LIMIT=30
+ANSWER_EVIDENCE_MIN_SIMILARITY=0.35  ANSWER_EVIDENCE_MAX_TOKENS=6000
 ```

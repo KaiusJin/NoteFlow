@@ -27,15 +27,26 @@ class StructuredMemoryLlm:
     exponential backoff plus jitter; deterministic failures are not.
     """
 
-    def __init__(self, provider: str, model: str, request_fn: Callable | None = None) -> None:
+    def __init__(
+        self,
+        provider: str,
+        model: str,
+        request_fn: Callable | None = None,
+        *,
+        timeout_seconds: int | None = None,
+        max_attempts: int | None = None,
+        backoff_seconds: float | None = None,
+    ) -> None:
         self.provider = provider
         self.model = model
         self._request_fn = request_fn
+        self.timeout_seconds = timeout_seconds or settings.memory_request_timeout_seconds
+        self.max_attempts = max(1, max_attempts or settings.memory_request_max_attempts)
+        self.backoff_seconds = backoff_seconds or settings.memory_retry_backoff_seconds
 
     def generate(self, prompt: str, response_schema: dict, schema_name: str, validate: Callable[[dict], None]) -> dict:
         last_error = ""
-        max_attempts = max(1, settings.memory_request_max_attempts)
-        for attempt in range(1, max_attempts + 1):
+        for attempt in range(1, self.max_attempts + 1):
             try:
                 response = self._request(prompt, response_schema, schema_name)
                 parsed = parse_json_object(extract_response_text(response))
@@ -44,10 +55,10 @@ class StructuredMemoryLlm:
             except Exception as exc:
                 last_error = str(exc)[:2000]
                 retryable = isinstance(exc, (ValueError, json.JSONDecodeError)) or is_retryable_error(last_error)
-                if attempt >= max_attempts or not retryable:
+                if attempt >= self.max_attempts or not retryable:
                     break
-                base = settings.memory_retry_backoff_seconds * (2 ** (attempt - 1))
-                jitter = random.uniform(0.0, min(1.0, settings.memory_retry_backoff_seconds * 0.25))
+                base = self.backoff_seconds * (2 ** (attempt - 1))
+                jitter = random.uniform(0.0, min(1.0, self.backoff_seconds * 0.25))
                 time.sleep(min(30.0, base + jitter))
         raise MemoryLlmError(last_error or "Memory LLM call failed.")
 
@@ -77,7 +88,7 @@ class StructuredMemoryLlm:
                 "response_schema": response_schema,
             },
         }
-        return post_json(url, payload)
+        return post_json(url, payload, timeout_seconds=self.timeout_seconds)
 
     def _request_openai(self, prompt: str, response_schema: dict, schema_name: str) -> dict:
         if not settings.openai_api_key:
@@ -96,7 +107,7 @@ class StructuredMemoryLlm:
             },
         }
         headers = {"Authorization": "Bearer " + settings.openai_api_key}
-        return post_json("https://api.openai.com/v1/chat/completions", payload, headers=headers)
+        return post_json("https://api.openai.com/v1/chat/completions", payload, headers=headers, timeout_seconds=self.timeout_seconds)
 
 
 def extract_response_text(response: dict) -> str:
@@ -107,7 +118,7 @@ def extract_response_text(response: dict) -> str:
     return json.dumps(response)
 
 
-def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
+def post_json(url: str, payload: dict, headers: dict | None = None, timeout_seconds: int | None = None) -> dict:
     request = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -115,7 +126,7 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=settings.memory_request_timeout_seconds) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds or settings.memory_request_timeout_seconds) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")

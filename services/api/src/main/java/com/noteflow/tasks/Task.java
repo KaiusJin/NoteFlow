@@ -97,8 +97,8 @@ public class Task {
 
     public static int priorityFor(TaskType taskType) {
         return switch (taskType) {
-            case ASK_DOCUMENT, EXPORT_MARKDOWN -> 0;
-            case GENERATE_EMBEDDINGS -> 2;
+            case ASK_DOCUMENT, EXPORT_MARKDOWN, ANSWER_CONVERSATION_TURN -> 0;
+            case GENERATE_EMBEDDINGS, MAINTAIN_CONVERSATION_MEMORY -> 2;
             default -> 1;
         };
     }

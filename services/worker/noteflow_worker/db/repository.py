@@ -1704,3 +1704,67 @@ def json_dumps_compact(value: dict) -> str:
 
 def vector_literal(values: list[float]) -> str:
     return "[" + ",".join(format(float(value), ".10g") for value in values) + "]"
+
+
+# Canonical task-type and step lists shared by every schema owner that widens
+# the Hibernate-generated CHECK constraints. A single source prevents two
+# subsystems from fighting over the constraint definition.
+ALL_TASK_TYPES = (
+    "PARSE_DOCUMENT",
+    "GENERATE_EMBEDDINGS",
+    "GENERATE_NOTES",
+    "GENERATE_FLASHCARDS",
+    "GENERATE_QUIZ",
+    "GRADE_QUIZ_ATTEMPT",
+    "ANSWER_CONVERSATION_TURN",
+    "MAINTAIN_CONVERSATION_MEMORY",
+    "ASK_DOCUMENT",
+    "EXPORT_MARKDOWN",
+)
+
+ALL_TASK_STEPS = (
+    "UPLOADED",
+    "PARSING_PDF",
+    "EXTRACTING_TEXT",
+    "ANALYZING_VISUAL_CONTENT",
+    "CROPPING_VISUAL_REGIONS",
+    "VLM_ANALYSIS",
+    "LAYOUT_CHUNKING",
+    "CHUNKING",
+    "GENERATING_EMBEDDINGS",
+    "GENERATING_NOTES",
+    "GENERATING_FLASHCARDS",
+    "GENERATING_QUIZ",
+    "GRADING_QUIZ",
+    "ANSWERING",
+    "MAINTAINING_MEMORY",
+    "COMPLETED",
+    "FAILED",
+)
+
+
+def ensure_task_constraints(conn) -> None:
+    """Widen the tasks CHECK constraints to the canonical type/step lists.
+
+    Idempotent: rewrites a constraint only when the newest member is missing
+    from its current definition.
+    """
+    sentinel_type = "MAINTAIN_CONVERSATION_MEMORY"
+    type_check = conn.execute(
+        """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
+           WHERE conrelid='tasks'::regclass AND conname='tasks_task_type_check'"""
+    ).fetchone()
+    if not type_check or sentinel_type not in type_check["definition"]:
+        conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check")
+        values = ",".join(f"'{item}'" for item in ALL_TASK_TYPES)
+        conn.execute(f"ALTER TABLE tasks ADD CONSTRAINT tasks_task_type_check CHECK (task_type IN ({values}))")
+
+    sentinel_step = "MAINTAINING_MEMORY"
+    step_check = conn.execute(
+        """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
+           WHERE conrelid='tasks'::regclass AND conname='tasks_current_step_check'"""
+    ).fetchone()
+    if not step_check or sentinel_step not in step_check["definition"]:
+        conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_current_step_check")
+        values = ",".join(f"'{item}'" for item in ALL_TASK_STEPS)
+        conn.execute(f"ALTER TABLE tasks ADD CONSTRAINT tasks_current_step_check CHECK (current_step IN ({values}))")

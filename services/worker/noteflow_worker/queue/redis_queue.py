@@ -28,7 +28,7 @@ PRIORITY_SCHEDULE = (
 
 
 def priority_for_task_type(task_type: str) -> int:
-    if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN"}:
+    if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN", "ANSWER_CONVERSATION_TURN"}:
         return PRIORITY_INTERACTIVE
     if task_type in {"GENERATE_EMBEDDINGS", "MAINTAIN_CONVERSATION_MEMORY"}:
         return PRIORITY_BACKGROUND
@@ -46,6 +46,8 @@ class TaskPayload:
     conversation_id: str | None = None
     # Grading tasks target a specific quiz attempt rather than a document.
     attempt_id: str | None = None
+    # Answer-turn tasks target the assistant placeholder message.
+    message_id: str | None = None
 
     @property
     def resolved_priority(self) -> int:
@@ -109,6 +111,7 @@ class RedisTaskQueue:
                 "enqueuedAt": payload.enqueued_at or time.time(),
                 **({"conversationId": payload.conversation_id} if payload.conversation_id else {}),
                 **({"attemptId": payload.attempt_id} if payload.attempt_id else {}),
+                **({"messageId": payload.message_id} if payload.message_id else {}),
             },
             separators=(",", ":"),
         )
@@ -117,13 +120,16 @@ class RedisTaskQueue:
     def _decode(self, raw_payload: str, queue_priority: int) -> TaskPayload:
         payload = json.loads(raw_payload)
         priority = payload.get("priority")
+        document_id = payload.get("documentId") or ""
         return TaskPayload(
             task_id=payload["taskId"],
-            document_id=payload["documentId"],
+            # Conversation turns are not document-scoped; tolerate absent ids.
+            document_id="" if document_id in {"", "null", "None"} else document_id,
             user_id=payload["userId"],
             task_type=payload["taskType"],
             priority=int(priority) if priority in ALL_PRIORITIES else queue_priority,
             enqueued_at=float(payload["enqueuedAt"]) if payload.get("enqueuedAt") else None,
             conversation_id=payload.get("conversationId") or None,
             attempt_id=payload.get("attemptId") or None,
+            message_id=payload.get("messageId") or None,
         )

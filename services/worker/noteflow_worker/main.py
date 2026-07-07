@@ -7,6 +7,7 @@ from noteflow_worker.pipelines.generate_notes import GenerateNotesPipeline
 from noteflow_worker.pipelines.generate_flashcards import GenerateFlashcardsPipeline
 from noteflow_worker.pipelines.generate_quiz import GenerateQuizPipeline
 from noteflow_worker.pipelines.grade_quiz_attempt import GradeQuizAttemptPipeline
+from noteflow_worker.pipelines.answer_conversation_turn import AnswerConversationTurnPipeline
 from noteflow_worker.pipelines.maintain_memory import MaintainConversationMemoryPipeline
 from noteflow_worker.pipelines.parse_document import ParseDocumentPipeline
 from noteflow_worker.queue.redis_queue import (
@@ -17,6 +18,7 @@ from noteflow_worker.queue.redis_queue import (
     TaskPayload,
 )
 from noteflow_worker.study.repository import StudyRepository
+from noteflow_worker.conversation.store import ConversationStore
 
 
 def process_payload(payload: TaskPayload) -> None:
@@ -48,6 +50,10 @@ def process_payload(payload: TaskPayload) -> None:
         print(f"Processing quiz grading task {payload.task_id} for attempt {payload.attempt_id}")
         GradeQuizAttemptPipeline(StudyRepository()).run(payload)
         return
+    if payload.task_type == "ANSWER_CONVERSATION_TURN":
+        print(f"Answering conversation {payload.conversation_id}, message {payload.message_id}")
+        AnswerConversationTurnPipeline().run(payload)
+        return
     if payload.task_type == "MAINTAIN_CONVERSATION_MEMORY":
         print(f"Processing memory maintenance task {payload.task_id} for conversation {payload.conversation_id}")
         MaintainConversationMemoryPipeline().run(payload)
@@ -69,6 +75,7 @@ def main() -> None:
     )
     recover_stale_notes_tasks(queue)
     recover_stale_study_tasks(queue)
+    recover_stale_answer_tasks(queue)
     recover_stale_parse_tasks(queue)
 
     with ThreadPoolExecutor(max_workers=max_tasks) as executor:
@@ -150,6 +157,23 @@ def recover_stale_study_tasks(queue: RedisTaskQueue) -> None:
             attempt_id=str(row["attempt_id"]) if row.get("attempt_id") else None)
         queue.push(payload)
         print(f"Recovered stale study task {payload.task_id} ({payload.task_type})")
+
+
+def recover_stale_answer_tasks(queue: RedisTaskQueue) -> None:
+    store = ConversationStore()
+    store.ensure_conversation_schema()
+    rows = store.recover_stale_answer_tasks(settings.answer_stale_task_after_minutes)
+    for row in rows:
+        if not row.get("conversation_id") or not row.get("message_id"):
+            store.mark_task_failed(str(row["id"]), "Recovered answer task is missing its target mapping.")
+            continue
+        payload = TaskPayload(
+            task_id=str(row["id"]), document_id="", user_id=str(row["user_id"]),
+            task_type=row["task_type"], conversation_id=str(row["conversation_id"]),
+            message_id=str(row["message_id"]),
+        )
+        queue.push(payload)
+        print(f"Recovered stale answer task {payload.task_id} for conversation {payload.conversation_id}")
 
 
 if __name__ == "__main__":
