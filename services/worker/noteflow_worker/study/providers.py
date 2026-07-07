@@ -212,11 +212,30 @@ def _validate_common(item: dict, index: int, name: str) -> None:
     if not isinstance(item["sourceChunkIndexes"], list) or not item["sourceChunkIndexes"] or any(
             isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in item["sourceChunkIndexes"]):
         raise ValueError(f"{name} {index} must cite source indexes.")
-    confidence = item["confidence"]
+    confidence = _normalize_confidence(item["confidence"])
+    item["confidence"] = confidence
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
         raise ValueError(f"{name} {index} confidence must be between 0 and 1.")
     if not isinstance(item["warnings"], list) or any(not isinstance(v, str) for v in item["warnings"]):
         raise ValueError(f"{name} {index} warnings must be strings.")
+
+
+def _normalize_confidence(value):
+    """Canonicalize schema-mode provider confidence values to 0..1.
+
+    Some models emit `80` or `"0.8"` even when the response schema requests a
+    number. This field is metadata, so normalizing it is safe; all grounding,
+    rubric, difficulty and cardinality validation remains strict.
+    """
+    if isinstance(value, bool):
+        return value
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return value
+    if 1 < numeric <= 100:
+        numeric /= 100
+    return numeric
 
 
 def validate_grade_response(parsed: dict, max_points: float, rubric_count: int) -> None:

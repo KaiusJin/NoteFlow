@@ -15,8 +15,8 @@ from noteflow_worker.study.providers import (
     questions_response_schema, request_with_retries, validate_grade_response,
 )
 from noteflow_worker.study.srs import reset_review, resume_review, schedule_review, suspend_review
-from noteflow_worker.pipelines.generate_flashcards import generate_group as generate_flashcard_group
-from noteflow_worker.pipelines.generate_quiz import difficulty_counts, generate_group as generate_quiz_group, parse_difficulty_mix
+from noteflow_worker.pipelines.generate_flashcards import generate_group as generate_flashcard_group, prompt as flashcard_prompt
+from noteflow_worker.pipelines.generate_quiz import difficulty_counts, generate_group as generate_quiz_group, parse_difficulty_mix, prompt as quiz_prompt
 
 
 def valid_card(**overrides):
@@ -39,6 +39,21 @@ def valid_question(**overrides):
 
 
 class StructuredStudyOutputTest(unittest.TestCase):
+    def test_generation_prompts_define_confidence_scale(self):
+        class Group:
+            index, token_count, chunks = 0, 100, []
+        self.assertIn("0.0 to 1.0", flashcard_prompt("Doc", Group(), 1, 1))
+        self.assertIn("0.0 to 1.0", quiz_prompt("Doc", Group(), 1, 1))
+
+    def test_quiz_confidence_percent_and_string_are_normalized(self):
+        percent = {"questions": [valid_question()]}
+        percent["questions"][0]["confidence"] = 80
+        self.assertEqual(questions_from_dict(percent)[0].confidence, 0.8)
+
+        decimal_string = {"questions": [valid_question()]}
+        decimal_string["questions"][0]["confidence"] = "0.75"
+        self.assertEqual(questions_from_dict(decimal_string)[0].confidence, 0.75)
+
     def test_accepts_flashcard_and_preserves_latex(self):
         cards = flashcards_from_dict({"flashcards": [valid_card()]})
         self.assertEqual(cards[0].back, "$E[X^2]-E[X]^2$")
@@ -86,18 +101,20 @@ class StructuredStudyOutputTest(unittest.TestCase):
         self.assertGreaterEqual(counts["MEDIUM"], counts["EASY"])
 
     def test_group_cardinality_mismatch_is_retried(self):
+        class Candidate:
+            confidence = 0.9
         class Provider:
             calls = 0
             def generate_flashcards(self, _prompt):
                 self.calls += 1
-                return [object()] * (1 if self.calls == 1 else 2)
+                return [Candidate()] * (1 if self.calls == 1 else 2)
         provider = Provider()
         self.assertEqual(len(generate_flashcard_group(provider, "prompt", 2)), 2)
         self.assertEqual(provider.calls, 2)
 
     def test_group_difficulty_mismatch_is_retried(self):
         class Candidate:
-            def __init__(self, difficulty): self.difficulty = difficulty
+            def __init__(self, difficulty): self.difficulty, self.confidence = difficulty, 0.9
         class Provider:
             calls = 0
             def generate_questions(self, _prompt):
@@ -106,6 +123,20 @@ class StructuredStudyOutputTest(unittest.TestCase):
         provider = Provider()
         self.assertEqual(generate_quiz_group(provider, "prompt", {"EASY": 1, "MEDIUM": 0, "HARD": 0})[0].difficulty,
                          "EASY")
+        self.assertEqual(provider.calls, 2)
+
+    def test_low_confidence_quiz_group_is_retried(self):
+        class Candidate:
+            difficulty = "EASY"
+            def __init__(self, confidence): self.confidence = confidence
+        class Provider:
+            calls = 0
+            def generate_questions(self, _prompt):
+                self.calls += 1
+                return [Candidate(0.1 if self.calls == 1 else 0.9)]
+        provider = Provider()
+        result = generate_quiz_group(provider, "prompt", {"EASY": 1, "MEDIUM": 0, "HARD": 0})
+        self.assertEqual(result[0].confidence, 0.9)
         self.assertEqual(provider.calls, 2)
 
     def test_provider_usage_aggregates_gemini_and_openai_metadata(self):

@@ -25,6 +25,7 @@ class GenerateQuizPipeline:
         set_id = ""
         lease_key = ""
         lease_acquired = False
+        resumable_failure = False
         try:
             self.repo.ensure_study_schema()
             self.repo.mark_task_processing(payload.task_id, "GENERATING_QUIZ", 5)
@@ -98,15 +99,16 @@ class GenerateQuizPipeline:
             final["providerUsage"] = provider_usage(provider)
             final["generationTargetCount"] = effective_max
             final["configuredMaximumExpandedForCoverage"] = len(groups) > settings.quiz_max_questions_per_document
-            status = "PARTIAL" if failed and completed else "FAILED" if failed else "READY"
+            status = "PARTIAL" if failed else "READY"
             self.repo.update_generation("quiz_sets", set_id, status, provider.provider_name, provider.model,
                                         PROMPT_VERSION, len(groups), len(completed), final, first_error(failed))
             if failed:
+                resumable_failure = True
                 raise RuntimeError(f"Quiz generation paused with {len(failed)} failed source group(s): {first_error(failed)}")
             self.repo.mark_task_completed(payload.task_id)
             self.repo.release_execution_lease(lease_key, payload.task_id)
         except Exception as exc:
-            if set_id and lease_acquired:
+            if set_id and lease_acquired and not resumable_failure:
                 self.repo.fail_generation("quiz_sets", set_id, str(exc))
             if lease_acquired:
                 self.repo.release_execution_lease(lease_key, payload.task_id)
@@ -124,6 +126,7 @@ Document: {title}. Source group {group.index + 1}/{group_count}. Generate exactl
 as appropriate. Every question needs a points-valued rubric whose weights sum exactly to points. Calculation and proof
 answer keys must be step-by-step. MCQ must have exactly one correct option and one rationale per distractor.
 Preserve Markdown/LaTeX. Do not introduce facts absent from sources. Cite zero-based sourceChunkIndexes.
+Set confidence to a JSON number from 0.0 to 1.0 (for example 0.8), never a percentage or a 1-10 score.
 Return only schema-defined JSON.
 
 {source_text(group)}"""
@@ -140,6 +143,12 @@ def generate_group(provider, group_prompt: str, expected: dict[str, int]):
         last = provider.generate_questions(group_prompt)
         try:
             validate_group_distribution(last, expected)
+            if any(candidate.confidence < settings.quiz_min_confidence for candidate in last):
+                values = ", ".join(f"{candidate.confidence:.3f}" for candidate in last)
+                raise ValueError(
+                    "Quiz group confidence below minimum "
+                    f"{settings.quiz_min_confidence:.3f}: [{values}]."
+                )
             return last
         except ValueError as exc:
             error = str(exc)
