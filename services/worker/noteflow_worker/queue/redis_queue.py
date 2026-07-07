@@ -30,7 +30,7 @@ PRIORITY_SCHEDULE = (
 def priority_for_task_type(task_type: str) -> int:
     if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN"}:
         return PRIORITY_INTERACTIVE
-    if task_type == "GENERATE_EMBEDDINGS":
+    if task_type in {"GENERATE_EMBEDDINGS", "MAINTAIN_CONVERSATION_MEMORY"}:
         return PRIORITY_BACKGROUND
     return PRIORITY_USER_VISIBLE
 
@@ -43,6 +43,9 @@ class TaskPayload:
     task_type: str
     priority: int | None = None
     enqueued_at: float | None = None
+    conversation_id: str | None = None
+    # Grading tasks target a specific quiz attempt rather than a document.
+    attempt_id: str | None = None
 
     @property
     def resolved_priority(self) -> int:
@@ -104,6 +107,8 @@ class RedisTaskQueue:
                 "taskType": payload.task_type,
                 "priority": priority,
                 "enqueuedAt": payload.enqueued_at or time.time(),
+                **({"conversationId": payload.conversation_id} if payload.conversation_id else {}),
+                **({"attemptId": payload.attempt_id} if payload.attempt_id else {}),
             },
             separators=(",", ":"),
         )
@@ -119,4 +124,6 @@ class RedisTaskQueue:
             task_type=payload["taskType"],
             priority=int(priority) if priority in ALL_PRIORITIES else queue_priority,
             enqueued_at=float(payload["enqueuedAt"]) if payload.get("enqueuedAt") else None,
+            conversation_id=payload.get("conversationId") or None,
+            attempt_id=payload.get("attemptId") or None,
         )

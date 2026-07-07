@@ -17,15 +17,21 @@ public class DocumentTaskQueue {
     }
 
     public void enqueue(Task task) {
+        enqueue(task, null);
+    }
+
+    public void enqueue(Task task, java.util.UUID attemptId) {
+        String attemptField = attemptId == null ? "" : ",\"attemptId\":\"" + attemptId + "\"";
         String payload = """
-            {"taskId":"%s","documentId":"%s","userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f}
+            {"taskId":"%s","documentId":"%s","userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s}
             """.formatted(
                 task.getId(),
                 task.getDocumentId(),
                 task.getUserId(),
                 task.getTaskType(),
                 task.getPriority(),
-                Instant.now().toEpochMilli() / 1000.0
+                Instant.now().toEpochMilli() / 1000.0,
+                attemptField
             ).trim();
         redis.opsForList().rightPush(priorityQueueName(task.getPriority()), payload);
     }

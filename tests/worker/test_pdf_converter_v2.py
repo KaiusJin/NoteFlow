@@ -25,9 +25,13 @@ from noteflow_worker.pdf.markdown import build_markdown_document, render_latex_b
 from noteflow_worker.pdf.math_normalizer import normalize_pdf_math_text
 from noteflow_worker.pdf.ocr import make_ocr_backend
 from noteflow_worker.pdf.parser import PageText, build_page_text_profile, classify_document_source, parse_pdf
+from noteflow_worker.notes.providers import generations_with_retries
+from noteflow_worker.pdf.markdown import build_markdown_page
 from noteflow_worker.pdf.regions import (
     analyze_regions_with_vlm,
     build_visual_regions,
+    create_full_page_region,
+    flag_suspect_incomplete_transcription,
     native_formula_bboxes,
     region_input_fingerprint,
     select_formula_recovery_regions,
@@ -211,7 +215,13 @@ class LayoutAndMarkdownQualityTest(unittest.TestCase):
 
     def test_math_font_boundaries_are_restored_without_splitting_math_identifiers(self):
         normalized = normalize_pdf_math_text("velocity 𝑣is given; 𝑡denotes time; 𝑎𝑛 converges")
-        self.assertEqual(normalized, "velocity 𝑣 is given; 𝑡 denotes time; 𝑎𝑛 converges")
+        self.assertEqual(normalized, "velocity v is given; t denotes time; an converges")
+
+    def test_unicode_math_transliterates_to_latex_safe_text(self):
+        self.assertEqual(normalize_pdf_math_text("𝑦2 = 𝑓(𝑥2)"), "y2 = f(x2)")
+        self.assertEqual(normalize_pdf_math_text("𝑞 ∈ Z, 𝑞 ̸= 0"), "q ∈ Z, q ≠ 0")
+        self.assertEqual(normalize_pdf_math_text("𝜃 𝛼 𝚺 𝟕 𝐀"), "θ α Σ 7 A")
+        self.assertEqual(normalize_pdf_math_text("𝑥 ̸∈ 𝑆"), "x ∉ S")
 
     def test_independent_vlm_formulas_render_as_separate_display_blocks(self):
         rendered = render_latex_blocks("$x=1$---FORMULA---$y=2$")
@@ -509,6 +519,84 @@ class ArtifactLifecycleTest(unittest.TestCase):
             self.assertEqual(removed, [str(orphan_page)])
             self.assertTrue(kept_page.exists())
             self.assertTrue(kept_region.exists())
+
+
+class FallbackAndCompletenessTest(unittest.TestCase):
+    def test_full_page_region_reuses_page_render_without_duplicate_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            render_path = root / "rendered" / "page-001.png"
+            render_path.parent.mkdir(parents=True)
+            Image.new("RGB", (64, 64), "white").save(render_path)
+            output_dir = root / "regions"
+            output_dir.mkdir()
+            page = VisualPage(1, str(render_path), 64, 64, 0, 0, 0.0, 5, "handwritten " * 40)
+            region = create_full_page_region(
+                visual_page=page,
+                document_id="doc",
+                document_type="HANDWRITTEN_NOTES",
+                output_dir=output_dir,
+                page_asset_id="asset-1",
+                source="page_router_full_page",
+                region_type="HANDWRITTEN",
+            )
+            self.assertEqual(region.asset_path, str(render_path))
+            self.assertEqual(list(output_dir.iterdir()), [])
+            metadata = json.loads(region.metadata_json)
+            self.assertTrue(metadata["reusesPageRender"])
+            self.assertEqual(metadata["ocrTextLength"], len(page.ocr_text))
+
+    def test_short_handwritten_transcription_is_flagged_against_ocr_baseline(self):
+        region = VisualRegion(
+            "doc", 1, 0, "HANDWRITTEN", "/tmp/page.png", None, None, 64, 64, 0.66,
+            metadata_json=json.dumps({"ocrTextLength": 1000}),
+        )
+        short = flag_suspect_incomplete_transcription(
+            region, VisionAnalysis("fake", "v1", transcription="only a few words")
+        )
+        self.assertIn("transcription_may_be_incomplete", short.uncertainty)
+        complete = flag_suspect_incomplete_transcription(
+            region, VisionAnalysis("fake", "v1", transcription="x" * 900)
+        )
+        self.assertNotIn("transcription_may_be_incomplete", complete.uncertainty)
+        failed = flag_suspect_incomplete_transcription(
+            region, VisionAnalysis("fake", "v1", error_message="HTTP 500")
+        )
+        self.assertNotIn("transcription_may_be_incomplete", failed.uncertainty or "")
+
+    def test_incomplete_transcription_surfaces_as_page_warning(self):
+        result = VlmResult(
+            "doc", 1, 0, "HANDWRITTEN", "fake", "v1",
+            "partial text", "", "", "", "transcription_may_be_incomplete: OCR read more", "partial text",
+        )
+        page = build_markdown_page("doc", 1, [], [result], document_type="HANDWRITTEN_NOTES")
+        self.assertIn("handwritten_transcription_may_be_incomplete", json.loads(page.warnings_json))
+
+    def test_notes_validation_errors_are_retried_as_stochastic(self):
+        responses = [
+            {"candidates": [{"content": {"parts": [{"text": json.dumps({"sections": []})}]}}]},
+            {"candidates": [{"content": {"parts": [{"text": json.dumps({"sections": [{
+                "heading": "H",
+                "sectionType": "KEY_IDEAS",
+                "markdown": "## H\ncontent",
+                "confidence": 0.9,
+                "warnings": [],
+            }]})}]}}]},
+        ]
+        calls = {"count": 0}
+
+        def request_fn():
+            response = responses[calls["count"]]
+            calls["count"] += 1
+            return response
+
+        with patch("noteflow_worker.notes.providers.settings.notes_request_max_attempts", 2), patch(
+            "noteflow_worker.notes.providers.settings.notes_retry_backoff_seconds", 0.0
+        ):
+            generations = generations_with_retries("gemini", "test-model", request_fn)
+        self.assertEqual(calls["count"], 2)
+        self.assertIsNone(generations[0].error_message)
+        self.assertEqual(generations[0].heading, "H")
 
 
 class SyntheticPdfIntegrationTest(unittest.TestCase):

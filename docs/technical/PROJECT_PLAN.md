@@ -1,151 +1,173 @@
-# NoteFlow / StudyForge 项目计划
+# NoteFlow / StudyForge Project Plan
 
-## 1. 项目定位
+## 1. Positioning
 
-**产品名称：** NoteFlow  
-**概念名称：** StudyForge  
-**英文一句话：** A full-stack AI study workspace that transforms technical PDFs into citation-grounded notes, quizzes, and review checklists, then lets students refine them in a Notion-style editor with LaTeX math support.
+**Product name:** NoteFlow
+**Concept name:** StudyForge
+**One-liner:** A full-stack AI study workspace that transforms technical PDFs into citation-grounded notes, quizzes, and review checklists, then lets students refine them in a Notion-style editor with LaTeX math support.
 
-NoteFlow 面向大学生和技术学习者，提供从 PDF 上传、AI 解析、结构化笔记生成、题库生成、RAG 问答、数学公式编辑到 Markdown / PDF 导出的完整学习资料工作流。
+NoteFlow targets university students and technical learners with a complete
+study-material workflow: PDF upload, AI parsing, structured note generation,
+quiz generation, RAG question answering, math formula editing, and
+Markdown/PDF export.
 
-当前 RAG 产品决策：
+Current RAG product decision:
 
 ```text
-不以彼此隔离的单轮问答作为最终形态。
-下一阶段采用多轮 conversation-first RAG，包含流式回答、上下文窗口、
-摘要压缩、显式记忆、引用验证和条件式 LangGraph 工作流。
+Isolated single-turn Q&A is not the final form.
+The next phase is multi-turn, conversation-first RAG with streaming answers,
+a context window, summary compression, explicit memory, citation validation,
+and a conditional LangGraph workflow.
 ```
 
-具体实现以
-`docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` 为准。
+The concrete design is owned by
+`docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md`.
 
-项目的核心不是做一个简单的 PDF summarizer，而是做一个可以真实使用、可以展示工程能力的学习资料处理平台。
+The core of the project is not a simple PDF summarizer — it is a study
+material platform that people can actually use and that demonstrates real
+engineering ability.
 
-## 2. 项目背景
+## 2. Background
 
-学生在学习数学、统计、计算机科学、工程、经济学、机器学习等课程时，经常需要处理大量 lecture notes、slides、论文和 PDF 材料。现有工具通常存在以下问题：
+Students working through math, statistics, computer science, engineering,
+economics, and machine learning courses handle large volumes of lecture
+notes, slides, papers, and PDFs. Existing tools have recurring problems:
 
-1. PDF 阅读器只能阅读，不能自动整理知识点。
-2. 普通 AI 总结工具容易漏重点、格式混乱，且无法追溯来源。
-3. Notion / Word 对数学公式、AI 生成内容、PDF 原文追溯支持不够自然。
-4. 学生需要在 PDF 阅读器、ChatGPT、Notion、Word、Markdown 编辑器之间频繁切换。
-5. AI 生成内容通常只是初稿，用户仍需要人工编辑、补充、插入公式、整理结构并导出。
+1. PDF readers only display; they do not organize knowledge.
+2. Generic AI summarizers drop key points, mangle formatting, and cannot be
+   traced back to sources.
+3. Notion/Word handle math formulas, AI-generated content, and PDF source
+   tracing poorly.
+4. Students constantly switch between a PDF reader, ChatGPT, Notion, Word,
+   and a Markdown editor.
+5. AI output is only a first draft; users still edit, extend, insert
+   formulas, restructure, and export by hand.
 
-NoteFlow 希望把这些动作整合成一个闭环：
+NoteFlow closes that loop:
 
-**PDF 上传 -> AI 生成笔记和题库 -> 原文 citation 校验 -> 富文本编辑 -> LaTeX 公式整理 -> Markdown / PDF 导出**
+**PDF upload -> AI notes and quizzes -> source citation verification -> rich-text editing -> LaTeX formula work -> Markdown / PDF export**
 
-## 3. 目标用户
+## 3. Target Users
 
-主要用户：
+Primary users:
 
-1. 大学生
-2. CS / Math / Stats / Engineering 学生
-3. 阅读论文的本科生、研究助理或自学者
-4. 需要把 PDF 转成 Markdown / Notion 笔记的学习者
-5. 需要整理公式、定理、证明、题库和复习材料的用户
+1. University students
+2. CS / Math / Stats / Engineering students
+3. Undergraduates, research assistants, and self-learners reading papers
+4. Learners converting PDFs into Markdown / Notion notes
+5. Users organizing formulas, theorems, proofs, question banks, and review
+   material
 
-典型场景：
+Typical scenarios:
 
-1. STAT 学生上传 lecture PDF，生成中文笔记、公式总结和练习题。
-2. CS 学生上传逻辑证明 notes，生成概念解释、证明步骤和 quiz。
-3. ML 学生上传论文，生成 method breakdown、algorithm summary 和 reproduction checklist。
-4. 用户在内置编辑器中修改 AI 笔记，并导出 Markdown。
-5. 用户插入公式，例如 `E[X] = \sum_x xP(X=x)` 或 `\operatorname{Var}(X)=E[X^2]-E[X]^2`。
+1. A STAT student uploads a lecture PDF and generates notes, formula
+   summaries, and practice questions.
+2. A CS student uploads logic-proof notes and generates concept
+   explanations, proof steps, and a quiz.
+3. An ML student uploads a paper and generates a method breakdown, algorithm
+   summary, and reproduction checklist.
+4. A user edits AI notes in the built-in editor and exports Markdown.
+5. A user inserts formulas such as `E[X] = \sum_x xP(X=x)` or
+   `\operatorname{Var}(X)=E[X^2]-E[X]^2`.
 
-## 4. 核心目标
+## 4. Core Goals
 
-1. 支持用户上传课程 PDF、slides、论文或 lecture notes。
-2. 自动解析文档并生成结构化学习笔记。
-3. 自动生成题库、答案解析和复习 checklist。
-4. 上传文档后为每个 chunk 生成 embedding，建立可搜索的语义索引。
-5. 用户可以用一句自然语言搜索 PDF / 笔记中的相关内容。
-6. 支持 RAG 问答，避免直接把整篇 PDF 喂给模型。
-7. AI 生成内容尽量绑定 PDF 原文页码或文本片段。
-8. 提供类似 Notion / Word 的富文本编辑器。
-9. 编辑器支持 inline LaTeX 和 block LaTeX。
-10. 支持自动保存编辑内容。
-11. 支持 Markdown、Notion-friendly Markdown 和后续 PDF 导出。
-12. 最终可部署上线，作为 portfolio 项目展示。
+1. Upload course PDFs, slides, papers, or lecture notes.
+2. Automatically parse documents into structured study notes.
+3. Automatically generate quizzes, answer explanations, and review
+   checklists.
+4. Generate an embedding per chunk after upload, building a searchable
+   semantic index.
+5. Search PDFs/notes with a single natural-language sentence.
+6. Support RAG answering instead of feeding whole PDFs to the model.
+7. Bind AI-generated content to PDF page numbers or text snippets wherever
+   possible.
+8. Provide a Notion/Word-like rich-text editor.
+9. Support inline and block LaTeX in the editor.
+10. Autosave edited content.
+11. Export Markdown, Notion-friendly Markdown, and later PDF.
+12. Deploy publicly as a portfolio project.
 
-## 5. MVP 范围
+## 5. MVP Scope
 
-### MVP 必做
+### Must have
 
-1. 用户登录
-2. PDF 上传
-3. 文档列表 dashboard
-4. 异步任务状态展示
-5. PDF 文本解析
-6. Chunk embedding 生成与 pgvector 存储
-7. 用户自然语言语义搜索
-8. AI 生成结构化笔记
-9. AI 生成题库
-10. Tiptap 编辑器
-11. Inline LaTeX 公式
-12. Block LaTeX 公式
-13. 自动保存
-14. Markdown 导出
-15. Docker Compose 本地启动
-16. GitHub README 和在线 demo
+1. User login
+2. PDF upload
+3. Document list dashboard
+4. Async task status display
+5. PDF text parsing
+6. Chunk embedding generation with pgvector storage
+7. Natural-language semantic search
+8. AI structured note generation
+9. AI quiz generation
+10. Tiptap editor
+11. Inline LaTeX
+12. Block LaTeX
+13. Autosave
+14. Markdown export
+15. Docker Compose local startup
+16. GitHub README and a live demo
 
-### MVP 暂不做
+### Explicitly out of MVP scope
 
-1. 多人协作
-2. 实时共同编辑
-3. 评论系统
-4. 完整 Word 排版
-5. 移动端 App
-6. 桌面端本地全套运行模式
-7. 自研浏览器内核或自研 WebView
-8. Notion database
-9. 复杂权限共享
-10. 手写 OCR 深度优化
+1. Multi-user collaboration
+2. Real-time co-editing
+3. Comments
+4. Full Word-grade typesetting
+5. Mobile app
+6. Fully local desktop runtime
+7. Custom browser engine or custom WebView
+8. Notion databases
+9. Complex permission sharing
+10. Deep handwriting-OCR optimization
 
-## 6. 功能需求
+## 6. Functional Requirements
 
-### 6.1 用户账户系统
+### 6.1 User accounts
 
-用户需要能够：
+Users must be able to:
 
-1. 注册和登录
-2. 管理自己的文档
-3. 查看历史上传记录
-4. 查看 AI 生成的笔记和题库
-5. 保存编辑后的笔记
-6. 导出自己的学习资料
+1. Register and log in
+2. Manage their own documents
+3. See upload history
+4. See AI-generated notes and quizzes
+5. Save edited notes
+6. Export their study material
 
-MVP 可以使用 Clerk 或 NextAuth，后续再根据部署需要调整认证方案。
+The MVP may use Clerk or NextAuth; the auth approach can change with
+deployment needs.
 
-### 6.2 文档上传系统
+### 6.2 Document upload
 
-MVP 优先支持 PDF。上传后保存：
+The MVP prioritizes PDF. On upload, persist:
 
-1. 文件名
-2. 文件大小
-3. 文件类型
-4. 上传用户
-5. 上传时间
-6. 文件存储地址
-7. 处理状态
-8. 页数
-9. 文档语言
-10. 文档类型标签
+1. Filename
+2. File size
+3. File type
+4. Uploading user
+5. Upload time
+6. Storage location
+7. Processing status
+8. Page count
+9. Document language
+10. Document-type tag
 
-### 6.3 异步任务系统
+### 6.3 Async task system
 
-PDF 解析、embedding 生成和 AI 生成都可能耗时较长，需要后台任务处理。
+PDF parsing, embedding generation, and AI generation are slow; they run as
+background tasks.
 
-任务能力：
+Capabilities:
 
-1. 创建任务
-2. 查询任务状态
-3. Worker 后台处理
-4. 失败重试
-5. 错误记录
-6. 完成后保存结果
+1. Create tasks
+2. Query task status
+3. Worker background processing
+4. Retry on failure
+5. Error recording
+6. Persist results on completion
 
-任务状态：
+Task statuses:
 
 ```text
 PENDING
@@ -156,9 +178,9 @@ RETRYING
 CANCELLED
 ```
 
-### 6.4 AI 笔记生成系统
+### 6.4 AI note generation
 
-课程笔记模式：
+Course-notes mode:
 
 1. Topic Overview
 2. Key Definitions
@@ -169,7 +191,7 @@ CANCELLED
 7. Practice Questions
 8. Review Checklist
 
-论文模式：
+Paper mode:
 
 1. Problem
 2. Motivation
@@ -182,41 +204,44 @@ CANCELLED
 9. Limitations
 10. Reproduction Checklist
 
-### 6.5 RAG 检索系统
+### 6.5 RAG retrieval
 
-系统需要：
+The system must:
 
-1. 解析 PDF
-2. 清洗文本
-3. 按章节、页码和段落切分 chunk
-4. 为每个 chunk 生成 embedding
-5. 把 chunk 和 embedding 存入 PostgreSQL + pgvector
-6. 生成笔记或回答问题前检索相关 chunks
-7. 使用检索结果生成结构化答案
+1. Parse the PDF
+2. Clean the text
+3. Chunk by section, page, and paragraph
+4. Generate an embedding per chunk
+5. Store chunks and embeddings in PostgreSQL + pgvector
+6. Retrieve relevant chunks before note generation or answering
+7. Generate structured answers from retrieved content
 
-这样可以降低 hallucination，并让用户验证 AI 结果。
+This reduces hallucination and lets users verify AI output.
 
-### 6.6 自然语言语义搜索
+### 6.6 Natural-language semantic search
 
-用户应该可以输入一句自然语言，在当前 PDF 或当前笔记中搜索相关内容。
+The user types one natural-language sentence and searches the current PDF or
+notes.
 
-示例输入：
+Example input:
 
 ```text
-为什么 variance 可以写成 E[X^2] - E[X]^2？
+Why can variance be written as E[X^2] - E[X]^2?
 ```
 
-系统流程：
+Flow:
 
-1. 前端把用户 query 发送给后端。
-2. 后端或 Worker 调用 embedding model 生成 query embedding。
-3. 系统在 `document_chunks.embedding` 中做 pgvector similarity search。
-4. 返回最相关的 chunks。
-5. 前端展示 page number、section title、source snippet 和 similarity score。
+1. The frontend sends the query to the backend.
+2. The backend or worker generates the query embedding.
+3. pgvector similarity search runs over `document_chunks.embedding`.
+4. The most relevant chunks are returned.
+5. The frontend shows page number, section title, source snippet, and
+   similarity score.
 
-这个功能不一定调用 LLM。它的目标是“帮用户定位资料里的相关内容”，因此速度应该快、成本应该低、结果应该可验证。
+This feature does not necessarily call an LLM. Its purpose is "help the user
+locate relevant material", so it should be fast, cheap, and verifiable.
 
-搜索结果需要包含：
+Search results include:
 
 1. chunk id
 2. document id
@@ -225,28 +250,29 @@ CANCELLED
 5. snippet
 6. similarity score
 
-### 6.7 RAG 问答系统
+### 6.7 RAG question answering
 
-RAG 问答复用语义搜索能力，但会额外调用 LLM 生成解释。
+RAG answering reuses semantic search and additionally calls an LLM for the
+explanation.
 
-系统流程：
+Flow:
 
-1. 用户输入问题。
-2. 系统生成 query embedding。
-3. pgvector 检索 top-k 相关 chunks。
-4. LLM 基于 retrieved chunks 生成回答。
-5. 回答附带 citations。
+1. The user asks a question.
+2. The system embeds the query.
+3. pgvector retrieves top-k chunks.
+4. The LLM answers from the retrieved chunks.
+5. The answer carries citations.
 
-搜索和问答应该在产品上分开：
+Search and answering are separate product surfaces:
 
-1. Search in document: 找原文片段，不调用 LLM。
-2. Ask with sources: 基于原文回答，调用 LLM。
+1. Search in document: find source snippets, no LLM.
+2. Ask with sources: answer from sources, with LLM.
 
-### 6.8 Citation Grounding
+### 6.8 Citation grounding
 
-AI 生成的重点内容应尽量绑定来源。
+Important AI-generated content should bind to its sources.
 
-每条来源记录包含：
+Each source record contains:
 
 1. note item id
 2. source document id
@@ -255,23 +281,23 @@ AI 生成的重点内容应尽量绑定来源。
 5. source section
 6. source text snippet
 
-前端应允许用户点击 citation 查看原文片段。
+The frontend lets users click a citation to view the original snippet.
 
-### 6.9 笔记编辑器
+### 6.9 Note editor
 
-编辑器目标：
+Editor goals:
 
-1. 类似 Notion / Word 的写作体验
-2. 支持 AI 生成内容进入编辑器
-3. 支持用户手动修改
-4. 支持标题、段落、列表、引用、代码块
-5. 支持 inline math
-6. 支持 block math
-7. 支持 Markdown 导出
-8. 支持自动保存
-9. 后续支持编辑历史
+1. Notion/Word-like writing experience
+2. AI-generated content flows into the editor
+3. Manual editing
+4. Headings, paragraphs, lists, quotes, code blocks
+5. Inline math
+6. Block math
+7. Markdown export
+8. Autosave
+9. Edit history later
 
-MVP 编辑器功能：
+MVP editor features:
 
 1. Heading 1 / 2 / 3
 2. Paragraph
@@ -286,9 +312,9 @@ MVP 编辑器功能：
 11. Autosave
 12. Export as Markdown
 
-### 6.10 数学公式支持
+### 6.10 Math support
 
-公式分为两类：
+Two formula kinds:
 
 Inline math:
 
@@ -302,18 +328,18 @@ Block math:
 \operatorname{Var}(X)=E[X^2]-E[X]^2
 ```
 
-交互方式：
+Interaction:
 
-1. 用户输入 `/math`
-2. 选择 Inline Math 或 Block Math
-3. 输入 LaTeX
-4. 编辑器用 KaTeX 渲染
-5. 点击公式可以重新编辑
-6. 导出 Markdown 时保留 LaTeX 语法
+1. The user types `/math`
+2. Chooses Inline Math or Block Math
+3. Enters LaTeX
+4. The editor renders with KaTeX
+5. Clicking a formula reopens editing
+6. Markdown export preserves LaTeX syntax
 
-### 6.11 题库生成系统
+### 6.11 Quiz generation
 
-每道题包含：
+Each question includes:
 
 1. question
 2. question type
@@ -325,7 +351,7 @@ Block math:
 8. related formula
 9. common mistake
 
-题目类型：
+Question types:
 
 1. Conceptual
 2. Calculation
@@ -334,7 +360,7 @@ Block math:
 5. Short Answer
 6. True / False
 
-难度：
+Difficulty:
 
 ```text
 Easy
@@ -342,33 +368,33 @@ Medium
 Hard
 ```
 
-### 6.12 导出系统
+### 6.12 Export
 
-MVP 支持：
+MVP:
 
 1. Markdown
 2. Copy as Markdown
 3. Notion-friendly Markdown
 
-后续支持：
+Later:
 
 1. PDF export
 2. Notion API export
 
-导出需要保留：
+Exports must preserve:
 
-1. 标题层级
-2. LaTeX 公式
-3. 代码块
-4. 列表
-5. citation
-6. Notion 兼容格式
+1. Heading hierarchy
+2. LaTeX formulas
+3. Code blocks
+4. Lists
+5. Citations
+6. Notion-compatible formatting
 
-## 7. 技术栈
+## 7. Technology Stack
 
-### 7.1 前端
+### 7.1 Frontend
 
-技术：
+Technologies:
 
 1. Next.js
 2. TypeScript
@@ -377,29 +403,29 @@ MVP 支持：
 5. Tiptap
 6. KaTeX
 7. TanStack Query
-8. Zustand 可选
+8. Zustand (optional)
 
-职责：
+Responsibilities:
 
-1. 用户界面
-2. 文档上传
+1. User interface
+2. Document upload
 3. Dashboard
-4. 任务状态展示
-5. 笔记编辑器
-6. 公式编辑
-7. 题库页面
-8. Markdown 导出
-9. 登录状态管理
+4. Task status display
+5. Note editor
+6. Formula editing
+7. Quiz pages
+8. Markdown export
+9. Login state management
 
-选择理由：
+Rationale:
 
-1. Next.js 适合完整 Web App 和 Vercel 部署。
-2. Tiptap 适合做可扩展的 Notion-style editor。
-3. KaTeX 渲染速度快，适合 Web 数学公式。
+1. Next.js fits a full web app and Vercel deployment.
+2. Tiptap fits an extensible Notion-style editor.
+3. KaTeX renders fast, well-suited to web math.
 
-### 7.2 后端
+### 7.2 Backend
 
-技术：
+Technologies:
 
 1. Java 21
 2. Spring Boot
@@ -410,116 +436,116 @@ MVP 支持：
 7. JWT / Clerk integration
 8. Docker
 
-职责：
+Responsibilities:
 
-1. 用户权限
-2. 文档 metadata 管理
-3. 文件上传接口
-4. 任务创建
-5. 任务状态管理
-6. 笔记保存
-7. 编辑器内容保存
-8. 题库保存
-9. 导出接口
-10. Worker 通信
+1. Users and permissions
+2. Document metadata management
+3. File upload API
+4. Task creation
+5. Task status management
+6. Note persistence
+7. Editor content persistence
+8. Quiz persistence
+9. Export API
+10. Worker communication
 
-选择理由：
+Rationale:
 
-1. Spring Boot 能展示传统后端能力。
-2. Java 后端适合 co-op / backend 简历定位。
-3. REST API、数据库、认证、任务管理都适合用 Spring Boot 实现。
+1. Spring Boot demonstrates classical backend competence.
+2. A Java backend fits co-op / backend resume positioning.
+3. REST APIs, database work, auth, and task management all fit Spring Boot.
 
-### 7.3 AI Worker
+### 7.3 AI worker
 
-技术：
+Technologies:
 
 1. Python
-2. FastAPI 可选
+2. FastAPI (optional)
 3. PyMuPDF
 4. pdfplumber
-5. OpenAI / Gemini / Claude API
-6. sentence-transformers 可选
-7. LangChain / LlamaIndex 可选
+5. OpenAI / Gemini / Claude APIs
+6. sentence-transformers (optional)
+7. LangChain / LlamaIndex (optional)
 8. Redis client
 9. PostgreSQL client
 
-职责：
+Responsibilities:
 
-1. 下载 PDF
-2. 解析文本
-3. 清洗文本
-4. 按 section / page / paragraph 切 chunk
-5. 生成 embedding
-6. 存储 chunk 和 embedding
-7. 执行 RAG 检索
-8. 生成结构化笔记
-9. 生成题库
-10. 回写数据库
+1. Download PDFs
+2. Parse text
+3. Clean text
+4. Chunk by section / page / paragraph
+5. Generate embeddings
+6. Store chunks and embeddings
+7. Run RAG retrieval
+8. Generate structured notes
+9. Generate quizzes
+10. Write results back to the database
 
-选择理由：
+Rationale:
 
-1. Python 的 PDF 和 AI 生态成熟。
-2. Worker 与 Java 后端解耦。
-3. 架构更接近真实生产系统。
+1. Python has the mature PDF and AI ecosystem.
+2. The worker decouples from the Java backend.
+3. The architecture mirrors real production systems.
 
-### 7.4 数据库与存储
+### 7.4 Database and storage
 
-数据库：
+Databases:
 
 1. PostgreSQL
 2. pgvector
 
-缓存和队列：
+Cache and queue:
 
 1. Redis
 
-文件存储：
+File storage:
 
-1. MVP: local storage 或 Supabase Storage
-2. Production: Cloudflare R2 或 AWS S3
+1. MVP: local storage or Supabase Storage
+2. Production: Cloudflare R2 or AWS S3
 
-### 7.5 桌面端
+### 7.5 Desktop
 
-桌面端推荐路线：
+Recommended desktop route:
 
 ```text
-先做 Web App
-  -> 部署在线 demo
-  -> 再用 Electron 包成桌面软件
+Build the web app first
+  -> deploy the hosted demo
+  -> then wrap it as a desktop app with Electron
 ```
 
-推荐技术：
+Recommended technologies:
 
 1. Electron
 2. TypeScript
-3. Next.js static/export 或本地渲染入口
-4. Electron auto-updater 后期可选
+3. Next.js static/export or a local rendering entry
+4. Electron auto-updater later (optional)
 
-桌面端职责：
+Desktop responsibilities:
 
-1. 提供可安装的 macOS / Windows / Linux App。
-2. 复用 Web App 的界面、Tiptap 编辑器、KaTeX 公式和 PDF 工作流。
-3. 管理桌面窗口、菜单、文件选择器和本地下载。
-4. 第一版默认连接云端 Spring Boot backend。
+1. Installable macOS / Windows / Linux app.
+2. Reuse the web UI, Tiptap editor, KaTeX math, and the PDF workflow.
+3. Manage desktop windows, menus, file pickers, and local downloads.
+4. V1 connects to the cloud Spring Boot backend by default.
 
-第一版桌面端不负责：
+The first desktop version does NOT:
 
-1. 自带 PostgreSQL。
-2. 自带 Redis。
-3. 自带 Java 后端。
-4. 自带 Python worker。
-5. 自研浏览器内核。
+1. Bundle PostgreSQL.
+2. Bundle Redis.
+3. Bundle the Java backend.
+4. Bundle the Python worker.
+5. Ship a custom browser engine.
 
-选择 Electron 的原因：
+Why Electron:
 
-1. 对复杂 Web 编辑器、PDF viewer 和 React UI 支持成熟。
-2. 可以最大化复用 Web App。
-3. 比 Swift 原生重写更适合跨平台。
-4. 对 portfolio 展示来说，投入产出比最高。
+1. Mature support for complex web editors, PDF viewers, and React UIs.
+2. Maximum reuse of the web app.
+3. Better cross-platform economics than a native Swift rewrite.
+4. Best effort-to-payoff ratio for portfolio purposes.
 
-## 8. 数据模型草案
+## 8. Data Model Draft
 
-主要表：
+Main tables:
 
 1. users
 2. documents
@@ -604,7 +630,7 @@ source_page
 created_at
 ```
 
-## 9. 系统架构
+## 9. System Architecture
 
 ```text
 User
@@ -617,64 +643,64 @@ User
   -> LLM API
 ```
 
-核心流程：
+Core flow:
 
-1. 用户上传 PDF。
-2. 前端调用后端 API。
-3. 后端保存文件到 object storage。
-4. 后端创建 document record。
-5. 后端创建 task record。
-6. 后端把 task 推入 Redis queue。
-7. Python worker 拉取 task。
-8. Worker 解析 PDF。
-9. Worker 切分 chunks。
-10. Worker 生成 embeddings。
-11. Worker 存入 pgvector。
-12. Worker 生成笔记和题库。
-13. Worker 回写 PostgreSQL。
-14. 前端显示完成状态。
-15. 用户进入编辑器修改笔记。
-16. 用户导出 Markdown / PDF。
+1. The user uploads a PDF.
+2. The frontend calls the backend API.
+3. The backend saves the file to object storage.
+4. The backend creates the document record.
+5. The backend creates the task record.
+6. The backend pushes the task to the Redis queue.
+7. The Python worker pulls the task.
+8. The worker parses the PDF.
+9. The worker cuts chunks.
+10. The worker generates embeddings.
+11. The worker stores vectors in pgvector.
+12. The worker generates notes and quizzes.
+13. The worker writes back to PostgreSQL.
+14. The frontend shows completion.
+15. The user edits notes in the editor.
+16. The user exports Markdown / PDF.
 
-## 10. 页面设计
+## 10. Page Design
 
-### 10.1 Landing Page
+### 10.1 Landing page
 
-1. 项目介绍
-2. 上传 PDF 生成笔记的演示
-3. LaTeX 编辑器展示
-4. RAG citation 展示
+1. Product introduction
+2. PDF-to-notes demo
+3. LaTeX editor showcase
+4. RAG citation showcase
 5. CTA: Start Studying
 
 ### 10.2 Dashboard
 
-1. 最近上传的文档
-2. 正在处理的任务
-3. 已完成的笔记
-4. 最近编辑的文档
-5. 题库数量
+1. Recently uploaded documents
+2. Tasks in progress
+3. Completed notes
+4. Recently edited documents
+5. Quiz counts
 
-### 10.3 Upload Page
+### 10.3 Upload page
 
-1. 拖拽上传 PDF
-2. 选择文档类型
-3. 选择输出语言
-4. 选择生成内容
+1. Drag-and-drop PDF upload
+2. Document type selection
+3. Output language selection
+4. Output content selection
 
-可选文档类型：
+Document types:
 
 1. Course Notes
 2. Research Paper
 3. Lecture Slides
 
-可选输出：
+Outputs:
 
 1. Notes
 2. Quiz
 3. Formula Summary
 4. Review Checklist
 
-### 10.4 Task Progress Page
+### 10.4 Task progress page
 
 1. Upload completed
 2. Parsing PDF
@@ -684,7 +710,7 @@ User
 6. Generating quiz
 7. Completed
 
-### 10.5 Document Detail Page
+### 10.5 Document detail page
 
 Tabs:
 
@@ -694,34 +720,34 @@ Tabs:
 4. Sources
 5. Export
 
-### 10.6 Editor Page
+### 10.6 Editor page
 
-左侧：
+Left:
 
-1. 文档目录
+1. Document outline
 2. Headings
 
-中间：
+Center:
 
-1. Tiptap 编辑器
+1. Tiptap editor
 
-右侧：
+Right:
 
 1. AI assistant
 2. Citations
 3. Source snippets
 
-### 10.7 Quiz Page
+### 10.7 Quiz page
 
-1. 按 topic 分组
-2. 按 difficulty 筛选
-3. 展示答案
-4. 查看解析
-5. 查看 source page
+1. Grouped by topic
+2. Filtered by difficulty
+3. Show answers
+4. View explanations
+5. View source pages
 
-## 11. 编辑器数据结构
+## 11. Editor Data Structure
 
-编辑器核心数据结构建议使用 JSON document tree。
+The editor's core structure is a JSON document tree:
 
 ```json
 {
@@ -751,22 +777,22 @@ Tabs:
 }
 ```
 
-保存策略：
+Persistence strategy:
 
-1. 编辑器内容保存为 `content_json`。
-2. 同步生成 `content_markdown`。
-3. 每隔 5 到 10 秒 autosave。
-4. 用户离开页面前保存。
-5. 后期可以加入 version history。
+1. Editor content saved as `content_json`.
+2. `content_markdown` generated alongside.
+3. Autosave every 5–10 seconds.
+4. Save before the user leaves the page.
+5. Version history later.
 
-公式插入方式：
+Formula insertion:
 
-1. Slash command: `/math`
+1. Slash command `/math`
 2. Toolbar button
 3. Keyboard shortcut
-4. Paste LaTeX 自动识别可选
+4. Optional paste-LaTeX auto-detection
 
-## 12. API 草案
+## 12. API Draft
 
 Auth:
 
@@ -816,7 +842,7 @@ GET /documents/{id}/chunks
 GET /chunks/{id}
 ```
 
-Semantic Search:
+Semantic search:
 
 ```text
 POST /documents/{id}/search
@@ -830,178 +856,178 @@ POST /notes/{id}/export/markdown
 POST /notes/{id}/export/pdf
 ```
 
-## 13. 10 周开发路线图
+## 13. Ten-Week Roadmap
 
-### Week 1: 项目设计与基础搭建
+### Week 1: design and scaffolding
 
-目标：
+Goals:
 
-1. 确定产品范围
-2. 搭建 Next.js 前端
-3. 搭建 Spring Boot 后端
-4. 搭建 PostgreSQL
-5. 搭建 Docker Compose
-6. 设计数据库 schema
+1. Finalize product scope
+2. Scaffold the Next.js frontend
+3. Scaffold the Spring Boot backend
+4. Set up PostgreSQL
+5. Set up Docker Compose
+6. Design the database schema
 
-产出：
+Deliverables:
 
-1. 基础项目结构
-2. 前后端能跑通
-3. 数据库能连接
-4. README 初稿
+1. Base project structure
+2. Frontend and backend running end to end
+3. Database connectivity
+4. README first draft
 
-### Week 2: 用户系统与文档上传
+### Week 2: users and upload
 
-目标：
+Goals:
 
-1. 实现登录
-2. 实现 PDF 上传
-3. 保存文档 metadata
-4. 文件存储到本地或 object storage
-5. Dashboard 显示文档列表
+1. Login
+2. PDF upload
+3. Document metadata persistence
+4. Local or object storage
+5. Dashboard document list
 
-产出：
+Deliverables:
 
-1. 用户可以上传 PDF
-2. 用户可以看到文档记录
-3. 后端有 documents API
+1. Users can upload PDFs
+2. Users can see document records
+3. Backend documents API
 
-### Week 3: 异步任务系统
+### Week 3: async tasks
 
-目标：
+Goals:
 
-1. 设计 tasks 表
-2. 后端创建 analysis task
-3. Redis queue 接入
-4. Python worker 拉取任务
-5. 前端显示任务状态
+1. Design the tasks table
+2. Backend creates analysis tasks
+3. Redis queue integration
+4. Python worker pulls tasks
+5. Frontend shows task status
 
-产出：
+Deliverables:
 
-1. 上传 PDF 后自动创建任务
-2. Worker 可以处理任务
-3. 前端可以看到任务状态
+1. Upload automatically creates a task
+2. The worker processes tasks
+3. The frontend shows task status
 
-### Week 4: PDF 解析与 chunking
+### Week 4: PDF parsing and chunking
 
-目标：
+Goals:
 
-1. Worker 下载 PDF
-2. 使用 PyMuPDF / pdfplumber 解析文本
-3. 清洗文本
-4. 按页码和段落切 chunk
-5. 存入 document_chunks 表
+1. Worker downloads PDFs
+2. PyMuPDF / pdfplumber text parsing
+3. Text cleaning
+4. Page/paragraph chunking
+5. Store in document_chunks
 
-产出：
+Deliverables:
 
-1. PDF 可以被解析成文本块
-2. 每个 chunk 有 page number
-3. 后端可以查询 chunks
+1. PDFs parse into text blocks
+2. Every chunk has a page number
+3. Backend can query chunks
 
-### Week 5: Embedding 与 RAG
+### Week 5: embeddings and RAG
 
-目标：
+Goals:
 
-1. 接入 embedding model
-2. 安装 pgvector
-3. 存储 chunk embeddings
-4. 实现 similarity search
-5. 为生成笔记准备相关 chunks
+1. Integrate the embedding model
+2. Install pgvector
+3. Store chunk embeddings
+4. Similarity search
+5. Prepare relevant chunks for note generation
 
-产出：
+Deliverables:
 
-1. 支持语义检索
-2. 用户可以用一句话搜索 PDF 中的相关内容
-3. 用户问题或生成任务可以检索相关原文
-4. RAG pipeline 初步跑通
+1. Semantic retrieval works
+2. Users can search PDFs with one sentence
+3. Questions/generation tasks retrieve relevant sources
+4. Initial RAG pipeline runs
 
-### Week 6: AI 笔记和题库生成
+### Week 6: AI notes and quizzes
 
-目标：
+Goals:
 
-1. 设计 structured prompt
-2. 生成课程笔记
-3. 生成题库
-4. 保存 notes 和 quiz
-5. 绑定 source chunks
+1. Design structured prompts
+2. Generate course notes
+3. Generate quizzes
+4. Persist notes and quizzes
+5. Bind source chunks
 
-产出：
+Deliverables:
 
-1. 用户上传 PDF 后能生成结构化笔记
-2. 能生成题库
-3. 每条内容可以显示来源
+1. Structured notes from uploaded PDFs
+2. Quiz generation
+3. Every item shows its sources
 
-### Week 7: Notion-style 编辑器
+### Week 7: Notion-style editor
 
-目标：
+Goals:
 
-1. 集成 Tiptap
-2. 加入基础富文本功能
-3. 支持 inline math
-4. 支持 block math
-5. 加入 KaTeX 渲染
-6. 实现 autosave
+1. Integrate Tiptap
+2. Base rich-text features
+3. Inline math
+4. Block math
+5. KaTeX rendering
+6. Autosave
 
-产出：
+Deliverables:
 
-1. 用户可以编辑 AI 生成笔记
-2. 用户可以插入数学公式
-3. 内容可以保存到数据库
+1. Users can edit AI notes
+2. Users can insert math
+3. Content persists to the database
 
-### Week 8: 导出与 UI 优化
+### Week 8: export and UI polish
 
-目标：
+Goals:
 
 1. Markdown export
 2. Notion-friendly Markdown export
-3. 页面 UI 优化
-4. 加入 loading / error state
-5. 优化 dashboard
-6. 完善 README
+3. UI polish
+4. Loading / error states
+5. Dashboard improvements
+6. README completion
 
-产出：
+Deliverables:
 
-1. 用户可以导出笔记
-2. 项目可以完整演示
-3. README 有截图和架构说明
+1. Users can export notes
+2. The project demos end to end
+3. README with screenshots and architecture
 
-### Week 9: 部署与测试
+### Week 9: deployment and testing
 
-目标：
+Goals:
 
-1. 部署前端
-2. 部署后端
-3. 部署 worker
-4. 部署数据库
-5. 测试完整流程
-6. 修复 bug
+1. Deploy the frontend
+2. Deploy the backend
+3. Deploy the worker
+4. Deploy the database
+5. Test the full flow
+6. Fix bugs
 
-产出：
+Deliverables:
 
-1. 在线 demo
-2. 可访问项目链接
-3. Demo video 可选
+1. Live demo
+2. Public project link
+3. Demo video (optional)
 
-### Week 10: 简历化与展示优化
+### Week 10: resume packaging
 
-目标：
+Goals:
 
-1. 写技术博客
-2. 优化 README
-3. 添加架构图
-4. 添加简历 bullet points
-5. 录制 1 到 2 分钟 demo
-6. 准备面试讲解稿
+1. Technical blog post
+2. README polish
+3. Architecture diagrams
+4. Resume bullet points
+5. 1–2 minute demo recording
+6. Interview walkthrough script
 
-产出：
+Deliverables:
 
-1. Portfolio-ready 项目
+1. Portfolio-ready project
 2. Resume-ready bullet points
 3. Interview-ready explanation
 
-## 14. 部署方案
+## 14. Deployment Plan
 
-推荐交付路线：
+Recommended delivery route:
 
 ```text
 Web App MVP
@@ -1009,9 +1035,12 @@ Web App MVP
   -> Electron Desktop App
 ```
 
-第一阶段先把 Web App 做完整，因为浏览器版本最容易开发、测试、分享和面试展示。第二阶段部署在线 demo，让别人可以直接访问。第三阶段再用 Electron 包成桌面软件，复用同一套 Next.js / TypeScript 前端。
+Phase one completes the web app, because the browser version is easiest to
+build, test, share, and present in interviews. Phase two deploys the hosted
+demo for public access. Phase three wraps the same Next.js/TypeScript
+frontend with Electron.
 
-MVP 部署：
+MVP deployment:
 
 1. Frontend: Vercel
 2. Backend: Railway / Render / Fly.io
@@ -1020,26 +1049,27 @@ MVP 部署：
 5. Storage: Cloudflare R2 / Supabase Storage
 6. Worker: Railway / Render background service
 
-Electron 桌面版部署：
+Electron desktop deployment:
 
-1. Desktop Shell: Electron
-2. UI: 复用 Next.js 前端构建产物
-3. Backend: 连接云端 Spring Boot API
-4. AI Pipeline: 继续使用云端 Worker、Redis、PostgreSQL 和对象存储
-5. Distribution: GitHub Releases 或项目官网下载
+1. Desktop shell: Electron
+2. UI: reuse the built Next.js frontend
+3. Backend: the cloud Spring Boot API
+4. AI pipeline: cloud worker, Redis, PostgreSQL, object storage
+5. Distribution: GitHub Releases or the project site
 
-桌面版第一阶段只做 Cloud Mode：
+The desktop V1 ships Cloud Mode only:
 
 ```text
 Electron Desktop App
-  -> 加载本地打包后的 Web UI
-  -> 调用云端 API
-  -> 云端处理 PDF、embedding、RAG、AI 生成和导出
+  -> loads the locally bundled web UI
+  -> calls the cloud API
+  -> cloud handles PDFs, embeddings, RAG, AI generation, and export
 ```
 
-Local Mode 后期可选。第一版不建议在用户电脑上管理 Java、Python、PostgreSQL、Redis、模型 API key 和后台进程。
+Local Mode is optional later. V1 should not manage Java, Python, PostgreSQL,
+Redis, model API keys, and background processes on user machines.
 
-进阶部署：
+Advanced deployment:
 
 1. Frontend: Vercel
 2. Backend: AWS ECS
@@ -1049,92 +1079,92 @@ Local Mode 后期可选。第一版不建议在用户电脑上管理 Java、Pyth
 6. Storage: AWS S3
 7. Monitoring: CloudWatch / Prometheus / Grafana
 
-## 15. 项目难点与策略
+## 15. Risks and Strategy
 
-### 15.1 编辑器复杂度
+### 15.1 Editor complexity
 
-难点：
+Hard parts:
 
-1. 光标行为
-2. 公式插入和编辑
-3. Markdown 转换
-4. JSON editor state 存储
-5. 自动保存
+1. Cursor behavior
+2. Formula insertion and editing
+3. Markdown conversion
+4. JSON editor-state storage
+5. Autosave
 
-策略：
+Strategy:
 
-1. 使用 Tiptap，不从零写 editor。
-2. MVP 只支持必要 block。
-3. 暂不做实时协作。
+1. Use Tiptap; never write an editor from scratch.
+2. MVP supports only the necessary blocks.
+3. No real-time collaboration yet.
 
-### 15.2 PDF 解析复杂度
+### 15.2 PDF parsing complexity
 
-难点：
+Hard parts:
 
-1. 多栏论文
-2. 页眉页脚
-3. 数学公式
-4. 表格
-5. 扫描版手写笔记
+1. Multi-column papers
+2. Headers and footers
+3. Math formulas
+4. Tables
+5. Scanned handwritten notes
 
-策略：
+Strategy:
 
-1. MVP 优先支持文字型 PDF。
-2. 手写 OCR 后期再做。
-3. 复杂公式先保留原文附近文本。
-4. 表格和图片先不做深度解析。
+1. MVP prioritizes text PDFs.
+2. Handwriting OCR comes later.
+3. Complex formulas keep nearby source text first.
+4. No deep table/image parsing initially.
 
-### 15.3 AI 结果可靠性
+### 15.3 AI reliability
 
-难点：
+Hard parts:
 
-1. 漏掉重点
-2. 生成错误公式
-3. 编造内容
-4. 题目质量不稳定
+1. Missing key points
+2. Wrong formulas
+3. Fabricated content
+4. Unstable question quality
 
-策略：
+Strategy:
 
-1. 使用 RAG。
-2. 每条内容绑定 source chunk。
-3. 允许用户查看原文依据。
-4. 使用强制 JSON schema。
-5. 后期加入 evaluation。
+1. Use RAG.
+2. Bind every item to source chunks.
+3. Let users inspect the source evidence.
+4. Enforce JSON schemas.
+5. Add evaluation later.
 
-### 15.4 系统复杂度
+### 15.4 System complexity
 
-难点：
+Hard parts:
 
-1. 前端
-2. Java 后端
+1. Frontend
+2. Java backend
 3. Python worker
 4. Redis
 5. PostgreSQL
 6. pgvector
 7. Object storage
-8. LLM API
+8. LLM APIs
 
-策略：
+Strategy:
 
-1. 分阶段实现。
-2. 先用 Docker Compose 跑通本地闭环。
-3. 再部署云端版本。
-4. 每周只做一个核心模块。
+1. Phase the implementation.
+2. Close the local loop with Docker Compose first.
+3. Deploy to the cloud after.
+4. One core module per week.
 
-## 16. 项目亮点
+## 16. Highlights
 
-1. 完整 full-stack 软件
-2. Java Spring Boot 后端
-3. Python AI Worker
-4. Redis 异步任务队列
+1. Complete full-stack software
+2. Java Spring Boot backend
+3. Python AI worker
+4. Redis async task queue
 5. PostgreSQL + pgvector RAG
 6. Citation-grounded generation
-7. Notion-style LaTeX 编辑器
-8. Markdown / PDF 导出
-9. 真实学生学习场景
-10. 可以上线给别人使用
+7. Notion-style LaTeX editor
+8. Markdown / PDF export
+9. A real student learning scenario
+10. Deployable for real users
 
-## 17. 简历 Bullet Points 初稿
+## 17. Resume Bullet Point Drafts
 
 1. Built a full-stack AI study workspace that transforms technical PDFs into citation-grounded notes, quizzes, and review checklists using an asynchronous RAG pipeline.
 2. Designed a Java Spring Boot backend with PostgreSQL, Redis queues, and object storage to support PDF upload, task orchestration, status tracking, retries, and result retrieval.
@@ -1142,64 +1172,70 @@ Local Mode 后期可选。第一版不建议在用户电脑上管理 Java、Pyth
 4. Built a Notion-style rich-text editor with Tiptap and KaTeX, supporting inline and block LaTeX formulas, autosave, JSON-based document storage, and Markdown export.
 5. Added source-grounded note and quiz generation with page-level citations, allowing users to verify AI-generated study materials against the original PDF content.
 
-## 18. 优先级
+## 18. Priorities
 
-最高优先级：
+Highest:
 
-1. PDF 上传
-2. 异步任务
-3. Chunk embedding 和 pgvector
-4. 自然语言语义搜索
-5. AI 笔记生成
-6. 编辑器
-7. LaTeX 公式
-8. Markdown 导出
+1. PDF upload
+2. Async tasks
+3. Chunk embeddings and pgvector
+4. Natural-language semantic search
+5. AI note generation
+6. Editor
+7. LaTeX formulas
+8. Markdown export
 
-第二优先级：
+Second:
 
-1. RAG 问答
+1. RAG question answering
 2. Citation grounding
-3. 题库生成
-4. 页面 UI 优化
+3. Quiz generation
+4. UI polish
 
-第三优先级：
+Third:
 
 1. PDF export
 2. Notion API export
-3. WebSocket 实时进度
-4. 复习计划
-5. 错题本
-6. 多人协作
+3. WebSocket real-time progress
+4. Review scheduling
+5. Mistake notebook
+6. Collaboration
 
-## 19. MVP 验收标准
+## 19. MVP Acceptance Criteria
 
-第一版完成时，用户应该可以：
+When V1 is complete, a user can:
 
-1. 打开网站并登录。
-2. 上传一份文字型 PDF。
-3. 看到异步处理进度。
-4. 系统解析 PDF 并生成 chunks。
-5. 系统为 chunks 生成 embeddings 并存入 pgvector。
-6. 用户可以用一句话搜索 PDF / 笔记中的相关内容。
-7. 用户可以基于搜索到的 sources 向 AI 提问。
-8. 等待系统生成结构化笔记。
-9. 查看题库和答案解析。
-10. 在笔记中看到至少页码级 citation。
-11. 进入编辑器修改 AI 生成内容。
-12. 插入 inline 和 block LaTeX 公式。
-13. 自动保存编辑内容。
-14. 导出 Markdown。
+1. Open the site and log in.
+2. Upload a text PDF.
+3. Watch async processing progress.
+4. Have the system parse the PDF into chunks.
+5. Have embeddings generated and stored in pgvector.
+6. Search PDF/note content with one sentence.
+7. Ask the AI questions grounded in the retrieved sources.
+8. Wait for structured note generation.
+9. View the quiz and answer explanations.
+10. See at least page-level citations in the notes.
+11. Edit AI content in the editor.
+12. Insert inline and block LaTeX.
+13. Have edits autosaved.
+14. Export Markdown.
 
-## 20. 最终建议
+## 20. Final Recommendation
 
-这个项目值得作为 8 到 10 周的主项目来做，但必须控制范围。第一版最重要的是跑通完整闭环：
+This project deserves 8–10 weeks as a primary project, but the scope must be
+controlled. V1's single most important outcome is the closed loop:
 
-**PDF 上传 -> 解析 chunks -> 生成 embeddings -> 用户一句话搜索 -> AI 生成笔记 -> 编辑器修改 -> 插入公式 -> 导出 Markdown**
+**PDF upload -> parse chunks -> generate embeddings -> one-sentence search -> AI notes -> editor -> formulas -> Markdown export**
 
-闭环完成之后，再逐步强化 RAG 问答、citation、题库质量、worker retry、PDF export 和部署稳定性。
+After the loop closes, strengthen RAG answering, citations, quiz quality,
+worker retries, PDF export, and deployment stability incrementally.
 
-这个项目比普通 AI PDF summarizer 更强，因为它有完整产品体验；比普通 full-stack CRUD 项目更强，因为它包含 AI pipeline、RAG、异步任务和数学编辑器；比纯后端项目更适合作品集，因为用户真的可以打开网页使用。
+The project beats a generic AI PDF summarizer because it is a complete
+product experience; it beats a generic full-stack CRUD project because it
+contains an AI pipeline, RAG, async tasks, and a math editor; and it beats a
+pure backend project as a portfolio because people can actually open it in a
+browser and use it.
 
-推荐简历定位：
+Recommended resume positioning:
 
 **Backend / AI Infrastructure-oriented Software Engineer**

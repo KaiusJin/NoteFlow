@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     vision_provider: str = "disabled"
     vision_provider_order: str = "gemini,openai,mcp"
     vision_concurrent_requests: int = 4
-    vision_batch_size: int = 4
     gemini_api_key: str = ""
     gemini_api_keys: str = ""
     gemini_vision_model: str = "gemini-2.5-flash"
@@ -64,6 +63,92 @@ class Settings(BaseSettings):
     local_embedding_model: str = "bge-small-en-v1.5"
     embedding_batch_size: int = 16
     embedding_max_concurrent_requests: int = 5
+
+    # Conversation memory: short-term window
+    memory_window_max_tokens: int = 2400
+    memory_window_min_turns: int = 2
+    memory_window_max_turns: int = 12
+    memory_window_message_max_tokens: int = 900
+
+    # Conversation memory: rolling summary compression (high/low water marks)
+    memory_summary_trigger_tokens: int = 3200
+    memory_summary_retain_tokens: int = 1400
+    memory_summary_max_tokens: int = 700
+
+    # Conversation memory: long-term recall
+    memory_recall_limit: int = 5
+    memory_recall_candidate_limit: int = 24
+    memory_recall_min_similarity: float = 0.55
+    memory_recall_similarity_weight: float = 0.60
+    memory_recall_recency_weight: float = 0.20
+    memory_recall_confidence_weight: float = 0.20
+    memory_recall_recency_half_life_days: float = 14.0
+    memory_recall_max_tokens: int = 600
+    memory_recall_fallback_limit: int = 3
+
+    # Conversation memory: extraction and consolidation
+    memory_extraction_min_new_tokens: int = 120
+    memory_extraction_max_messages: int = 40
+    memory_extraction_min_confidence: float = 0.5
+    memory_dedup_similarity_threshold: float = 0.90
+    memory_update_similarity_threshold: float = 0.78
+    memory_max_active_per_user: int = 400
+
+    # Conversation memory: LLM provider for summarization/extraction.
+    # Empty values fall back to the notes provider selection and models.
+    memory_llm_provider: str = ""
+    memory_gemini_model: str = ""
+    memory_openai_model: str = ""
+    memory_request_timeout_seconds: int = 60
+    memory_request_max_attempts: int = 3
+    memory_retry_backoff_seconds: float = 2.0
+
+    # Conversation memory: maintenance execution
+    memory_maintenance_inline: bool = False
+    memory_maintenance_stale_after_minutes: int = 10
+    memory_window_fetch_limit: int = 96
+    memory_maintenance_fetch_limit: int = 200
+
+    # Study modules: shared LLM (empty falls back to the notes provider/models)
+    study_llm_provider: str = ""
+    study_gemini_model: str = ""
+    study_openai_model: str = ""
+    study_request_timeout_seconds: int = 120
+    study_request_max_attempts: int = 3
+    study_retry_backoff_seconds: float = 2.0
+    study_stale_task_after_minutes: int = 10
+    study_global_max_concurrent_requests: int = 6
+    study_max_output_tokens: int = 4096
+    study_lease_seconds: int = 1800
+
+    # Flashcard generation
+    flashcards_max_concurrent_requests: int = 3
+    flashcards_group_target_tokens: int = 2400
+    flashcards_group_max_tokens: int = 3600
+    flashcards_max_per_document: int = 300
+    flashcards_min_confidence: float = 0.5
+    flashcards_dedup_similarity_threshold: float = 0.86
+    flashcards_per_1000_source_tokens: float = 3.0
+
+    # Quiz generation
+    quiz_max_concurrent_requests: int = 3
+    quiz_group_target_tokens: int = 2600
+    quiz_group_max_tokens: int = 3800
+    quiz_max_questions_per_document: int = 120
+    quiz_default_difficulty_mix: str = "EASY:0.3,MEDIUM:0.5,HARD:0.2"
+    quiz_min_confidence: float = 0.5
+    quiz_dedup_similarity_threshold: float = 0.86
+    quiz_questions_per_1000_source_tokens: float = 1.5
+
+    # Quiz grading
+    quiz_grading_max_concurrent_requests: int = 3
+    quiz_free_text_pass_threshold: float = 0.6
+
+    # Spaced repetition (SM-2)
+    srs_initial_ease: float = 2.5
+    srs_min_ease: float = 1.3
+    srs_first_interval_days: int = 1
+    srs_second_interval_days: int = 6
 
 
 settings = Settings()

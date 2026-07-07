@@ -4,6 +4,10 @@ from noteflow_worker.config import settings
 from noteflow_worker.db.repository import Repository
 from noteflow_worker.pipelines.generate_embeddings import GenerateEmbeddingsPipeline
 from noteflow_worker.pipelines.generate_notes import GenerateNotesPipeline
+from noteflow_worker.pipelines.generate_flashcards import GenerateFlashcardsPipeline
+from noteflow_worker.pipelines.generate_quiz import GenerateQuizPipeline
+from noteflow_worker.pipelines.grade_quiz_attempt import GradeQuizAttemptPipeline
+from noteflow_worker.pipelines.maintain_memory import MaintainConversationMemoryPipeline
 from noteflow_worker.pipelines.parse_document import ParseDocumentPipeline
 from noteflow_worker.queue.redis_queue import (
     PRIORITY_BACKGROUND,
@@ -12,6 +16,7 @@ from noteflow_worker.queue.redis_queue import (
     RedisTaskQueue,
     TaskPayload,
 )
+from noteflow_worker.study.repository import StudyRepository
 
 
 def process_payload(payload: TaskPayload) -> None:
@@ -31,6 +36,22 @@ def process_payload(payload: TaskPayload) -> None:
         print(f"Processing notes task {payload.task_id} for document {payload.document_id}")
         notes_pipeline.run(payload)
         return
+    if payload.task_type == "GENERATE_FLASHCARDS":
+        print(f"Processing flashcard task {payload.task_id} for document {payload.document_id}")
+        GenerateFlashcardsPipeline(StudyRepository()).run(payload)
+        return
+    if payload.task_type == "GENERATE_QUIZ":
+        print(f"Processing quiz task {payload.task_id} for document {payload.document_id}")
+        GenerateQuizPipeline(StudyRepository()).run(payload)
+        return
+    if payload.task_type == "GRADE_QUIZ_ATTEMPT":
+        print(f"Processing quiz grading task {payload.task_id} for attempt {payload.attempt_id}")
+        GradeQuizAttemptPipeline(StudyRepository()).run(payload)
+        return
+    if payload.task_type == "MAINTAIN_CONVERSATION_MEMORY":
+        print(f"Processing memory maintenance task {payload.task_id} for conversation {payload.conversation_id}")
+        MaintainConversationMemoryPipeline().run(payload)
+        return
     print(f"Skipping unsupported task type: {payload.task_type}")
 
 
@@ -47,6 +68,7 @@ def main() -> None:
         f"max_concurrent_tasks={max_tasks} max_background_tasks={background_limit}"
     )
     recover_stale_notes_tasks(queue)
+    recover_stale_study_tasks(queue)
     recover_stale_parse_tasks(queue)
 
     with ThreadPoolExecutor(max_workers=max_tasks) as executor:
@@ -116,6 +138,18 @@ def recover_stale_parse_tasks(queue: RedisTaskQueue) -> None:
         print(f"Recovered stale parse task {payload.task_id} for document {payload.document_id}")
     if rows:
         print(f"Recovered {len(rows)} stale parse task(s) on worker startup.")
+
+
+def recover_stale_study_tasks(queue: RedisTaskQueue) -> None:
+    repository = StudyRepository()
+    repository.ensure_study_schema()
+    rows = repository.recover_stale_study_tasks(settings.study_stale_task_after_minutes)
+    for row in rows:
+        payload = TaskPayload(task_id=str(row["id"]), document_id=str(row["document_id"]),
+            user_id=str(row["user_id"]), task_type=row["task_type"],
+            attempt_id=str(row["attempt_id"]) if row.get("attempt_id") else None)
+        queue.push(payload)
+        print(f"Recovered stale study task {payload.task_id} ({payload.task_type})")
 
 
 if __name__ == "__main__":

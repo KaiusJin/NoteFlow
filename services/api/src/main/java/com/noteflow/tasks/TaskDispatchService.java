@@ -25,9 +25,13 @@ public class TaskDispatchService {
     }
 
     public Task createAndEnqueue(UUID documentId, UUID userId, TaskType taskType) {
+        return createAndEnqueue(documentId, userId, taskType, null);
+    }
+
+    public Task createAndEnqueue(UUID documentId, UUID userId, TaskType taskType, UUID attemptId) {
         Task task = new Task(UUID.randomUUID(), documentId, userId, taskType);
         tasks.save(task);
-        enqueueAfterCommit(task);
+        enqueueAfterCommit(task, attemptId);
         return task;
     }
 
@@ -45,15 +49,15 @@ public class TaskDispatchService {
             .findFirst();
     }
 
-    private void enqueueAfterCommit(Task task) {
+    private void enqueueAfterCommit(Task task, UUID attemptId) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            queue.enqueue(task);
+            queue.enqueue(task, attemptId);
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                queue.enqueue(task);
+                queue.enqueue(task, attemptId);
             }
         });
     }

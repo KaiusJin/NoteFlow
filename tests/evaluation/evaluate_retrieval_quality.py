@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 
-DEFAULT_CASES = Path(__file__).parents[1] / "resources" / "search-quality-cases.json"
+DEFAULT_CASES = Path(__file__).parent / "resources" / "search-quality-cases.json"
 BLANK_MARKERS = (
     "completely blank",
     "no visible text",

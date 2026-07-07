@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from functools import lru_cache
 
 
 CASES_GLYPH_RUN_RE = re.compile(r"[\uf8f1\uf8f2\uf8f3\uf8f4]+")
@@ -26,8 +27,81 @@ def normalize_pdf_math_text(text: str) -> str:
     normalized = remove_unsupported_control_chars(normalized)
     normalized = cleanup_cases_markers(normalized)
     normalized = restore_math_text_boundaries(normalized)
+    normalized = transliterate_math_alphanumerics(normalized)
+    normalized = normalize_negated_relations(normalized)
     normalized = normalize_math_spacing(normalized)
     return normalized.strip()
+
+
+NEGATED_RELATION_MAP = {
+    "=": "≠",
+    "<": "≮",
+    ">": "≯",
+    "∈": "∉",
+    "≡": "≢",
+    "∼": "≁",
+    "⊆": "⊈",
+    "⊂": "⊄",
+}
+
+
+def normalize_negated_relations(text: str) -> str:
+    """Collapse the combining long-solidus (U+0338) into precomposed symbols.
+
+    PDF text extraction frequently emits the negation slash as a standalone
+    combining character next to the relation glyph (``̸=`` or ``≠``), which
+    neither renders as LaTeX nor tokenizes for retrieval.
+    """
+    if "̸" not in text:
+        return text
+    for relation, negated in NEGATED_RELATION_MAP.items():
+        text = text.replace("̸ " + relation, negated)
+        text = text.replace("̸" + relation, negated)
+        text = text.replace(relation + "̸", negated)
+    return text.replace("̸", "")
+
+
+def transliterate_math_alphanumerics(text: str) -> str:
+    """Map Unicode Mathematical Alphanumeric Symbols to plain letters.
+
+    TeX-produced PDFs encode italic/bold variables as U+1D400-U+1D7FF glyphs
+    (``𝑦2 = 𝑓(𝑥2)``). Those code points are invalid inside LaTeX blocks and
+    are near-unmatchable by embedding or keyword search, so plain ASCII/Greek
+    equivalents are strictly better for every downstream consumer.
+    """
+    if not any(0x1D400 <= ord(char) <= 0x1D7FF for char in text):
+        return text
+    return "".join(
+        _math_alphanumeric_replacement(char) if 0x1D400 <= ord(char) <= 0x1D7FF else char
+        for char in text
+    )
+
+
+@lru_cache(maxsize=1024)
+def _math_alphanumeric_replacement(char: str) -> str:
+    name = unicodedata.name(char, "")
+    if not name.startswith("MATHEMATICAL"):
+        return char
+    last_word = name.rsplit(" ", 1)[-1]
+    if " DIGIT " in name:
+        try:
+            return unicodedata.lookup("DIGIT " + last_word)
+        except KeyError:
+            return char
+    if name.endswith("NABLA"):
+        return "∇"
+    if name.endswith("PARTIAL DIFFERENTIAL"):
+        return "∂"
+    for case in ("CAPITAL", "SMALL"):
+        if f" {case} " not in f" {name} ":
+            continue
+        if len(last_word) == 1 and last_word.isascii() and last_word.isalpha():
+            return last_word if case == "CAPITAL" else last_word.lower()
+        try:
+            return unicodedata.lookup(f"GREEK {case} LETTER {last_word}")
+        except KeyError:
+            return char
+    return char
 
 
 def restore_math_text_boundaries(text: str) -> str:

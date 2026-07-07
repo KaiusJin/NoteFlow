@@ -11,6 +11,9 @@ from noteflow_worker.pdf.code_normalizer import detect_code_language
 
 TEXT_BLOCK_TYPES = {"PARAGRAPH", "HEADING", "LIST", "CODE", "FORMULA", "TABLE"}
 VISUAL_BLOCK_TYPES = {"IMAGE", "MIXED_VISUAL"}
+# Kept in sync with noteflow_worker.pdf.regions.INCOMPLETE_TRANSCRIPTION_MARKER;
+# a literal here avoids importing the region/VLM stack into markdown rendering.
+INCOMPLETE_TRANSCRIPTION_MARKER = "transcription_may_be_incomplete"
 
 
 @dataclass(frozen=True)
@@ -192,6 +195,8 @@ def build_markdown_page(
     rendered_visuals = render_visuals(vlm_results, text_fingerprint)
 
     warnings: list[str] = []
+    if any(INCOMPLETE_TRANSCRIPTION_MARKER in (result.uncertainty or "") for result in vlm_results):
+        warnings.append("handwritten_transcription_may_be_incomplete")
     visual_parts: list[str] = []
     seen: list[str] = []
     visual_types: list[str] = []

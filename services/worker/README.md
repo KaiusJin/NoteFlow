@@ -48,5 +48,16 @@ user-visible work.
 Benchmark the deployment host before overriding the render pool:
 
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/benchmark_pdf_pools.py --pages 48 --workers 1,2,4,8
+PYTHONPATH=. .venv/bin/python ../../tests/benchmarks/benchmark_pdf_pools.py --pages 48 --workers 1,2,4,8
 ```
+
+## Study generation
+
+The worker supports independent `GENERATE_FLASHCARDS`, `GENERATE_QUIZ`, and
+`GRADE_QUIZ_ATTEMPT` tasks. Generation is source-grounded, resumable per source
+group, globally concurrency-limited, and output-token capped. Quiz free-text
+grading resumes per answer; flashcard scheduling is deterministic SM-2 and does
+not call an LLM. See
+[`STUDY_MODULES_ARCHITECTURE.md`](../../docs/technical/STUDY_MODULES_ARCHITECTURE.md)
+for schemas, task contracts, API integration requirements, configuration, tests,
+and benchmark commands.

@@ -1,6 +1,8 @@
-# NoteFlow 工作流与架构说明
+# NoteFlow Workflow and Architecture
 
-这份文档说明 NoteFlow 的完整工作流、每一步要做什么、系统架构是什么，以及前端、后端、Worker、数据库、Redis、对象存储和 LLM API 之间如何连接。
+This document explains NoteFlow's end-to-end workflow, what each step does,
+the system architecture, and how the frontend, backend, worker, database,
+Redis, object storage, and LLM APIs connect.
 
 > Current implementation note:
 > The consolidated current technical specification is `docs/technical/NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md`.
@@ -13,7 +15,7 @@
 > of truth for conversation APIs, streaming, memory, prompt strategy, LangGraph,
 > local SLM deployment, and context compression.
 
-## 0. 当前已实现主链路
+## 0. Currently Implemented Main Chain
 
 ```text
 Web App
@@ -30,37 +32,43 @@ Web App
   -> exported_ai_notes/*.md
 ```
 
-当前实现的关键约束：
+Key constraints of the current implementation:
 
-1. API 负责可靠任务创建和入队，入队发生在数据库事务提交之后。
-2. Worker 最多同时处理 3 个 task。
-3. 单个 AI notes task 最多同时发送 3 个 provider 请求。
-4. AI note group 失败不会丢弃已保存 section；重试会断点继续。
-5. 最终 AI notes Markdown 可以从已保存 sections 离线重建，不需要重复调用 AI API。
+1. The API owns reliable task creation and enqueueing; enqueueing happens
+   after the database transaction commits.
+2. The worker processes at most 3 tasks concurrently.
+3. A single AI-notes task sends at most 3 provider requests concurrently.
+4. A failed AI-note group never discards already-saved sections; retries
+   resume from the checkpoint.
+5. The final AI-notes Markdown can be rebuilt offline from saved sections
+   without repeating any AI API calls.
 
-## 1. 总体目标
+## 1. Overall Goal
 
-NoteFlow 的核心闭环是：
+NoteFlow's core loop:
 
 ```text
-用户上传 PDF
-  -> 系统保存文件和文档记录
-  -> 创建异步分析任务
-  -> Worker 解析 PDF
-  -> Worker 切分 chunk 并生成 embedding
-  -> Worker 调用 LLM 生成笔记和题库
-  -> 后端保存结果
-  -> 用户用一句话搜索 PDF / 笔记中的相关内容
-  -> 用户基于搜索结果向 AI 提问
-  -> 用户在编辑器中修改
-  -> 用户导出 Markdown / PDF
+User uploads a PDF
+  -> the system stores the file and the document record
+  -> an async analysis task is created
+  -> the worker parses the PDF
+  -> the worker chunks the text and generates embeddings
+  -> the worker calls the LLM to generate notes and quizzes
+  -> the backend persists the results
+  -> the user searches PDF/notes with one sentence
+  -> the user asks the AI questions grounded in search results
+  -> the user edits in the editor
+  -> the user exports Markdown / PDF
 ```
 
-第一版最重要的是跑通这个闭环。其中 embedding 和自然语言搜索属于核心能力：上传时建立文档语义索引，搜索时把用户的一句话转成 query embedding，再用 pgvector 找到相关 PDF 原文和笔记内容。
+V1's single most important outcome is closing this loop. Embeddings and
+natural-language search are core capabilities: uploading builds the semantic
+index; searching converts the user's sentence into a query embedding and uses
+pgvector to find relevant PDF source text and notes.
 
-## 2. 系统架构
+## 2. System Architecture
 
-### 2.1 服务组成
+### 2.1 Services
 
 ```text
 Frontend
@@ -87,7 +95,7 @@ Object Storage
   Cloudflare R2 / AWS S3 / Supabase Storage for production
 ```
 
-### 2.2 架构图
+### 2.2 Architecture diagram
 
 ```text
                                +------------------+
@@ -126,7 +134,7 @@ Object Storage
                          +---------------------+
 ```
 
-Desktop App 不是自研浏览器内核，而是 Electron shell：
+The desktop app is not a custom browser engine; it is an Electron shell:
 
 ```text
 User
@@ -136,155 +144,150 @@ User
   -> Cloud Worker / PostgreSQL / Redis / Object Storage
 ```
 
-第一版桌面端使用 Cloud Mode。Local Mode 后期再考虑。
+The desktop V1 uses Cloud Mode. Local Mode is a later consideration.
 
-## 3. 服务职责
+## 3. Service Responsibilities
 
 ### 3.1 Frontend
 
-前端负责用户能看见和操作的部分。
+The frontend owns everything the user sees and touches.
 
-主要职责：
+Responsibilities:
 
-1. 登录和会话状态
-2. Dashboard 文档列表
-3. PDF 上传表单
-4. 任务进度展示
-5. 文档详情页
-6. 笔记编辑器
-7. 题库页面
-8. 自然语言搜索框
-9. RAG 问答入口
-10. Citation / source snippet 展示
-11. Markdown 导出按钮
+1. Login and session state
+2. Dashboard document list
+3. PDF upload form
+4. Task progress display
+5. Document detail page
+6. Note editor
+7. Quiz pages
+8. Natural-language search box
+9. RAG question-answering entry point
+10. Citation / source snippet display
+11. Markdown export button
 
-前端只调用 Backend API，不直接操作数据库、Redis 或 Worker。
+The frontend calls only the Backend API — never the database, Redis, or the
+worker directly.
 
-### 3.1.1 Desktop Shell
+### 3.1.1 Desktop shell
 
-桌面端负责把 Web App 包装成可安装软件。
+The desktop shell wraps the web app into installable software.
 
-主要职责：
+Responsibilities:
 
-1. 创建桌面窗口。
-2. 加载打包后的 Next.js UI。
-3. 提供菜单、文件选择器和下载位置选择。
-4. 调用同一套云端 Backend API。
-5. 后期支持自动更新。
+1. Create desktop windows.
+2. Load the bundled Next.js UI.
+3. Provide menus, file pickers, and download locations.
+4. Call the same cloud Backend API.
+5. Auto-updates later.
 
-第一版桌面端不负责：
+The desktop V1 does NOT:
 
-1. 自带 Java 后端。
-2. 自带 Python Worker。
-3. 自带 PostgreSQL。
-4. 自带 Redis。
-5. 自研浏览器内核。
+1. Bundle the Java backend.
+2. Bundle the Python worker.
+3. Bundle PostgreSQL.
+4. Bundle Redis.
+5. Ship a custom browser engine.
 
-推荐顺序：
+Recommended order:
 
 ```text
-先做 Web App
-  -> 部署在线 demo
-  -> 再做 Electron Desktop App
+Build the web app
+  -> deploy the hosted demo
+  -> then build the Electron desktop app
 ```
 
 ### 3.2 Backend API
 
-后端是系统控制中心。
+The backend is the system's control center.
 
-主要职责：
+Responsibilities:
 
-1. 认证和权限校验
-2. 接收上传请求
-3. 保存文件到对象存储
-4. 创建 documents 记录
-5. 创建 tasks 记录
-6. 把任务推入 Redis queue
-7. 提供任务状态查询 API
-8. 提供 notes、quiz、chunks 查询 API
-9. 提供自然语言语义搜索 API
-10. 提供 RAG 问答 API
-11. 保存编辑器内容
-12. 执行 Markdown / PDF 导出
+1. Authentication and authorization
+2. Receiving uploads
+3. Saving files to object storage
+4. Creating document records
+5. Creating task records
+6. Pushing tasks to the Redis queue
+7. Task status query APIs
+8. Notes, quiz, and chunk query APIs
+9. Natural-language semantic search API
+10. RAG question-answering API
+11. Persisting editor content
+12. Markdown / PDF export
 
-后端不直接做耗时 AI 分析。耗时任务交给 Worker。
+The backend never performs slow AI analysis itself; slow work belongs to the
+worker.
 
-### 3.3 AI Worker
+### 3.3 AI worker
 
-Worker 专门处理耗时任务。
+The worker handles slow tasks exclusively.
 
-主要职责：
+Responsibilities:
 
-1. 从 Redis queue 拉取任务
-2. 根据 task id 查询 document 信息
-3. 从对象存储下载 PDF
-4. 解析 PDF 文本
-5. 清洗文本
-6. 切分 chunks
-7. 生成 embeddings
-8. 写入 document_chunks 表
-9. 为用户 query 生成 query embedding
-10. 检索相关 chunks
-11. 调用 LLM 生成结构化笔记
-12. 调用 LLM 生成题库
-13. 调用 LLM 生成基于 sources 的问答
-14. 保存 notes 和 quiz_questions
-15. 更新 task 状态为 COMPLETED 或 FAILED
+1. Pull tasks from the Redis queue
+2. Look up the document by task id
+3. Download the PDF from object storage
+4. Parse PDF text
+5. Clean text
+6. Cut chunks
+7. Generate embeddings
+8. Write document_chunks
+9. Generate query embeddings for user queries
+10. Retrieve relevant chunks
+11. Call the LLM for structured notes
+12. Call the LLM for quizzes
+13. Call the LLM for source-grounded answers
+14. Persist notes and quiz_questions
+15. Update task status to COMPLETED or FAILED
 
-Worker 不负责用户权限和页面展示。
+The worker never handles user permissions or page rendering.
 
 ### 3.4 PostgreSQL + pgvector
 
-数据库负责持久化核心业务数据。
+The database persists core business data:
 
-存储内容：
-
-1. 用户信息
-2. 文档 metadata
-3. 任务状态
+1. Users
+2. Document metadata
+3. Task status
 4. PDF chunks
-5. embeddings
-6. semantic search results 的 source chunks
-7. 笔记 JSON
-8. 笔记 Markdown
-9. 题库
-10. citation 来源
-11. export 记录
+5. Embeddings
+6. Source chunks behind semantic search results
+7. Note JSON
+8. Note Markdown
+9. Quizzes
+10. Citation sources
+11. Export records
 
-pgvector 用来做语义相似度检索。
+pgvector performs semantic similarity retrieval.
 
 ### 3.5 Redis
 
-Redis 第一版主要用作任务队列。
+Redis serves primarily as the task queue in V1:
 
-用途：
+1. Holds pending task ids
+2. Workers pull tasks
+3. Caches task progress
+4. Prevents duplicate submission
+5. Rate limiting later
 
-1. 存放待处理任务 id
-2. Worker 拉取任务
-3. 缓存任务进度
-4. 防止重复提交
-5. 后续支持限流
+### 3.6 Object storage
 
-### 3.6 Object Storage
+Object storage holds large files:
 
-对象存储保存大文件。
+1. Original PDFs
+2. Exported Markdown files
+3. Exported PDF files
+4. Future image assets
 
-保存内容：
+The MVP can use a local folder such as `storage/uploads`, switching to R2,
+S3, or Supabase Storage at deployment.
 
-1. 原始 PDF
-2. 导出的 Markdown 文件
-3. 导出的 PDF 文件
-4. 后续可能的图片资源
+## 4. How Data Connects
 
-MVP 可以先用本地文件夹，例如 `storage/uploads`。部署时再换成 R2、S3 或 Supabase Storage。
+### 4.1 Frontend to backend
 
-## 4. 数据如何连接
-
-### 4.1 前端连接后端
-
-前端通过 REST API 连接后端。
-
-示例：
+REST API:
 
 ```text
 Frontend -> Backend
@@ -297,17 +300,17 @@ PUT /notes/{id}
 POST /notes/{id}/export/markdown
 ```
 
-前端请求需要带登录凭证：
+Requests carry credentials:
 
 ```text
 Authorization: Bearer <access_token>
 ```
 
-### 4.2 后端连接数据库
+### 4.2 Backend to database
 
-Spring Boot 使用 Spring Data JPA 连接 PostgreSQL。
+Spring Boot connects to PostgreSQL via Spring Data JPA.
 
-环境变量示例：
+Example environment variables:
 
 ```env
 SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/noteflow
@@ -315,7 +318,7 @@ SPRING_DATASOURCE_USERNAME=noteflow
 SPRING_DATASOURCE_PASSWORD=noteflow
 ```
 
-后端通过 repository/service 写入：
+The backend writes through repositories/services:
 
 1. documents
 2. tasks
@@ -323,17 +326,17 @@ SPRING_DATASOURCE_PASSWORD=noteflow
 4. quiz_questions
 5. exports
 
-### 4.3 后端连接 Redis
+### 4.3 Backend to Redis
 
-后端在创建任务后，把任务 id 推入 Redis。
+After creating a task, the backend pushes the task id to Redis.
 
-示例队列：
+Example queue:
 
 ```text
 queue:document-analysis
 ```
 
-入队内容：
+Payload:
 
 ```json
 {
@@ -344,11 +347,9 @@ queue:document-analysis
 }
 ```
 
-### 4.4 Worker 连接 Redis
+### 4.4 Worker to Redis
 
-Worker 从 Redis 队列中拉取任务。
-
-流程：
+The worker pulls tasks from the queue:
 
 ```text
 BRPOP queue:document-analysis
@@ -358,17 +359,15 @@ BRPOP queue:document-analysis
   -> mark task COMPLETED or FAILED
 ```
 
-### 4.5 Worker 连接数据库
+### 4.5 Worker to database
 
-Worker 需要读写 PostgreSQL。
-
-读取：
+Reads:
 
 1. task
 2. document
 3. file_url
 
-写入：
+Writes:
 
 1. document_chunks
 2. notes
@@ -376,169 +375,173 @@ Worker 需要读写 PostgreSQL。
 4. task status
 5. error_message
 
-### 4.6 Worker 连接对象存储
+### 4.6 Worker to object storage
 
-Worker 根据 document.file_url 下载 PDF。
+The worker downloads the PDF via document.file_url.
 
-MVP 本地存储：
+MVP local storage:
 
 ```text
 storage/uploads/{document_id}.pdf
 ```
 
-生产对象存储：
+Production object storage:
 
 ```text
 s3://noteflow/uploads/{document_id}.pdf
 ```
 
-### 4.7 Worker 连接 LLM API
+### 4.7 Worker to LLM APIs
 
-Worker 调用模型完成两类任务：
+The worker calls models for three kinds of work:
 
-1. Embedding: 把 chunk 转成向量
-2. Query embedding: 把用户的一句话搜索请求转成向量
-3. Generation: 生成笔记、题库、总结、checklist 和基于来源的回答
+1. Embedding: turning chunks into vectors
+2. Query embedding: turning the user's one-sentence search into a vector
+3. Generation: notes, quizzes, summaries, checklists, and source-grounded
+   answers
 
-所有 LLM 输出都应该尽量使用 JSON schema，方便后端稳定保存。
+All LLM output should use JSON schemas wherever possible so the backend can
+persist it reliably.
 
-## 4.8 搜索和问答的连接方式
+## 4.8 How Search and Answering Connect
 
-语义搜索和 RAG 问答共享同一个检索基础，但它们是两个不同产品能力。
+Semantic search and RAG answering share one retrieval foundation but are two
+distinct product capabilities.
 
-Semantic Search:
+Semantic search:
 
 ```text
-用户输入一句话
+User types one sentence
   -> generate query embedding
   -> pgvector similarity search
   -> return matching chunks
-  -> 前端展示原文片段、页码、章节和相似度
+  -> frontend shows source snippets, page numbers, sections, similarity
 ```
 
-RAG Answer:
+RAG answer:
 
 ```text
-用户输入问题
+User asks a question
   -> generate query embedding
   -> pgvector similarity search
-  -> send top-k chunks + question to LLM
+  -> send top-k chunks + question to the LLM
   -> return answer with citations
 ```
 
-搜索不一定调用 LLM，它的目标是定位资料；问答会调用 LLM，它的目标是基于资料解释。
+Search does not necessarily call an LLM — its goal is locating material.
+Answering calls the LLM — its goal is explaining from material.
 
-## 5. 完整用户工作流
+## 5. Full User Workflow
 
-### Step 1: 用户登录
+### Step 1: login
 
-用户操作：
+User actions:
 
-1. 打开网站
-2. 点击登录
-3. 使用邮箱、Google 或第三方 auth 登录
+1. Open the site
+2. Click login
+3. Sign in with email, Google, or a third-party auth provider
 
-前端做什么：
+Frontend:
 
-1. 调用认证服务
-2. 保存 session
-3. 拿到 access token
-4. 跳转 dashboard
+1. Calls the auth service
+2. Stores the session
+3. Obtains the access token
+4. Redirects to the dashboard
 
-后端做什么：
+Backend:
 
-1. 校验 token
-2. 创建或更新 user record
-3. 返回当前用户信息
+1. Validates the token
+2. Creates or updates the user record
+3. Returns the current user
 
-相关 API：
+APIs:
 
 ```text
 GET /auth/me
 ```
 
-相关表：
+Tables:
 
 ```text
 users
 ```
 
-### Step 2: 用户上传 PDF
+### Step 2: upload a PDF
 
-用户操作：
+User actions:
 
-1. 进入 Upload Page
-2. 拖拽或选择 PDF
-3. 选择文档类型
-4. 选择输出语言
-5. 勾选生成 Notes / Quiz / Checklist
-6. 点击 Upload
+1. Open the Upload page
+2. Drag or select a PDF
+3. Choose the document type
+4. Choose the output language
+5. Check Notes / Quiz / Checklist outputs
+6. Click Upload
 
-前端做什么：
+Frontend:
 
-1. 校验文件类型是 PDF
-2. 校验文件大小
-3. 创建 multipart/form-data 请求
-4. 调用 `POST /documents`
-5. 跳转 task progress 页面
+1. Validates the file type is PDF
+2. Validates file size
+3. Builds a multipart/form-data request
+4. Calls `POST /documents`
+5. Redirects to the task progress page
 
-后端做什么：
+Backend:
 
-1. 校验用户身份
-2. 接收 PDF
-3. 保存文件到 storage
-4. 创建 documents 记录
-5. 创建 tasks 记录
-6. 推送任务到 Redis queue
-7. 返回 document id 和 task id
+1. Authenticates the user
+2. Receives the PDF
+3. Saves the file to storage
+4. Creates the documents record
+5. Creates the tasks record
+6. Pushes the task to the Redis queue
+7. Returns the document id and task id
 
-相关 API：
+APIs:
 
 ```text
 POST /documents
 ```
 
-相关表：
+Tables:
 
 ```text
 documents
 tasks
 ```
 
-相关 Redis queue：
+Redis queue:
 
 ```text
 queue:document-analysis
 ```
 
-### Step 3: 前端展示任务进度
+### Step 3: task progress display
 
-用户操作：
+User actions:
 
-1. 上传后看到进度页
-2. 等待处理
-3. 看到当前步骤和百分比
+1. Lands on the progress page after upload
+2. Waits for processing
+3. Sees the current step and percentage
 
-前端做什么：
+Frontend:
 
-1. 轮询 `GET /tasks/{id}`
-2. 展示 task.status
-3. 展示 task.progress
-4. COMPLETED 后跳转 Document Detail Page
-5. FAILED 时展示错误和 retry 按钮
+1. Polls `GET /tasks/{id}`
+2. Displays task.status
+3. Displays task.progress
+4. Redirects to the Document Detail page on COMPLETED
+5. Shows the error and a retry button on FAILED
 
-后端做什么：
+Backend:
 
-1. 查询 tasks 表
-2. 返回任务状态
+1. Queries the tasks table
+2. Returns task status
 
-相关 API：
+APIs:
 
 ```text
 GET /tasks/{id}
 ```
 
-相关状态：
+Statuses:
 
 ```text
 PENDING
@@ -549,49 +552,49 @@ RETRYING
 CANCELLED
 ```
 
-### Step 4: Worker 解析 PDF
+### Step 4: worker parses the PDF
 
-触发方式：
+Trigger:
 
-1. 后端已经把任务推入 Redis
-2. Worker 从 Redis 拉取任务
+1. The backend pushed the task to Redis
+2. The worker pulls it
 
-Worker 做什么：
+Worker:
 
-1. 读取 task payload
-2. 更新 task.status = PROCESSING
-3. 查询 document.file_url
-4. 下载 PDF
-5. 使用 PyMuPDF 或 pdfplumber 解析文本
-6. 提取页码
-7. 清理页眉、页脚、重复空格
-8. 保存中间结果或直接进入 chunking
+1. Reads the task payload
+2. Sets task.status = PROCESSING
+3. Looks up document.file_url
+4. Downloads the PDF
+5. Parses text with PyMuPDF or pdfplumber
+6. Extracts page numbers
+7. Cleans headers, footers, repeated whitespace
+8. Saves intermediates or proceeds directly to chunking
 
-相关表：
+Tables:
 
 ```text
 tasks
 documents
 ```
 
-失败处理：
+Failure handling:
 
-1. 解析失败则写入 error_message
+1. On parse failure, write error_message
 2. retry_count + 1
-3. 未超过重试次数则重新入队
-4. 超过次数则标记 FAILED
+3. Re-enqueue below the retry cap
+4. Mark FAILED beyond it
 
-### Step 5: Worker 切分 chunks
+### Step 5: worker cuts chunks
 
-Worker 做什么：
+Worker:
 
-1. 按 page 切分文本
-2. 尝试识别 section title
-3. 按段落或 token 长度切 chunk
-4. 为每个 chunk 保留 page_number
-5. 保存到 document_chunks 表
+1. Splits text by page
+2. Attempts section-title detection
+3. Chunks by paragraph or token length
+4. Keeps page_number per chunk
+5. Saves to document_chunks
 
-chunk 需要包含：
+Each chunk carries:
 
 ```text
 document_id
@@ -601,29 +604,29 @@ chunk_index
 content
 ```
 
-相关表：
+Tables:
 
 ```text
 document_chunks
 ```
 
-### Step 6: Worker 生成 embeddings
+### Step 6: worker generates embeddings
 
-Worker 做什么：
+Worker:
 
-1. 遍历 document_chunks
-2. 调用 embedding model
-3. 得到 vector
-4. 保存到 document_chunks.embedding
-5. 标记 document 的 semantic index 已建立
+1. Iterates document_chunks
+2. Calls the embedding model
+3. Receives vectors
+4. Saves to document_chunks.embedding
+5. Marks the document's semantic index as built
 
-相关技术：
+Technology:
 
 ```text
 pgvector
 ```
 
-查询示例概念：
+Conceptual query:
 
 ```sql
 SELECT *
@@ -633,36 +636,36 @@ ORDER BY embedding <-> :queryEmbedding
 LIMIT 8;
 ```
 
-### Step 7: Worker 执行 RAG 检索
+### Step 7: worker runs RAG retrieval
 
-Worker 做什么：
+Worker:
 
-1. 根据文档类型构造 generation query
-2. 对 query 生成 embedding
-3. 从 pgvector 检索相关 chunks
-4. 把 chunks 作为 source context
-5. 传给 LLM
+1. Builds a generation query from the document type
+2. Embeds the query
+3. Retrieves relevant chunks from pgvector
+4. Uses the chunks as source context
+5. Passes them to the LLM
 
-目的：
+Purpose:
 
-1. 降低 hallucination
-2. 提高内容相关性
-3. 为 citation grounding 做准备
-4. 为用户自然语言搜索和问答复用同一套语义索引
+1. Reduce hallucination
+2. Improve relevance
+3. Prepare for citation grounding
+4. Reuse one semantic index for user search and answering
 
-### Step 8: Worker 生成结构化笔记
+### Step 8: worker generates structured notes
 
-Worker 做什么：
+Worker:
 
-1. 根据文档类型选择 prompt
-2. 把 source chunks 发给 LLM
-3. 要求 LLM 输出 JSON
-4. 校验 JSON schema
-5. 转成 Tiptap content_json
-6. 生成 content_markdown
-7. 保存 notes 表
+1. Selects the prompt by document type
+2. Sends source chunks to the LLM
+3. Requires JSON output
+4. Validates the JSON schema
+5. Converts to Tiptap content_json
+6. Generates content_markdown
+7. Saves to notes
 
-笔记结构：
+Note structure:
 
 ```text
 Topic Overview
@@ -675,7 +678,7 @@ Practice Questions
 Review Checklist
 ```
 
-相关表：
+Tables:
 
 ```text
 notes
@@ -683,16 +686,16 @@ note_blocks
 document_chunks
 ```
 
-### Step 9: Worker 生成题库
+### Step 9: worker generates the quiz
 
-Worker 做什么：
+Worker:
 
-1. 基于 chunks 和笔记生成题目
-2. 要求题目输出 JSON
-3. 每题保存 question、answer、explanation、difficulty、source_page
-4. 写入 quiz_questions 表
+1. Generates questions from chunks and notes
+2. Requires JSON output
+3. Saves question, answer, explanation, difficulty, source_page per question
+4. Writes quiz_questions
 
-题目类型：
+Question types:
 
 ```text
 Conceptual
@@ -703,7 +706,7 @@ Short Answer
 True / False
 ```
 
-相关表：
+Tables:
 
 ```text
 quizzes
@@ -711,37 +714,38 @@ quiz_questions
 document_chunks
 ```
 
-### Step 10: Worker 完成任务
+### Step 10: worker completes the task
 
-Worker 做什么：
+Worker:
 
-1. 所有结果保存成功
-2. 更新 task.progress = 100
-3. 更新 task.status = COMPLETED
-4. 写入 completed_at
+1. All results persisted
+2. task.progress = 100
+3. task.status = COMPLETED
+4. completed_at written
 
-前端下一次轮询时看到 COMPLETED，就跳转文档详情页。
+The frontend's next poll sees COMPLETED and redirects to the document detail
+page.
 
-### Step 11: 用户查看文档详情
+### Step 11: user views the document
 
-用户操作：
+User actions:
 
-1. 打开 Document Detail Page
-2. 查看 Overview
-3. 查看 Notes
-4. 查看 Quiz
-5. 查看 Sources
-6. 点击 citation 查看原文片段
+1. Opens the Document Detail page
+2. Views Overview
+3. Views Notes
+4. Views Quiz
+5. Views Sources
+6. Clicks citations to view source snippets
 
-前端做什么：
+Frontend:
 
-1. 调用 document API
-2. 调用 notes API
-3. 调用 quiz API
-4. 调用 chunks API
-5. 渲染 tabs
+1. Calls the document API
+2. Calls the notes API
+3. Calls the quiz API
+4. Calls the chunks API
+5. Renders tabs
 
-相关 API：
+APIs:
 
 ```text
 GET /documents/{id}
@@ -750,31 +754,31 @@ GET /documents/{id}/quiz
 GET /documents/{id}/chunks
 ```
 
-### Step 12: 用户用一句话搜索 PDF / 笔记内容
+### Step 12: user searches PDF/notes with one sentence
 
-用户操作：
+User actions:
 
-1. 在文档详情页或右侧 assistant 中输入一句自然语言。
-2. 例如：`为什么 variance 可以写成 E[X^2] - E[X]^2？`
-3. 点击 Search in document。
-4. 查看相关页码、章节和 source snippet。
+1. Types one natural-language sentence in the detail page or the assistant
+   panel — e.g. `Why can variance be written as E[X^2] - E[X]^2?`
+2. Clicks Search in document
+3. Reviews matching pages, sections, and source snippets
 
-前端做什么：
+Frontend:
 
-1. 调用 `POST /documents/{id}/search`。
-2. 传入 query 和 limit。
-3. 渲染匹配到的 chunks。
-4. 显示 page number、section title、snippet 和 score。
-5. 用户点击结果时打开对应 source panel。
+1. Calls `POST /documents/{id}/search`
+2. Sends query and limit
+3. Renders matching chunks
+4. Shows page number, section title, snippet, and score
+5. Opens the source panel on click
 
-后端做什么：
+Backend:
 
-1. 校验用户是否有权限访问 document。
-2. 为 query 生成 query embedding，或请求 Worker/AI service 生成。
-3. 使用 pgvector 在 document_chunks 中查找 top-k 相似 chunks。
-4. 返回搜索结果。
+1. Verifies document access
+2. Generates the query embedding (or asks the worker/AI service to)
+3. Runs pgvector top-k search over document_chunks
+4. Returns results
 
-请求示例：
+Request example:
 
 ```json
 {
@@ -783,7 +787,7 @@ GET /documents/{id}/chunks
 }
 ```
 
-响应示例：
+Response example:
 
 ```json
 {
@@ -799,53 +803,53 @@ GET /documents/{id}/chunks
 }
 ```
 
-相关 API：
+APIs:
 
 ```text
 POST /documents/{id}/search
 ```
 
-相关表：
+Tables:
 
 ```text
 document_chunks
 ```
 
-### Step 13: 用户基于来源向 AI 提问
+### Step 13: user asks the AI with sources
 
-用户操作：
+User actions:
 
-1. 在 assistant 中输入问题。
-2. 点击 Ask with sources。
-3. 查看 AI 回答。
-4. 点击回答中的 citation 查看原文。
+1. Types a question in the assistant
+2. Clicks Ask with sources
+3. Reads the AI answer
+4. Clicks citations to view the source text
 
-前端做什么：
+Frontend:
 
-1. 调用 `POST /documents/{id}/ask`。
-2. 展示 answer。
-3. 展示 citations。
-4. 允许用户把回答插入编辑器。
+1. Calls `POST /documents/{id}/ask`
+2. Displays the answer
+3. Displays citations
+4. Lets the user insert the answer into the editor
 
-后端或 Worker 做什么：
+Backend or worker:
 
-1. 校验用户权限。
-2. 为 question 生成 query embedding。
-3. 从 pgvector 检索 top-k source chunks。
-4. 把 question 和 source chunks 发给 LLM。
-5. 要求 LLM 只基于 sources 回答。
-6. 返回 answer 和 citations。
+1. Verifies permissions
+2. Embeds the question
+3. Retrieves top-k source chunks from pgvector
+4. Sends the question and sources to the LLM
+5. Requires answering only from the sources
+6. Returns the answer and citations
 
-请求示例：
+Request example:
 
 ```json
 {
-  "question": "为什么 variance 等于 E[X^2] - E[X]^2？",
+  "question": "Why does variance equal E[X^2] - E[X]^2?",
   "limit": 8
 }
 ```
 
-响应示例：
+Response example:
 
 ```json
 {
@@ -860,124 +864,124 @@ document_chunks
 }
 ```
 
-相关 API：
+APIs:
 
 ```text
 POST /documents/{id}/ask
 ```
 
-相关表：
+Tables:
 
 ```text
 document_chunks
 ```
 
-### Step 14: 用户进入编辑器
+### Step 14: user edits in the editor
 
-用户操作：
+User actions:
 
-1. 点击 Edit Notes
-2. 修改 AI 生成内容
-3. 插入标题、列表、引用、代码块
-4. 插入 inline math
-5. 插入 block math
+1. Clicks Edit Notes
+2. Modifies AI content
+3. Inserts headings, lists, quotes, code blocks
+4. Inserts inline math
+5. Inserts block math
 
-前端做什么：
+Frontend:
 
-1. 加载 note.content_json
-2. 初始化 Tiptap editor
-3. 用 KaTeX 渲染公式
-4. 用户编辑时更新本地 editor state
-5. 每 5 到 10 秒 autosave
+1. Loads note.content_json
+2. Initializes the Tiptap editor
+3. Renders formulas with KaTeX
+4. Updates local editor state as the user types
+5. Autosaves every 5–10 seconds
 
-后端做什么：
+Backend:
 
-1. 接收 `PUT /notes/{id}`
-2. 校验 note 属于当前用户
-3. 保存 content_json
-4. 同步保存 content_markdown
-5. 更新 updated_at
+1. Receives `PUT /notes/{id}`
+2. Verifies note ownership
+3. Saves content_json
+4. Saves content_markdown alongside
+5. Updates updated_at
 
-相关 API：
+APIs:
 
 ```text
 GET /notes/{id}
 PUT /notes/{id}
 ```
 
-相关表：
+Tables:
 
 ```text
 notes
 ```
 
-### Step 15: 用户导出 Markdown
+### Step 15: user exports Markdown
 
-用户操作：
+User actions:
 
-1. 点击 Export
-2. 选择 Markdown
-3. 下载或复制 Markdown
+1. Clicks Export
+2. Chooses Markdown
+3. Downloads or copies the Markdown
 
-前端做什么：
+Frontend:
 
-1. 调用 export API
-2. 显示下载按钮或复制结果
+1. Calls the export API
+2. Shows the download button or copy output
 
-后端做什么：
+Backend:
 
-1. 读取 note.content_json 或 content_markdown
-2. 转换成 Markdown
-3. 保留标题、列表、代码块、LaTeX、citation
-4. 返回 Markdown 文本或文件 URL
-5. 创建 export record
+1. Reads note.content_json or content_markdown
+2. Converts to Markdown
+3. Preserves headings, lists, code blocks, LaTeX, citations
+4. Returns Markdown text or a file URL
+5. Creates the export record
 
-相关 API：
+APIs:
 
 ```text
 POST /notes/{id}/export/markdown
 ```
 
-相关表：
+Tables:
 
 ```text
 exports
 ```
 
-## 6. 后端内部分层
+## 6. Backend Internal Layering
 
-Spring Boot 后端建议分层：
+Recommended Spring Boot layering:
 
 ```text
 controller
-  接收 HTTP 请求，处理参数和响应
+  HTTP requests, parameters, responses
 
 service
-  业务逻辑，例如创建文档、创建任务、保存笔记
+  Business logic: create documents, create tasks, save notes
 
 repository
-  数据库访问
+  Database access
 
 entity
-  JPA 实体
+  JPA entities
 
 dto
-  请求和响应对象
+  Request and response objects
 
 security
-  认证和权限
+  Authentication and authorization
 
 storage
-  文件存储接口
+  File storage interface
 
 queue
-  Redis 队列接口
+  Redis queue interface
 
 export
-  Markdown / PDF 导出逻辑
+  Markdown / PDF export logic
 ```
 
-示例模块：
+Example modules:
 
 ```text
 com.noteflow.auth
@@ -991,9 +995,9 @@ com.noteflow.queue
 com.noteflow.export
 ```
 
-## 7. Worker 内部分层
+## 7. Worker Internal Layering
 
-Python Worker 建议分层：
+Recommended Python worker layering:
 
 ```text
 worker/
@@ -1021,7 +1025,7 @@ worker/
     analyze_document.py
 ```
 
-核心 pipeline：
+Core pipeline:
 
 ```text
 consume task
@@ -1039,7 +1043,7 @@ consume task
   -> complete task
 ```
 
-## 8. 前端页面和 API 对应关系
+## 8. Page-to-API Mapping
 
 ```text
 /login
@@ -1073,9 +1077,9 @@ consume task
   POST /notes/{id}/export/markdown
 ```
 
-## 9. 本地开发连接方式
+## 9. Local Development Connectivity
 
-### 9.1 本地服务端口建议
+### 9.1 Suggested local ports
 
 ```text
 Frontend:        http://localhost:3000
@@ -1086,7 +1090,7 @@ Worker:          background process
 Object Storage:  ./storage
 ```
 
-Electron Cloud Mode 开发时：
+Electron Cloud Mode during development:
 
 ```text
 Electron App:    local desktop shell
@@ -1096,26 +1100,27 @@ AI Worker:       cloud worker or local worker
 Database/Redis:  cloud services or local Docker services
 ```
 
-### 9.2 Docker Compose 目标
+### 9.2 Docker Compose targets
 
-第一版 Docker Compose 应启动：
+V1 Docker Compose starts:
 
 1. postgres
 2. redis
 3. backend
 4. worker
-5. frontend 可选
+5. frontend (optional)
 
-Electron 不需要放进第一版 Docker Compose。桌面端在 Web App 和在线 demo 稳定后单独开发。
+Electron stays out of the V1 Compose file; the desktop app is developed
+separately once the web app and hosted demo are stable.
 
-本地开发时也可以：
+Local development can also run:
 
-1. Docker 跑 postgres + redis
-2. 本机跑 frontend
-3. 本机跑 backend
-4. 本机跑 worker
+1. postgres + redis in Docker
+2. the frontend on the host
+3. the backend on the host
+4. the worker on the host
 
-### 9.3 环境变量
+### 9.3 Environment variables
 
 Frontend:
 
@@ -1145,209 +1150,211 @@ LLM_API_KEY=replace_me
 EMBEDDING_MODEL=replace_me
 ```
 
-## 10. MVP 实现顺序
+## 10. MVP Implementation Order
 
-### Phase 1: 项目骨架
+### Phase 1: skeleton
 
-要做：
+Do:
 
-1. 创建 frontend、backend、worker 目录
-2. 配置 Docker Compose
-3. 启动 PostgreSQL 和 Redis
-4. 后端连接数据库
-5. 前端能调用后端 health check
+1. Create frontend, backend, worker directories
+2. Configure Docker Compose
+3. Start PostgreSQL and Redis
+4. Connect the backend to the database
+5. Frontend calls the backend health check
 
-完成标准：
+Done when:
 
-1. `GET /health` 返回 OK
-2. 前端页面能显示 API connected
-3. 数据库 migration 能运行
+1. `GET /health` returns OK
+2. The frontend shows "API connected"
+3. Database migrations run
 
-### Phase 2: 文档上传
+### Phase 2: document upload
 
-要做：
+Do:
 
-1. 前端上传 PDF
-2. 后端接收 multipart file
-3. 保存到 local storage
-4. 写 documents 表
-5. 返回 document id
+1. Frontend PDF upload
+2. Backend receives the multipart file
+3. Save to local storage
+4. Write the documents table
+5. Return the document id
 
-完成标准：
+Done when:
 
-1. 用户可以上传 PDF
-2. Dashboard 能看到文档
-3. storage 目录出现 PDF 文件
+1. Users can upload PDFs
+2. The dashboard lists documents
+3. PDFs appear in the storage directory
 
-### Phase 3: 任务系统
+### Phase 3: task system
 
-要做：
+Do:
 
-1. 创建 tasks 表
-2. 上传后创建 analysis task
-3. 后端推送 Redis queue
-4. Worker 能消费 task
-5. Worker 更新 task status
+1. Create the tasks table
+2. Create an analysis task on upload
+3. Push to the Redis queue
+4. Worker consumes the task
+5. Worker updates task status
 
-完成标准：
+Done when:
 
-1. 上传 PDF 后出现 PENDING task
-2. Worker 消费后状态变 PROCESSING
-3. Worker 结束后状态变 COMPLETED
+1. Upload produces a PENDING task
+2. Consumption flips it to PROCESSING
+3. Completion flips it to COMPLETED
 
-### Phase 4: PDF 解析和 chunks
+### Phase 4: PDF parsing and chunks
 
-要做：
+Do:
 
-1. Worker 下载 PDF
-2. 解析文本
-3. 按页切分
-4. 写 document_chunks 表
-5. 后端提供 chunks 查询 API
+1. Worker downloads the PDF
+2. Parses text
+3. Splits by page
+4. Writes document_chunks
+5. Backend chunk query API
 
-完成标准：
+Done when:
 
-1. Sources 页面能看到 page number 和 chunk text
-2. 一个 PDF 至少能解析出多个 chunks
+1. The Sources page shows page numbers and chunk text
+2. A PDF parses into multiple chunks
 
-### Phase 5: Embedding 与 pgvector 语义索引
+### Phase 5: embeddings and the pgvector index
 
-要做：
+Do:
 
-1. 接入 embedding model
-2. 启用 pgvector
-3. 为 chunks 生成 embeddings
-4. 存储到 document_chunks.embedding
-5. 实现 similarity search
+1. Integrate the embedding model
+2. Enable pgvector
+3. Generate chunk embeddings
+4. Store in document_chunks.embedding
+5. Implement similarity search
 
-完成标准：
+Done when:
 
-1. 上传 PDF 后每个 chunk 都有 embedding
-2. 后端可以按 query embedding 搜索相关 chunks
-3. Sources 页面可以按语义相关性返回结果
+1. Every chunk of an uploaded PDF has an embedding
+2. The backend searches chunks by query embedding
+3. The Sources page returns semantically ranked results
 
-### Phase 6: 自然语言搜索和 RAG 问答
+### Phase 6: natural-language search and RAG answering
 
-要做：
+Do:
 
-1. 实现 `POST /documents/{id}/search`
-2. 用户 query 生成 query embedding
-3. pgvector 搜索 top-k chunks
-4. 前端展示 source snippets
-5. 实现 `POST /documents/{id}/ask`
-6. 将 top-k chunks 和问题传给 LLM
-7. 返回 answer with citations
+1. Implement `POST /documents/{id}/search`
+2. Embed user queries
+3. pgvector top-k search
+4. Frontend shows source snippets
+5. Implement `POST /documents/{id}/ask`
+6. Send top-k chunks and the question to the LLM
+7. Return the answer with citations
 
-完成标准：
+Done when:
 
-1. 用户可以用一句话搜索 PDF 中的相关内容
-2. 搜索结果包含页码、章节、片段和相似度
-3. 用户可以基于文档提问
-4. AI 回答带 citations
+1. One-sentence search over PDF content works
+2. Results include page, section, snippet, similarity
+3. Users can ask document-grounded questions
+4. Answers carry citations
 
-### Phase 7: AI 笔记生成
+### Phase 7: AI note generation
 
-要做：
+Do:
 
-1. Worker 调 LLM
-2. 生成结构化 JSON
-3. 转换成 note content_json
-4. 保存 notes 表
-5. 前端展示笔记
-6. 笔记重点绑定 source chunks
+1. Worker calls the LLM
+2. Generates structured JSON
+3. Converts to note content_json
+4. Saves the notes table
+5. Frontend renders notes
+6. Key content binds to source chunks
 
-完成标准：
+Done when:
 
-1. 上传 PDF 后能生成一份结构化笔记
-2. Notes 页面能正确展示标题、段落、列表
-3. 笔记中的重点内容可以追溯到 source chunks
+1. An uploaded PDF yields a structured note
+2. The Notes page renders headings, paragraphs, lists correctly
+3. Key content traces back to source chunks
 
-### Phase 8: 编辑器和 LaTeX
+### Phase 8: editor and LaTeX
 
-要做：
+Do:
 
-1. 集成 Tiptap
-2. 加基础 rich text extension
-3. 加 inline math
-4. 加 block math
-5. 加 KaTeX 渲染
-6. 加 autosave
+1. Integrate Tiptap
+2. Base rich-text extensions
+3. Inline math
+4. Block math
+5. KaTeX rendering
+6. Autosave
 
-完成标准：
+Done when:
 
-1. 用户可以编辑 AI 笔记
-2. 用户可以插入 inline formula
-3. 用户可以插入 block formula
-4. 刷新后内容仍然存在
+1. Users can edit AI notes
+2. Users can insert inline formulas
+3. Users can insert block formulas
+4. Content survives a refresh
 
-### Phase 9: Markdown 导出
+### Phase 9: Markdown export
 
-要做：
+Do:
 
-1. content_json 转 Markdown
-2. 保留 LaTeX
-3. 保留 citation
-4. 提供下载或 copy
+1. content_json to Markdown
+2. Preserve LaTeX
+3. Preserve citations
+4. Provide download or copy
 
-完成标准：
+Done when:
 
-1. 用户能导出 Markdown
-2. 导出内容可导入 Notion 或 Markdown 编辑器
+1. Users can export Markdown
+2. Exports import cleanly into Notion or Markdown editors
 
-### Phase 10: Citation 和产品体验增强
+### Phase 10: citations and product polish
 
-要做：
+Do:
 
-1. 优化 citation UI
-2. 每条 note item 绑定 source_chunk_id
-3. 前端点击 citation 显示 source snippet
-4. 优化 search result ranking
-5. 优化 answer prompt 和 citation 格式
+1. Improve the citation UI
+2. Bind every note item to source_chunk_id
+3. Clicking a citation shows the source snippet
+4. Improve search result ranking
+5. Improve the answer prompt and citation format
 
-完成标准：
+Done when:
 
-1. 笔记重点能看到页码来源
-2. 点击 citation 能看到原文片段
-3. 搜索和问答体验稳定可演示
+1. Key notes show page-level sources
+2. Clicking citations shows source snippets
+3. Search and answering demo reliably
 
-### Phase 11: 在线 demo 部署
+### Phase 11: hosted demo deployment
 
-要做：
+Do:
 
-1. 部署 Next.js 前端。
-2. 部署 Spring Boot backend。
-3. 部署 Python worker。
-4. 部署 PostgreSQL + pgvector。
-5. 部署 Redis。
-6. 配置对象存储。
-7. 配置环境变量和 CORS。
-8. 测试完整线上流程。
+1. Deploy the Next.js frontend
+2. Deploy the Spring Boot backend
+3. Deploy the Python worker
+4. Deploy PostgreSQL + pgvector
+5. Deploy Redis
+6. Configure object storage
+7. Configure environment variables and CORS
+8. Test the full hosted flow
 
-完成标准：
+Done when:
 
-1. 用户可以通过 URL 打开项目。
-2. 上传、embedding、搜索、问答、笔记生成、编辑和导出都能在线完成。
-3. README 有 demo 链接和运行说明。
+1. The project opens from a URL
+2. Upload, embeddings, search, answering, notes, editing, and export all
+   work online
+3. The README links the demo with run instructions
 
-### Phase 12: Electron 桌面版
+### Phase 12: Electron desktop
 
-要做：
+Do:
 
-1. 创建 Electron app。
-2. 复用 Web App 的构建产物。
-3. 配置桌面窗口、菜单和基础应用信息。
-4. 让桌面端连接云端 Backend API。
-5. 支持本地文件选择和导出保存。
-6. 打包 macOS / Windows 可安装版本。
+1. Create the Electron app
+2. Reuse the web build output
+3. Configure windows, menus, and app metadata
+4. Connect to the cloud Backend API
+5. Support local file pickers and export saving
+6. Package installable macOS / Windows builds
 
-完成标准：
+Done when:
 
-1. 用户可以安装桌面版。
-2. 桌面版 UI 与 Web App 功能一致。
-3. 桌面版可以连接云端 API 完成上传、搜索、问答、编辑和导出。
-4. 桌面版不要求用户本地安装 Java、Python、PostgreSQL 或 Redis。
+1. Users can install the desktop app
+2. The desktop UI matches the web app
+3. The desktop app completes upload/search/ask/edit/export against the
+   cloud API
+4. Users need no local Java, Python, PostgreSQL, or Redis
 
-## 11. 关键接口清单
+## 11. Key API Inventory
 
 ### Auth
 
@@ -1395,7 +1402,7 @@ GET /documents/{id}/chunks
 GET /chunks/{id}
 ```
 
-### Semantic Search And RAG
+### Semantic search and RAG
 
 ```text
 POST /documents/{id}/search
@@ -1409,9 +1416,9 @@ POST /notes/{id}/export/markdown
 POST /notes/{id}/export/pdf
 ```
 
-## 12. 数据状态流转
+## 12. State Transitions
 
-### Document 状态
+### Document states
 
 ```text
 UPLOADED
@@ -1421,7 +1428,7 @@ FAILED
 DELETED
 ```
 
-状态变化：
+Transitions:
 
 ```text
 UPLOADED -> PROCESSING -> READY
@@ -1429,7 +1436,7 @@ UPLOADED -> PROCESSING -> FAILED
 READY -> DELETED
 ```
 
-### Task 状态
+### Task states
 
 ```text
 PENDING
@@ -1440,7 +1447,7 @@ RETRYING
 CANCELLED
 ```
 
-状态变化：
+Transitions:
 
 ```text
 PENDING -> PROCESSING -> COMPLETED
@@ -1450,51 +1457,51 @@ PENDING -> CANCELLED
 PROCESSING -> CANCELLED
 ```
 
-## 13. 错误处理
+## 13. Error Handling
 
-### 上传失败
+### Upload failures
 
-原因：
+Causes:
 
-1. 文件不是 PDF
-2. 文件太大
-3. storage 写入失败
+1. The file is not a PDF
+2. The file is too large
+3. Storage write failure
 
-处理：
+Handling:
 
-1. 前端展示错误
-2. 后端不创建 task
-3. 如果 document 已创建但 storage 失败，需要标记 FAILED 或回滚
+1. The frontend shows the error
+2. The backend creates no task
+3. If the document was created but storage failed, mark FAILED or roll back
 
-### Worker 失败
+### Worker failures
 
-原因：
+Causes:
 
-1. PDF 下载失败
-2. PDF 解析失败
-3. LLM API 超时
-4. JSON schema 校验失败
-5. 数据库写入失败
+1. PDF download failure
+2. PDF parse failure
+3. LLM API timeout
+4. JSON schema validation failure
+5. Database write failure
 
-处理：
+Handling:
 
 1. task.status = FAILED
-2. 写入 error_message
+2. Write error_message
 3. retry_count + 1
-4. 允许用户点击 retry
+4. Let the user retry
 
-### AI 输出格式错误
+### Malformed AI output
 
-处理：
+Handling:
 
-1. 使用 JSON schema
-2. 校验失败后自动 retry 一次
-3. 仍失败则保存 raw output 到 debug log
-4. task 标记 FAILED
+1. Enforce JSON schemas
+2. Retry once automatically on validation failure
+3. On repeated failure, save the raw output to a debug log
+4. Mark the task FAILED
 
-## 14. 第一版最小闭环
+## 14. The Minimal V1 Loop
 
-如果时间有限，只做这条链路：
+With limited time, build only this chain:
 
 ```text
 PDF upload
@@ -1510,47 +1517,48 @@ PDF upload
   -> export Markdown
 ```
 
-这一版可以暂时不做：
+This version may defer:
 
-1. 高级 citation UI
-2. quiz
+1. Advanced citation UI
+2. Quizzes
 3. PDF export
 4. OCR
 5. WebSocket
-6. 复杂权限
+6. Complex permissions
 
-最小闭环完成后，再逐步补强架构亮点。
+Strengthen the architectural highlights incrementally after the loop closes.
 
-## 15. 推荐开发检查清单
+## 15. Development Checklist
 
-每完成一个阶段，检查：
+At the end of each phase, verify:
 
-1. 前端是否有页面入口
-2. API 是否能独立测试
-3. 数据库是否有对应记录
-4. 错误状态是否能展示
-5. 刷新页面后数据是否仍存在
-6. 用户是否只能访问自己的数据
-7. README 是否更新当前运行方式
+1. The frontend has a page entry point
+2. The API is independently testable
+3. The database holds the corresponding records
+4. Error states render
+5. Data survives a page refresh
+6. Users can only access their own data
+7. The README reflects how to run the current state
 
-## 16. 最终完成标准
+## 16. Definition of Done
 
-项目达到 portfolio-ready 时，应满足：
+The project is portfolio-ready when:
 
-1. 用户可以登录。
-2. 用户可以上传 PDF。
-3. 系统可以异步分析 PDF。
-4. 用户可以看到任务进度。
-5. 系统可以生成结构化笔记。
-6. 系统可以为 chunks 生成 embeddings。
-7. 用户可以用一句话搜索 PDF / 笔记中的相关内容。
-8. 用户可以基于 sources 向 AI 提问。
-9. 系统可以生成题库。
-10. 笔记至少有页码级 citation。
-11. 用户可以在 Tiptap 编辑器中修改笔记。
-12. 用户可以插入 inline 和 block LaTeX。
-13. 用户可以导出 Markdown。
-14. 项目可以本地 Docker Compose 启动。
-15. 项目有在线 demo。
-16. 后续可以用 Electron 包成桌面软件。
-17. README 有截图、架构图和技术说明。
+1. Users can log in.
+2. Users can upload PDFs.
+3. The system analyzes PDFs asynchronously.
+4. Users see task progress.
+5. The system generates structured notes.
+6. The system generates chunk embeddings.
+7. Users can search PDF/note content with one sentence.
+8. Users can ask the AI questions grounded in sources.
+9. The system generates quizzes.
+10. Notes have at least page-level citations.
+11. Users can edit notes in the Tiptap editor.
+12. Users can insert inline and block LaTeX.
+13. Users can export Markdown.
+14. The project starts locally with Docker Compose.
+15. A hosted demo exists.
+16. An Electron desktop wrapper can follow.
+17. The README has screenshots, an architecture diagram, and technical
+    documentation.

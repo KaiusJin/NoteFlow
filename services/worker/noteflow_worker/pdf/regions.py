@@ -107,11 +107,13 @@ def build_visual_regions(
             meta = json.loads(r.metadata_json or "{}")
             image_hash = meta.get("imageHash", "")
             if image_hash and hash_counts[image_hash] >= repeat_threshold and can_drop_repeated_region(r):
-                # Discard repetitive/decorative image
-                try:
-                    Path(r.asset_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+                # Discard repetitive/decorative image. Never unlink a file the
+                # region merely references (full-page regions reuse the render).
+                if not meta.get("reusesPageRender"):
+                    try:
+                        Path(r.asset_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 continue
         except Exception:
             pass
@@ -309,17 +311,17 @@ def create_full_page_region(
     source: str,
     region_type: str | None = None,
 ) -> VisualRegion:
+    # A full-page region is pixel-identical to the page render, so reference the
+    # rendered file instead of writing a duplicate PNG per page.
     with Image.open(visual_page.image_path) as page_image:
         page_width, page_height = page_image.size
-        region_path = output_dir / f"page-{visual_page.page_number:03d}-region-full.png"
-        page_image.save(region_path)
         image_hash = compute_image_hash(page_image)
     return VisualRegion(
         document_id=document_id,
         page_number=visual_page.page_number,
         region_index=0,
         region_type=region_type or classify_region_type(visual_page, document_type, 1.0),
-        asset_path=str(region_path),
+        asset_path=visual_page.image_path,
         bbox_json=None,
         page_asset_id=page_asset_id,
         width=page_width,
@@ -329,9 +331,11 @@ def create_full_page_region(
             {
                 "source": source,
                 "pageImagePath": visual_page.image_path,
+                "reusesPageRender": True,
                 "imageCoverage": visual_page.image_coverage,
                 "imageHash": image_hash,
                 "nativeTextContext": visual_page.native_text_preview,
+                "ocrTextLength": len(visual_page.ocr_text or ""),
                 "documentType": document_type,
             },
             separators=(",", ":"),
@@ -611,17 +615,16 @@ def analyze_regions_with_vlm(
             pending.append((region, fingerprint))
 
     worker_count = max(1, min(max_workers or settings.vision_concurrent_requests, len(pending) or 1))
-    batch_size = max(worker_count, settings.vision_batch_size)
-    for batch_start in range(0, len(pending), batch_size):
-        batch = pending[batch_start : batch_start + batch_size]
+    if pending:
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="vlm-region") as executor:
             future_map = {
                 executor.submit(analyze_region_with_retries, provider, region): (region, fingerprint)
-                for region, fingerprint in batch
+                for region, fingerprint in pending
             }
             for future in as_completed(future_map):
                 region, fingerprint = future_map[future]
                 analysis, attempts = future.result()
+                analysis = flag_suspect_incomplete_transcription(region, analysis)
                 result = to_vlm_result(region, analysis, fingerprint, attempts)
                 results_by_key[(region.page_number, region.region_index)] = result
                 if persist_result is not None:
@@ -641,6 +644,40 @@ def analyze_regions_with_vlm(
             )
             raise RuntimeError(f"Required VLM analysis failed after retries: {details}")
     return results
+
+
+INCOMPLETE_TRANSCRIPTION_MARKER = "transcription_may_be_incomplete"
+MIN_OCR_BASELINE_CHARS = 200
+INCOMPLETE_TRANSCRIPTION_RATIO = 0.45
+
+
+def flag_suspect_incomplete_transcription(region: VisualRegion, analysis: VisionAnalysis) -> VisionAnalysis:
+    """Cross-check full-page transcriptions against the local OCR baseline.
+
+    A VLM answer that is drastically shorter than what local OCR read from the
+    same pixels is strong evidence of a truncated or partial transcription of
+    handwriting. The result is kept, but flagged so the markdown quality report
+    and downstream consumers can see the coverage risk.
+    """
+    if analysis.error_message or region.region_type not in {"HANDWRITTEN", "FULL_PAGE_VISUAL"}:
+        return analysis
+    try:
+        ocr_length = int(json.loads(region.metadata_json or "{}").get("ocrTextLength") or 0)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return analysis
+    if ocr_length < MIN_OCR_BASELINE_CHARS:
+        return analysis
+    extracted = "\n".join(part for part in (analysis.transcription, analysis.latex, analysis.code) if part)
+    if len(extracted) >= ocr_length * INCOMPLETE_TRANSCRIPTION_RATIO:
+        return analysis
+    note = (
+        f"{INCOMPLETE_TRANSCRIPTION_MARKER}: local OCR read ~{ocr_length} characters on this page "
+        f"but the transcription contains {len(extracted)}; parts of the handwriting may be missing."
+    )
+    uncertainty = (analysis.uncertainty + "\n" + note).strip() if analysis.uncertainty else note
+    return VisionAnalysis(
+        **{**analysis.__dict__, "uncertainty": uncertainty}
+    )
 
 
 def analyze_region_with_retries(provider, region: VisualRegion) -> tuple[VisionAnalysis, int]:
@@ -676,6 +713,15 @@ def is_retryable_vision_error(error_message: str) -> bool:
         "http 502",
         "http 503",
         "http 504",
+        # Structured-output validation failures are stochastic model behaviour,
+        # not deterministic client bugs, so another attempt is worthwhile.
+        "vision response has invalid",
+        "vision response contains no usable",
+        "vision response field must be a string",
+        "content_kind is invalid",
+        "importance is invalid",
+        "expecting value",
+        "unterminated string",
     )
     return any(marker in lowered for marker in retryable_markers)
 

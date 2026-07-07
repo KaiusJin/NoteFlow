@@ -1,4 +1,5 @@
 import json
+import random
 import re
 import time
 import urllib.error
@@ -185,16 +186,22 @@ def make_notes_provider() -> NotesProvider:
 
 def generations_with_retries(provider: str, model: str, request_fn) -> list[NotesGeneration]:
     last_error = ""
-    for attempt in range(1, max(1, settings.notes_request_max_attempts) + 1):
+    max_attempts = max(1, settings.notes_request_max_attempts)
+    for attempt in range(1, max_attempts + 1):
         try:
             response = request_fn()
             parsed = parse_provider_response(response)
             return generations_from_dict(provider, model, parsed, response)
         except Exception as exc:
             last_error = str(exc)[:2000]
-            if attempt >= settings.notes_request_max_attempts or not is_retryable_error(last_error):
+            # Malformed model output (JSON/schema validation) is stochastic and
+            # therefore retryable, unlike a deterministic client-side bug.
+            retryable = isinstance(exc, (ValueError, json.JSONDecodeError)) or is_retryable_error(last_error)
+            if attempt >= max_attempts or not retryable:
                 break
-            time.sleep(settings.notes_retry_backoff_seconds * attempt)
+            base = settings.notes_retry_backoff_seconds * (2 ** (attempt - 1))
+            jitter = random.uniform(0.0, min(1.0, settings.notes_retry_backoff_seconds * 0.25))
+            time.sleep(min(30.0, base + jitter))
     return [NotesGeneration(provider=provider, model=model, error_message=last_error or "Notes generation failed.")]
 
 

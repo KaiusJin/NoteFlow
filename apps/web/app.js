@@ -9,6 +9,8 @@ const documentsList = document.querySelector("#documents-list");
 const refreshDocuments = document.querySelector("#refresh-documents");
 const openSearchButton = document.querySelector("#open-search");
 const parseOutput = document.querySelector("#parse-output");
+const studyOutput = document.querySelector("#study-output");
+let activeStudyDocumentId = null;
 
 let documentsMap = new Map();
 let latestTasksList = [];
@@ -80,6 +82,10 @@ documentsList.addEventListener("click", async (event) => {
     await generateEmbeddings(embeddingsButton.dataset.generateEmbeddings);
     return;
   }
+  const studyButton = event.target.closest("[data-open-study]");
+  if (studyButton) {
+    await openStudy(studyButton.dataset.openStudy);
+  }
 });
 
 function formatStepLabel(step) {
@@ -111,6 +117,9 @@ function renderTaskStatus(tasks) {
     const docTitle = doc ? doc.title : (task.documentId ? `Document ${task.documentId.slice(0, 8)}` : "Unknown Document");
     const taskTypeLabel = task.taskType === "PARSE_DOCUMENT" ? "PDF to Markdown" : 
                           task.taskType === "GENERATE_NOTES" ? "AI Notes Generation" :
+                          task.taskType === "GENERATE_FLASHCARDS" ? "Flashcard Generation" :
+                          task.taskType === "GENERATE_QUIZ" ? "Quiz Generation" :
+                          task.taskType === "GRADE_QUIZ_ATTEMPT" ? "Quiz Grading" :
                           task.taskType === "GENERATE_EMBEDDINGS" ? "Embedding Generation" : task.taskType;
     
     const statusClass = task.status.toLowerCase();
@@ -290,6 +299,7 @@ function renderDocuments(documents) {
             <button class="secondary" type="button" data-view-parse="${escapeHtml(document.id)}">View Parsed Output</button>
             <button class="secondary" type="button" data-view-notes="${escapeHtml(document.id)}">View AI Notes</button>
             <button class="secondary" type="button" data-generate-embeddings="${escapeHtml(document.id)}">Generate Embeddings</button>
+            <button class="secondary" type="button" data-open-study="${escapeHtml(document.id)}">Flashcards & Quiz</button>
             <button type="button" data-generate-notes="${escapeHtml(document.id)}">Generate AI Notes</button>
           </div>
         </article>
@@ -767,6 +777,141 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+studyOutput.addEventListener("click", async (event) => {
+  const action = event.target.closest("[data-study-action]");
+  if (!action) return;
+  const kind = action.dataset.studyAction;
+  try {
+    action.disabled = true;
+    if (kind === "generate-cards") await studyPost(`/documents/${activeStudyDocumentId}/flashcard-decks`);
+    if (kind === "generate-quiz") await studyPost(`/documents/${activeStudyDocumentId}/quiz-sets`);
+    if (kind === "refresh") await openStudy(activeStudyDocumentId);
+    if (kind === "review") await renderReview(action.dataset.deckId);
+    if (kind === "start-quiz") await startQuiz(action.dataset.quizId);
+    if (kind === "grade-card") {
+      await studyPost(`/flashcards/${action.dataset.cardId}/reviews`, { grade: action.dataset.grade });
+      await renderReview(action.dataset.deckId);
+    }
+    if (kind === "view-result") await renderAttempt(action.dataset.attemptId);
+    if (kind === "generate-cards" || kind === "generate-quiz") await openStudy(activeStudyDocumentId);
+  } catch (error) {
+    studyOutput.insertAdjacentHTML("afterbegin", `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`);
+  } finally {
+    action.disabled = false;
+  }
+});
+
+studyOutput.addEventListener("submit", async (event) => {
+  const form = event.target.closest("#quiz-attempt-form");
+  if (!form) return;
+  event.preventDefault();
+  const submit = form.querySelector("button[type=submit]");
+  submit.disabled = true;
+  try {
+    const attemptId = form.dataset.attemptId;
+    const questionIds = JSON.parse(form.dataset.questionIds);
+    for (const questionId of questionIds) {
+      const selected = form.querySelector(`[name="q-${questionId}"]:checked`);
+      const text = form.querySelector(`[name="q-${questionId}"]:not([type="radio"])`);
+      await studyPut(`/quiz-attempts/${attemptId}/answers/${questionId}`, { response: selected?.value ?? text?.value ?? "" });
+    }
+    const result = await studyPost(`/quiz-attempts/${attemptId}/submit`);
+    await renderAttempt(attemptId, result.status === "GRADING");
+  } catch (error) {
+    studyOutput.insertAdjacentHTML("afterbegin", `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`);
+  } finally { submit.disabled = false; }
+});
+
+async function openStudy(documentId) {
+  activeStudyDocumentId = documentId;
+  const document = documentsMap.get(documentId);
+  studyOutput.classList.remove("muted");
+  studyOutput.innerHTML = `<div class="study-loading">Loading study workspace…</div>`;
+  const [decksResponse, quizzesResponse] = await Promise.all([
+    fetch(`${API_BASE_URL}/documents/${documentId}/flashcard-decks`),
+    fetch(`${API_BASE_URL}/documents/${documentId}/quiz-sets`),
+  ]);
+  const decks = await readJson(decksResponse), quizzes = await readJson(quizzesResponse);
+  if (!decksResponse.ok) throw new Error(decks.message || "Could not load flashcards");
+  if (!quizzesResponse.ok) throw new Error(quizzes.message || "Could not load quizzes");
+  const deck = decks[0], quiz = quizzes[0];
+  studyOutput.innerHTML = `
+    <div class="study-toolbar">
+      <div><div class="eyebrow">${escapeHtml(document?.title || "Document")}</div><h3>Study workspace</h3></div>
+      <button class="secondary" data-study-action="refresh">Refresh</button>
+    </div>
+    <div class="study-grid">
+      <article class="study-module flashcard-module">
+        <div class="study-module-head"><div><span class="study-icon">▣</span><h3>Flashcards</h3></div><span class="badge ${statusClass(deck?.status)}">${escapeHtml(deck?.status || "NOT STARTED")}</span></div>
+        <p>Source-grounded cards with spaced repetition and page citations.</p>
+        ${deck ? studyProgress(deck) : `<div class="empty-study">No deck generated yet.</div>`}
+        ${decks.length > 1 ? `<div class="study-history">History: ${decks.map(d=>`v${d.version} ${escapeHtml(d.status)}`).join(" · ")}</div>` : ""}
+        <div class="study-actions">
+          <button data-study-action="generate-cards">${deck ? "Generate new deck" : "Generate flashcards"}</button>
+          ${deck?.status === "READY" ? `<button class="secondary" data-study-action="review" data-deck-id="${deck.id}">Review due cards</button>` : ""}
+        </div>
+      </article>
+      <article class="study-module quiz-module">
+        <div class="study-module-head"><div><span class="study-icon">?</span><h3>Quiz</h3></div><span class="badge ${statusClass(quiz?.status)}">${escapeHtml(quiz?.status || "NOT STARTED")}</span></div>
+        <p>Mixed-difficulty questions with rubric scoring and explanations.</p>
+        ${quiz ? studyProgress(quiz) : `<div class="empty-study">No quiz generated yet.</div>`}
+        ${quizzes.length > 1 ? `<div class="study-history">History: ${quizzes.map(q=>`v${q.version} ${escapeHtml(q.status)}`).join(" · ")}</div>` : ""}
+        <div class="study-actions">
+          <button data-study-action="generate-quiz">${quiz ? "Generate new quiz" : "Generate quiz"}</button>
+          ${quiz?.status === "READY" ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${quiz.id}">Start quiz</button>` : ""}
+        </div>
+      </article>
+    </div>`;
+  studyOutput.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function studyProgress(item) {
+  const completed = item.completed_source_groups || 0, total = item.total_source_groups || 0;
+  const percent = total ? Math.round(completed / total * 100) : item.status === "READY" ? 100 : 0;
+  return `<div class="study-version">Version ${item.version} · ${completed}/${total || "?"} source groups</div>
+    <div class="task-progress-shell"><div class="task-progress-bar ${item.status === "READY" ? "completed" : ""}" style="width:${percent}%"></div></div>
+    ${item.error_message ? `<p class="study-error-text">${escapeHtml(item.error_message)}</p>` : ""}`;
+}
+
+function statusClass(status) { return status === "READY" || status === "COMPLETED" ? "ready" : status === "FAILED" ? "failed" : "processing"; }
+
+async function renderReview(deckId) {
+  const response = await fetch(`${API_BASE_URL}/flashcard-decks/${deckId}/reviews/due`);
+  const cards = await readJson(response); if (!response.ok) throw new Error(cards.message || "Could not load review cards");
+  studyOutput.innerHTML = `<div class="study-toolbar"><div><div class="eyebrow">Spaced repetition</div><h3>${cards.length} cards due</h3></div><button class="secondary" data-open-study-back>Back</button></div>
+    <div class="flashcard-stack">${cards.length ? cards.map(card => `<article class="review-card"><div class="card-meta"><span class="pill">${escapeHtml(card.card_type)}</span><span>${escapeHtml(card.topic)} · pages ${escapeHtml(parseJsonSafe(card.source_pages_json)?.join(", ") || "-")}</span></div><h3>${escapeHtml(card.front)}</h3><details><summary>Reveal answer</summary><div class="card-answer">${escapeHtml(card.back)}</div><div class="review-grades">${["AGAIN","HARD","GOOD","EASY"].map(g=>`<button class="grade-${g.toLowerCase()}" data-study-action="grade-card" data-grade="${g}" data-card-id="${card.id}" data-deck-id="${deckId}">${g}</button>`).join("")}</div></details></article>`).join("") : `<div class="empty-study">Nothing due. Nice work.</div>`}</div>`;
+  studyOutput.querySelector("[data-open-study-back]").addEventListener("click",()=>openStudy(activeStudyDocumentId));
+}
+
+async function startQuiz(quizId) {
+  const [attempt, questionsResponse] = await Promise.all([studyPost(`/quiz-sets/${quizId}/attempts`), fetch(`${API_BASE_URL}/quiz-sets/${quizId}/questions`)]);
+  const questions = await readJson(questionsResponse); if (!questionsResponse.ok) throw new Error(questions.message || "Could not load questions");
+  studyOutput.innerHTML = `<div class="study-toolbar"><div><div class="eyebrow">Quiz attempt</div><h3>${questions.length} questions</h3></div></div><form id="quiz-attempt-form" data-attempt-id="${attempt.attemptId}" data-question-ids='${escapeHtml(JSON.stringify(questions.map(q=>q.id)))}' class="quiz-form">${questions.map((q,i)=>renderQuizQuestion(q,i)).join("")}<button type="submit">Submit quiz</button></form>`;
+}
+
+function renderQuizQuestion(q, index) {
+  const options = parseJsonSafe(q.options_json) || [];
+  const input = options.length ? `<div class="quiz-options">${options.map(o=>`<label><input type="radio" name="q-${q.id}" value="${escapeHtml(o)}"> <span>${escapeHtml(o)}</span></label>`).join("")}</div>` : `<textarea name="q-${q.id}" rows="5" placeholder="Write your answer…"></textarea>`;
+  return `<article class="quiz-question"><div class="card-meta"><span>Question ${index+1}</span><span class="pill">${escapeHtml(q.question_type)}</span><span>${escapeHtml(q.difficulty)} · ${q.points} pts · pages ${escapeHtml(parseJsonSafe(q.source_pages_json)?.join(", ") || "-")}</span></div><h3>${escapeHtml(q.stem)}</h3>${input}</article>`;
+}
+
+async function renderAttempt(attemptId, grading = false) {
+  const response = await fetch(`${API_BASE_URL}/quiz-attempts/${attemptId}`), result = await readJson(response);
+  if (!response.ok) throw new Error(result.message || "Could not load attempt");
+  const meta = result.attempt;
+  studyOutput.innerHTML = `<div class="study-toolbar"><div><div class="eyebrow">Quiz result</div><h3>${escapeHtml(meta.status)}</h3></div><button class="secondary" data-study-action="view-result" data-attempt-id="${attemptId}">Refresh result</button></div>
+    <div class="quiz-score"><strong>${Number(meta.score || 0).toFixed(1)}</strong><span>/ ${Number(meta.max_score || 0).toFixed(1)} points</span></div>
+    ${grading || meta.status === "GRADING" ? `<div class="status-card muted">Free-text answers are being graded. Refresh shortly.</div>` : ""}
+    <div class="answer-review">${(result.answers || []).map((a,i)=>`<article class="quiz-question ${a.is_correct===true?"answer-correct":a.is_correct===false?"answer-wrong":""}"><div class="card-meta">Question ${i+1} · ${escapeHtml(a.question_type)} · ${a.awarded_points ?? "-"}/${a.points}</div><h3>${escapeHtml(a.stem)}</h3><p><strong>Your answer:</strong> ${escapeHtml(a.user_response || "No answer")}</p>${a.feedback?`<p><strong>Feedback:</strong> ${escapeHtml(a.feedback)}</p>`:""}${a.explanation?`<details><summary>Explanation</summary><p>${escapeHtml(a.explanation)}</p></details>`:""}</article>`).join("")}</div>`;
+}
+
+async function studyPost(path, body) { return studyRequest(path, "POST", body); }
+async function studyPut(path, body) { return studyRequest(path, "PUT", body); }
+async function studyRequest(path, method, body) {
+  const response = await fetch(`${API_BASE_URL}${path}`, { method, headers: body ? {"Content-Type":"application/json"} : {}, body: body ? JSON.stringify(body) : undefined });
+  const payload = await readJson(response); if (!response.ok) throw new Error(payload.message || "Study request failed"); return payload;
 }
 
 loadDocuments().then(() => startGlobalPolling());

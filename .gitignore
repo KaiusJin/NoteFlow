@@ -15,3 +15,9 @@ services/api/storage/*
 !services/api/storage/README.md
 experiments/
 .env
+
+# Local documents and generated inspection/export artifacts
+/note/
+/tmp/
+/exported_ai_notes/
+/exported_raw_markdown_*/

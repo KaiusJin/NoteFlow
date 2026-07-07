@@ -81,7 +81,7 @@ Examples that trigger HyDE:
 
 ```text
 PMF
-这个是什么
+这个是什么   (non-English low-information query: "what is this")
 explain this concept please
 ```
 

@@ -9,7 +9,7 @@ Start here:
 | Document | Purpose |
 |---|---|
 | `NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md` | Current end-to-end technical specification for upload, API interfaces, storage, PDF-to-Markdown, chunking, AI notes, concurrency, resume, and export. |
-| `PDF_CONVERTER_V2_ARCHITECTURE.md` | Authoritative subsystem specification for the current PDF-to-raw-Markdown implementation. It supersedes older parser/router details in supporting documents. |
+| `PDF_CONVERTER_V2_ARCHITECTURE.md` | Final-state architecture of the worker pipeline (PDF -> Markdown -> chunks -> AI notes -> embeddings): architecture diagram, inputs/outputs, case-handling matrix, and pipeline coordination. It supersedes older parser/router details in supporting documents. |
 
 The documents below are supporting references. If a supporting document conflicts with `NOTE_FLOW_PIPELINE_TECHNICAL_SPEC.md`, treat the specification as current and update the older document.
 
@@ -25,6 +25,8 @@ The documents below are supporting references. If a supporting document conflict
 | `EMBEDDING_SEARCH_RAG_PLAN.md` | Implemented Gemini-first embeddings and initial dual-source semantic search, plus the RAG direction. |
 | `HYBRID_RETRIEVAL_CONTEXT_PIPELINE.md` | Next implementation phase: vector/lexical recall, RRF, reranking, deduplication, context construction, citations, and retrieval evaluation. |
 | `STRUCTURED_OUTPUT_HYDE_PROVIDER_ARCHITECTURE.md` | Structured model responses, backend validation, HyDE query expansion, Gemini/OpenAI provider configuration, and MCP decision. |
+| `AGENT_MEMORY_ARCHITECTURE.md` | Final-state architecture of the conversation memory subsystem: short-term sliding window, rolling summary compression, long-term memory extraction/consolidation/recall, and background maintenance coordination. |
+| `STUDY_MODULES_ARCHITECTURE.md` | Worker implementation and service contracts for independent Flashcards/Quiz sections, source-grounded generation, resumable grading, SM-2, concurrency, token budgets, tests, and benchmarks. |
 | `MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` | Source of truth for the next phase: multi-turn conversation state, prompts, streaming, context compression, memory, LangGraph, local SLM deployment, and speculative decoding. |
 | `DATABASE_SCHEMA.md` | Database table design and data ownership. |
 | `WORKFLOW_AND_ARCHITECTURE.md` | Product workflow and system architecture. |
