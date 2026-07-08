@@ -1213,3 +1213,117 @@ button:disabled {
   .side-section { flex-basis: 100%; max-height: 180px; }
   .general-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------------------------------------------------------------------------
+ * Rich Markdown + KaTeX rendered content
+ * ------------------------------------------------------------------------- */
+.rich {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.rich p { margin: 0 0 10px; }
+.rich p:last-child { margin-bottom: 0; }
+
+.rich .md-h {
+  margin: 14px 0 8px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+.rich .md-h1 { font-size: 1.3em; }
+.rich .md-h2 { font-size: 1.18em; }
+.rich .md-h3 { font-size: 1.06em; }
+.rich .md-h4, .rich .md-h5, .rich .md-h6 { font-size: 1em; color: var(--muted); }
+
+.rich ul, .rich ol {
+  margin: 6px 0 10px;
+  padding-left: 22px;
+}
+.rich li { margin: 3px 0; }
+
+.rich code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+  background: rgba(15, 118, 110, 0.08);
+  padding: 1px 5px;
+  border-radius: 5px;
+}
+
+.rich .code-block {
+  background: #f2f5f4;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.rich .code-block code {
+  background: none;
+  padding: 0;
+}
+
+.rich .math-fallback {
+  color: var(--warn);
+}
+
+/* Display math should scroll horizontally rather than overflow the container. */
+.rich .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px 0;
+  margin: 8px 0;
+}
+
+/* Larger scrollable containers for full documents (notes, chunks, pages). */
+.rich-scroll {
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+
+.chat-answer-text.rich { font-size: 14px; }
+
+/* Evidence/citation cards embed rendered snippets; normalize heading scale. */
+.search-result-card .rich .md-h { font-size: 1em; margin: 6px 0 4px; }
+.search-result-card .rich { font-size: 13px; }
+
+/* Quiz composition controls */
+.quiz-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 4px 0 12px;
+}
+.quiz-options[disabled] { opacity: 0.55; }
+.quiz-options legend {
+  padding: 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.quiz-options label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.quiz-options input[type="number"] {
+  width: 60px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+.quiz-total {
+  margin-left: auto;
+  font-weight: 700;
+  color: var(--accent-strong);
+  font-variant-numeric: tabular-nums;
+}

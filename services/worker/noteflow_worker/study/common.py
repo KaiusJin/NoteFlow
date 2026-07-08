@@ -85,6 +85,38 @@ def is_near_duplicate(candidate: str, accepted: list[str], threshold: float) -> 
     return any(SequenceMatcher(None, normalized, canonical_text(item)).ratio() >= threshold for item in accepted)
 
 
+def allocate_difficulty_targets(
+    groups: list[SourceGroup],
+    difficulty_counts: dict[str, int],
+) -> dict[int, dict[str, int]]:
+    """Distribute exact per-difficulty counts across source groups.
+
+    Each difficulty is apportioned independently by token weight using largest
+    remainder, so the per-group sums equal the requested totals exactly. Groups
+    that receive nothing are omitted (they are not sent to the model), which is
+    what lets a small requested count honor its exact size even when the
+    document has many source groups.
+    """
+    if not groups:
+        return {}
+    weights = {group.index: max(1, group.token_count) for group in groups}
+    total_weight = sum(weights.values())
+    result: dict[int, dict[str, int]] = {group.index: {} for group in groups}
+    for difficulty, count in difficulty_counts.items():
+        if count <= 0:
+            continue
+        raw = {index: count * weight / total_weight for index, weight in weights.items()}
+        base = {index: math.floor(value) for index, value in raw.items()}
+        remainder = count - sum(base.values())
+        ranked = sorted(raw, key=lambda index: (raw[index] - base[index], weights[index]), reverse=True)
+        for index in ranked[:remainder]:
+            base[index] += 1
+        for index, assigned in base.items():
+            if assigned:
+                result[index][difficulty] = assigned
+    return {index: mix for index, mix in result.items() if sum(mix.values()) > 0}
+
+
 def allocate_item_targets(groups: list[SourceGroup], per_1000_tokens: float, configured_max: int) -> dict[int, int]:
     """Allocate exact group counts, preserving at least one item per source group."""
     if not groups:

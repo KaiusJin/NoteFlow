@@ -3,6 +3,7 @@ import unittest
 from noteflow_worker.notes.providers import (
     ALLOWED_SECTION_TYPES,
     openai_notes_response_schema,
+    parse_json_object,
     validate_notes_response,
 )
 from noteflow_worker.vision.providers import (
@@ -88,6 +89,27 @@ class VisionStructuredOutputTest(unittest.TestCase):
         self.assertEqual(set(gemini_schema["required"]), VISION_KEYS)
         self.assertEqual(set(openai_schema["required"]), VISION_KEYS)
         self.assertFalse(openai_schema["additionalProperties"])
+
+
+class ModelJsonRepairTest(unittest.TestCase):
+    def test_latex_dense_json_with_raw_newlines_is_repaired(self):
+        payload = (
+            '{\n "questions":[{"stem":"Coin $p=0.3$","answerKey":"'
+            + r"\begin{enumerate}\item \textbf{Step} \frac{1}{2} \rho"
+            + '\nSecond line"}]}'
+        )
+        parsed = parse_json_object(payload)
+        answer_key = parsed["questions"][0]["answerKey"]
+        for command in (r"\begin{enumerate}", r"\item", r"\textbf", r"\frac", r"\rho"):
+            self.assertIn(command, answer_key)
+        self.assertIn("\n", answer_key)
+
+    def test_valid_unicode_escape_is_preserved(self):
+        parsed = parse_json_object(r'{"s":"café and \\ and \"quote\""}')
+        self.assertEqual(parsed["s"], 'café and \\ and "quote"')
+
+    def test_strict_json_is_unchanged(self):
+        self.assertEqual(parse_json_object('{"a": 1, "b": [2, 3]}'), {"a": 1, "b": [2, 3]})
 
 
 if __name__ == "__main__":

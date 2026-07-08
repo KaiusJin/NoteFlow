@@ -16,7 +16,7 @@ public class StudyController {
     @GetMapping("/flashcard-decks/{id}/reviews/due") public List<Map<String,Object>> due(@PathVariable UUID id,@RequestParam(defaultValue="100") int limit){return study.dueCards(id,limit);}
     @PostMapping("/flashcards/{id}/reviews") public Map<String,Object> review(@PathVariable UUID id,@RequestBody ReviewRequest r){return study.review(id,r.grade());}
 
-    @PostMapping("/documents/{id}/quiz-sets") public Map<String,Object> generateQuiz(@PathVariable UUID id){return study.generateQuiz(id);}
+    @PostMapping("/documents/{id}/quiz-sets") public Map<String,Object> generateQuiz(@PathVariable UUID id,@RequestBody(required=false) QuizOptionsRequest r){return study.generateQuiz(id,r==null?null:r.easy(),r==null?null:r.medium(),r==null?null:r.hard());}
     @GetMapping("/documents/{id}/quiz-sets") public List<Map<String,Object>> quizzes(@PathVariable UUID id){return study.quizzes(id);}
     @GetMapping("/quiz-sets/{id}/questions") public List<Map<String,Object>> questions(@PathVariable UUID id){return study.questions(id);}
     @PostMapping("/quiz-sets/{id}/attempts") public Map<String,Object> start(@PathVariable UUID id){return study.startAttempt(id);}
@@ -26,4 +26,5 @@ public class StudyController {
 
     public record ReviewRequest(String grade) {}
     public record AnswerRequest(String response) {}
+    public record QuizOptionsRequest(Integer easy, Integer medium, Integer hard) {}
 }

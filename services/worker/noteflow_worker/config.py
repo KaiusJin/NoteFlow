@@ -118,7 +118,11 @@ class Settings(BaseSettings):
     study_retry_backoff_seconds: float = 2.0
     study_stale_task_after_minutes: int = 10
     study_global_max_concurrent_requests: int = 6
-    study_max_output_tokens: int = 4096
+    study_max_output_tokens: int = 8192
+    # Gemini 2.5 thinking-token budget for study extraction. 0 disables thinking
+    # so the full output budget serves the JSON; a negative value omits the
+    # field entirely (use the model default).
+    study_gemini_thinking_budget: int = 0
     study_lease_seconds: int = 1800
 
     # Flashcard generation

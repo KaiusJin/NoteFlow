@@ -235,26 +235,81 @@ def parse_json_object(text: str) -> dict:
     stripped = text.strip()
     if stripped.startswith("```"):
         stripped = stripped.strip("`").removeprefix("json").strip()
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError as first_error:
-        try:
-            return json.loads(escape_invalid_json_backslashes(stripped))
-        except json.JSONDecodeError:
-            pass
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start >= 0 and end > start:
-            fragment = stripped[start : end + 1]
+    candidates = [stripped]
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start >= 0 and end > start and (start, end) != (0, len(stripped) - 1):
+        candidates.append(stripped[start : end + 1])
+    first_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        # Try strict, then the legacy heuristic, then the LaTeX-aware repair.
+        for repaired in (candidate, escape_invalid_json_backslashes(candidate), repair_model_json(candidate)):
             try:
-                return json.loads(fragment)
-            except json.JSONDecodeError:
-                return json.loads(escape_invalid_json_backslashes(fragment))
-        raise first_error
+                return json.loads(repaired)
+            except json.JSONDecodeError as error:
+                first_error = first_error or error
+    raise first_error or json.JSONDecodeError("No JSON object found", stripped, 0)
 
 
 def escape_invalid_json_backslashes(text: str) -> str:
     return re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
+
+
+# Valid JSON escapes that are also common LaTeX command prefixes (\begin, \frac,
+# \newline, \rho, \textbf). Structured-output models routinely emit LaTeX with
+# single backslashes and raw newlines inside string values; the naive heuristic
+# above corrupts \b/\f/\t/\n/\r into control characters. This state machine
+# repairs both problems by walking string values and escaping every backslash
+# that is not a genuine JSON escape (only \" \\ \/ \uXXXX are preserved), and by
+# escaping raw control characters that appear inside a string.
+_CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t", "\b": "\\b", "\f": "\\f"}
+
+
+def repair_model_json(text: str) -> str:
+    out: list[str] = []
+    in_string = False
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if not in_string:
+            if char == '"':
+                in_string = True
+            out.append(char)
+            index += 1
+            continue
+        if char == '"':
+            in_string = False
+            out.append(char)
+            index += 1
+            continue
+        if char == "\\":
+            nxt = text[index + 1] if index + 1 < length else ""
+            if nxt == "u" and re.match(r"[0-9a-fA-F]{4}", text[index + 2 : index + 6] or ""):
+                out.append(text[index : index + 6])
+                index += 6
+                continue
+            if nxt in ('"', "\\", "/"):
+                out.append(char)
+                out.append(nxt)
+                index += 2
+                continue
+            # A backslash starting a LaTeX command (or any other non-escape):
+            # emit a literal backslash so the sequence survives as text.
+            out.append("\\\\")
+            index += 1
+            continue
+        if char in _CONTROL_ESCAPES:
+            out.append(_CONTROL_ESCAPES[char])
+            index += 1
+            continue
+        if ord(char) < 0x20:
+            out.append(f"\\u{ord(char):04x}")
+            index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def generations_from_dict(provider: str, model: str, parsed: dict, raw_response: dict) -> list[NotesGeneration]:

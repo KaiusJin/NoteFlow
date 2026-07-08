@@ -119,6 +119,20 @@ class StudyRepository(Repository):
     def latest_generating_quiz_set_id(self, document_id: str, user_id: str) -> str:
         return self._latest_id("quiz_sets", document_id, user_id)
 
+    def load_quiz_generation_options(self, set_id: str) -> dict:
+        """Return the user's quiz generation options (empty dict if unset)."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT generation_options_json FROM quiz_sets WHERE id=%s", (set_id,)
+            ).fetchone()
+        if not row or not row["generation_options_json"]:
+            return {}
+        try:
+            parsed = json.loads(row["generation_options_json"])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def _latest_id(self, table: str, document_id: str, user_id: str) -> str:
         with self.connect() as conn:
             row = conn.execute(f"""SELECT id FROM {table} WHERE document_id=%s AND user_id=%s

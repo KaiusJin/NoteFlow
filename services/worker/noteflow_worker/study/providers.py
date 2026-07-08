@@ -65,9 +65,16 @@ class StructuredStudyProvider:
             raise RuntimeError(f"{self.provider_name} API key is not configured.")
         if self.provider_name == "gemini":
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-            payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {
+            generation_config = {
                 "temperature": 0.15, "maxOutputTokens": settings.study_max_output_tokens,
-                "response_mime_type": "application/json", "response_schema": schema}}
+                "response_mime_type": "application/json", "response_schema": schema}
+            # Gemini 2.5 models "think" by consuming the output-token budget before
+            # emitting text. Extended thinking is unnecessary for schema-bound
+            # extraction and starves large quiz/flashcard JSON, truncating it
+            # mid-string. Bounding it keeps the budget available for the answer.
+            if settings.study_gemini_thinking_budget >= 0:
+                generation_config["thinkingConfig"] = {"thinkingBudget": settings.study_gemini_thinking_budget}
+            payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": generation_config}
             headers = {}
         else:
             url = "https://api.openai.com/v1/chat/completions"

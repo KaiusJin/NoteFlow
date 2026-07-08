@@ -329,10 +329,10 @@ async function pollConversationMessage(messageId) {
 }
 
 function renderConversationAnswer(message) {
-  const content = escapeHtml(message.content_markdown || "No answer was generated.").replace(/\n/g, "<br/>");
+  const content = renderRich(message.content_markdown || "No answer was generated.");
   const citations = message.citations || [];
   return `
-    <div class="chat-answer-text">${content}</div>
+    <div class="chat-answer-text rich">${content}</div>
     ${citations.length ? `<div class="chat-evidence">${citations.map(renderConversationCitation).join("")}</div>` : ""}
   `;
 }
@@ -345,7 +345,7 @@ function renderConversationCitation(citation) {
     <article class="search-result-card">
       <div class="search-result-header"><span class="badge pdf-source">[${Number(citation.citation_index) + 1}]</span><span>${escapeHtml(page)}</span></div>
       <strong>${escapeHtml(citation.document_title || "Source")}</strong>
-      <p>${escapeHtml(citation.quote_text || "Cited source passage")}</p>
+      <p class="rich">${renderRich(citation.quote_text || "Cited source passage")}</p>
     </article>
   `;
 }
@@ -441,7 +441,7 @@ function renderSearchResult(result) {
       </div>
       <strong>${escapeHtml(result.title || sourceLabel)}</strong>
       <div class="document-meta">${escapeHtml(document?.title || result.documentId)}</div>
-      <p>${escapeHtml(result.snippet || "No preview available.")}</p>
+      <p class="rich">${renderRich(result.snippet || "No preview available.")}</p>
     </article>
   `;
 }
@@ -509,11 +509,11 @@ async function renderReview(deckId) {
             <span class="pill">${escapeHtml(card.card_type)}</span>
             <span>${escapeHtml(card.topic)} · pages ${escapeHtml(parseJsonSafe(card.source_pages_json)?.join(", ") || "-")}</span>
           </div>
-          <h3>${escapeHtml(card.front)}</h3>
-          ${card.card_type === "CLOZE" && card.cloze_text ? `<p class="cloze-line">${escapeHtml(card.cloze_text)}</p>` : ""}
+          <h3 class="rich">${renderRich(card.front)}</h3>
+          ${card.card_type === "CLOZE" && card.cloze_text ? `<p class="cloze-line rich">${renderRich(card.cloze_text)}</p>` : ""}
           <details>
             <summary>Reveal answer</summary>
-            <div class="card-answer">${escapeHtml(card.back)}</div>
+            <div class="card-answer rich">${renderRich(card.back)}</div>
             ${card.hint ? `<div class="card-hint">Hint: ${escapeHtml(card.hint)}</div>` : ""}
             <div class="review-grades">
               ${["AGAIN", "HARD", "GOOD", "EASY"].map((grade) => `
@@ -545,8 +545,8 @@ async function renderCardBrowser(deckId) {
             <span class="pill">${escapeHtml(card.difficulty)}</span>
             <span>${escapeHtml(card.topic)} · pages ${escapeHtml(parseJsonSafe(card.source_pages_json)?.join(", ") || "-")}</span>
           </div>
-          <h3>${escapeHtml(card.front)}</h3>
-          <details><summary>Answer</summary><div class="card-answer">${escapeHtml(card.back)}</div></details>
+          <h3 class="rich">${renderRich(card.front)}</h3>
+          <details><summary>Answer</summary><div class="card-answer rich">${renderRich(card.back)}</div></details>
         </article>
       `).join("")}
     </div>
@@ -584,6 +584,13 @@ async function renderQuizView() {
         <p>Mixed-difficulty questions with rubric grading, explanations, and citations.</p>
         ${quiz ? studyProgress(quiz) : `<div class="empty-study">No quiz generated yet.</div>`}
         ${quizzes.length > 1 ? `<div class="study-history">History: ${quizzes.map((q) => `v${q.version} ${escapeHtml(q.status)}`).join(" · ")}</div>` : ""}
+        <fieldset class="quiz-options" ${doc.status === "READY" ? "" : "disabled"}>
+          <legend>New quiz composition</legend>
+          <label>Easy <input type="number" id="quiz-easy" min="0" max="60" value="3" /></label>
+          <label>Medium <input type="number" id="quiz-medium" min="0" max="60" value="5" /></label>
+          <label>Hard <input type="number" id="quiz-hard" min="0" max="60" value="2" /></label>
+          <span class="quiz-total" id="quiz-total">Total: 10</span>
+        </fieldset>
         <div class="study-actions">
           <button data-study-action="generate-quiz" ${doc.status === "READY" ? "" : "disabled"}>${quiz ? "Generate new quiz" : "Generate quiz"}</button>
           ${quiz?.status === "READY" ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${quiz.id}">Start quiz</button>` : ""}
@@ -624,7 +631,7 @@ function renderQuizQuestion(question, index) {
   }
   const input = options.length
     ? `<div class="quiz-options">${options.map((option) => `
-        <label><input type="radio" name="q-${question.id}" value="${escapeHtml(option)}"> <span>${escapeHtml(option)}</span></label>
+        <label><input type="radio" name="q-${question.id}" value="${escapeHtml(option)}"> <span class="rich">${renderRich(option)}</span></label>
       `).join("")}</div>`
     : `<textarea name="q-${question.id}" rows="5" placeholder="Write your answer…"></textarea>`;
   return `
@@ -634,7 +641,7 @@ function renderQuizQuestion(question, index) {
         <span class="pill">${escapeHtml(question.question_type)}</span>
         <span>${escapeHtml(question.difficulty)} · ${question.points} pts · pages ${escapeHtml(parseJsonSafe(question.source_pages_json)?.join(", ") || "-")}</span>
       </div>
-      <h3>${escapeHtml(question.stem)}</h3>
+      <h3 class="rich">${renderRich(question.stem)}</h3>
       ${input}
     </article>
   `;
@@ -673,10 +680,10 @@ async function renderAttempt(attemptId, grading = false) {
       ${(result.answers || []).map((answer, index) => `
         <article class="quiz-question ${answer.is_correct === true ? "answer-correct" : answer.is_correct === false ? "answer-wrong" : ""}">
           <div class="card-meta">Question ${index + 1} · ${escapeHtml(answer.question_type)} · ${answer.awarded_points ?? "-"}/${answer.points}</div>
-          <h3>${escapeHtml(answer.stem)}</h3>
+          <h3 class="rich">${renderRich(answer.stem)}</h3>
           <p><strong>Your answer:</strong> ${escapeHtml(answer.user_response || "No answer")}</p>
           ${answer.feedback ? `<p><strong>Feedback:</strong> ${escapeHtml(answer.feedback)}</p>` : ""}
-          ${answer.explanation ? `<details><summary>Explanation</summary><p>${escapeHtml(answer.explanation)}</p></details>` : ""}
+          ${answer.explanation ? `<details><summary>Explanation</summary><p class="rich">${renderRich(answer.explanation)}</p></details>` : ""}
         </article>
       `).join("")}
     </div>
@@ -996,7 +1003,7 @@ function renderNotes(note) {
     <div class="preview-block notes-preview">
       <strong>${escapeHtml(note.title || "AI Notes")}</strong>
       ${note.summary ? `<p>${escapeHtml(note.summary)}</p>` : ""}
-      <pre>${escapeHtml(note.markdown || "Notes are not ready yet.")}</pre>
+      <div class="rich rich-scroll">${renderRich(note.markdown || "Notes are not ready yet.")}</div>
     </div>
   `;
 }
@@ -1044,7 +1051,7 @@ function renderMarkdownPanel(markdownDocument, markdownPages) {
       <div class="layout-blocks">
         ${Object.entries(warningCounts).map(([warning, count]) => `<span class="pill">${escapeHtml(warning)} ${count}</span>`).join("")}
       </div>
-      <pre>${escapeHtml(markdownDocument.markdown || "No Markdown generated.")}</pre>
+      <div class="rich rich-scroll">${renderRich(markdownDocument.markdown || "No Markdown generated.")}</div>
     </div>
     <div class="documents-list">
       ${markdownPages.map((page) => renderMarkdownPage(page)).join("")}
@@ -1061,7 +1068,7 @@ function renderMarkdownPage(page) {
         <span>quality ${page.qualityScore}</span>
       </div>
       ${warnings.length ? `<div class="layout-blocks">${warnings.map((warning) => `<span class="pill">${escapeHtml(warning)}</span>`).join("")}</div>` : ""}
-      <pre>${escapeHtml(page.markdown)}</pre>
+      <div class="rich rich-scroll">${renderRich(page.markdown)}</div>
     </article>
   `;
 }
@@ -1111,7 +1118,7 @@ function renderChunk(chunk, assets) {
         <span>${escapeHtml(pageLabel)} · ${chunk.tokenCount ?? 0} tokens</span>
       </div>
       ${chunkAssets.length ? renderAssets(chunkAssets) : ""}
-      <pre>${escapeHtml(chunk.content)}</pre>
+      <div class="rich rich-scroll">${renderRich(chunk.content)}</div>
     </article>
   `;
 }
@@ -1230,6 +1237,14 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("input", (event) => {
+  if (!event.target.closest(".quiz-options")) return;
+  const total = ["#quiz-easy", "#quiz-medium", "#quiz-hard"]
+    .reduce((sum, id) => sum + Math.max(0, Number(viewRoot.querySelector(id)?.value || 0)), 0);
+  const label = viewRoot.querySelector("#quiz-total");
+  if (label) label.textContent = `Total: ${total}`;
+});
+
 document.addEventListener("submit", async (event) => {
   const upload = event.target.closest("#upload-form");
   if (upload) {
@@ -1269,7 +1284,16 @@ async function handleStudyAction(action) {
       navigate("flashcards");
     }
     if (kind === "generate-quiz") {
-      await studyPost(`/documents/${activeDocumentId}/quiz-sets`);
+      const readCount = (id) => Math.max(0, Number(viewRoot.querySelector(id)?.value || 0));
+      const body = {
+        easy: readCount("#quiz-easy"),
+        medium: readCount("#quiz-medium"),
+        hard: readCount("#quiz-hard"),
+      };
+      if (body.easy + body.medium + body.hard < 1) {
+        throw new Error("Choose at least one question across the difficulty levels.");
+      }
+      await studyPost(`/documents/${activeDocumentId}/quiz-sets`, body);
       navigate("quiz");
     }
     if (kind === "review") await renderReview(action.dataset.deckId);
@@ -1386,6 +1410,145 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+// ---------------------------------------------------------------------------
+// Rich rendering: Markdown + LaTeX (KaTeX)
+//
+// Math spans are extracted BEFORE escaping so that `<`, `>`, `&`, and `\`
+// inside TeX survive intact, then rendered with katex.renderToString and
+// re-inserted. The Markdown subset is deliberately small and operates on
+// already-escaped text, so no untrusted HTML can reach the DOM.
+// ---------------------------------------------------------------------------
+function renderRich(rawText) {
+  if (rawText == null || rawText === "") return "";
+  const text = String(rawText);
+  const mathTokens = [];
+  const protectedText = protectMath(text, mathTokens);
+  let html = renderMarkdownSubset(protectedText);
+  // Control-char sentinels never occur in study content and survive HTML
+  // escaping intact, so placeholders cannot collide with text like "MATH239".
+  html = html.replace(/\u0001(\d+)\u0001/g, (_, index) => renderMathToken(mathTokens[Number(index)]));
+  return html;
+}
+
+function protectMath(text, tokens) {
+  const patterns = [
+    { re: /\$\$([\s\S]+?)\$\$/g, display: true },
+    { re: /\\\[([\s\S]+?)\\\]/g, display: true },
+    { re: /\\\(([\s\S]+?)\\\)/g, display: false },
+    { re: /(?<![\\$])\$(?!\s)((?:\\.|[^$\\])+?)(?<!\s)\$(?!\d)/g, display: false },
+  ];
+  let output = text;
+  for (const { re, display } of patterns) {
+    output = output.replace(re, (_, tex) => {
+      const index = tokens.push({ tex: tex.trim(), display }) - 1;
+      return `\u0001${index}\u0001`;
+    });
+  }
+  return output;
+}
+
+function renderMathToken(token) {
+  if (!token) return "";
+  if (typeof window.katex === "undefined") {
+    return `<code class="math-fallback">${escapeHtml(token.tex)}</code>`;
+  }
+  try {
+    return window.katex.renderToString(token.tex, {
+      displayMode: token.display,
+      throwOnError: false,
+      output: "html",
+    });
+  } catch {
+    return `<code class="math-fallback">${escapeHtml(token.tex)}</code>`;
+  }
+}
+
+function renderMarkdownSubset(text) {
+  const lines = text.split("\n");
+  const blocks = [];
+  let paragraph = [];
+  let list = null;
+  let code = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      blocks.push(`<p>${paragraph.map(renderInline).join("<br/>")}</p>`);
+      paragraph = [];
+    }
+  };
+  const flushList = () => {
+    if (list) {
+      const tag = list.ordered ? "ol" : "ul";
+      blocks.push(`<${tag}>${list.items.map((item) => `<li>${renderInline(item)}</li>`).join("")}</${tag}>`);
+      list = null;
+    }
+  };
+
+  for (const rawLine of lines) {
+    if (code) {
+      if (rawLine.trim().startsWith("```")) {
+        blocks.push(`<pre class="code-block"><code>${code.lines.join("\n")}</code></pre>`);
+        code = null;
+      } else {
+        code.lines.push(escapeHtml(rawLine));
+      }
+      continue;
+    }
+    const line = rawLine.replace(/\s+$/, "");
+    const fenceMatch = line.trim().match(/^```(\w*)/);
+    if (fenceMatch) {
+      flushParagraph();
+      flushList();
+      code = { lang: fenceMatch[1], lines: [] };
+      continue;
+    }
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      const level = headingMatch[1].length;
+      blocks.push(`<h${level} class="md-h md-h${level}">${renderInline(headingMatch[2])}</h${level}>`);
+      continue;
+    }
+    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const bulletMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+    if (orderedMatch || bulletMatch) {
+      flushParagraph();
+      const ordered = Boolean(orderedMatch);
+      if (!list || list.ordered !== ordered) {
+        flushList();
+        list = { ordered, items: [] };
+      }
+      list.items.push((orderedMatch || bulletMatch)[1]);
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraph.push(line);
+  }
+  if (code) blocks.push(`<pre class="code-block"><code>${code.lines.join("\n")}</code></pre>`);
+  flushParagraph();
+  flushList();
+  return blocks.join("");
+}
+
+function renderInline(text) {
+  const codeSpans = [];
+  let out = text.replace(/`([^`]+)`/g, (_, code) => {
+    const index = codeSpans.push(code) - 1;
+    return `\u0002${index}\u0002`;
+  });
+  out = escapeHtml(out);
+  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  out = out.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
+  out = out.replace(/\u0002(\d+)\u0002/g, (_, index) => `<code>${escapeHtml(codeSpans[Number(index)])}</code>`);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

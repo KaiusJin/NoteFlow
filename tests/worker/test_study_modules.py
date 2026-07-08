@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 from noteflow_worker.db.repository import TextChunk
 from noteflow_worker.config import settings
-from noteflow_worker.study.common import allocate_item_targets, build_source_groups, dedupe_hash, is_near_duplicate, resolve_sources
+from noteflow_worker.study.common import allocate_difficulty_targets, allocate_item_targets, build_source_groups, dedupe_hash, is_near_duplicate, resolve_sources
 from noteflow_worker.study.models import ReviewState
 from noteflow_worker.study.providers import (
     StructuredStudyProvider, flashcards_from_dict, flashcards_response_schema, grade_response_schema, questions_from_dict,
@@ -16,7 +16,7 @@ from noteflow_worker.study.providers import (
 )
 from noteflow_worker.study.srs import reset_review, resume_review, schedule_review, suspend_review
 from noteflow_worker.pipelines.generate_flashcards import generate_group as generate_flashcard_group, prompt as flashcard_prompt
-from noteflow_worker.pipelines.generate_quiz import difficulty_counts, generate_group as generate_quiz_group, parse_difficulty_mix, prompt as quiz_prompt
+from noteflow_worker.pipelines.generate_quiz import difficulty_counts, generate_group as generate_quiz_group, parse_difficulty_mix, parse_requested_difficulty_counts, prompt as quiz_prompt, resolve_group_mix
 
 
 def valid_card(**overrides):
@@ -38,12 +38,54 @@ def valid_question(**overrides):
     return value
 
 
+class Grp:
+    def __init__(self, index, tokens):
+        self.index = index
+        self.token_count = tokens
+        self.pages = [index + 1]
+
+
+class QuizDifficultyAllocationTest(unittest.TestCase):
+    def test_explicit_counts_are_honored_exactly_across_groups(self):
+        groups = [Grp(0, 1000), Grp(1, 2000), Grp(2, 3000)]
+        mix = allocate_difficulty_targets(groups, {"EASY": 4, "MEDIUM": 4, "HARD": 2})
+        totals = {"EASY": 0, "MEDIUM": 0, "HARD": 0}
+        for group_mix in mix.values():
+            for difficulty, count in group_mix.items():
+                totals[difficulty] += count
+        self.assertEqual(totals, {"EASY": 4, "MEDIUM": 4, "HARD": 2})
+
+    def test_small_request_uses_fewer_groups_than_available(self):
+        groups = [Grp(index, 1000) for index in range(8)]
+        mix = allocate_difficulty_targets(groups, {"EASY": 1, "MEDIUM": 1, "HARD": 0})
+        self.assertEqual(sum(sum(m.values()) for m in mix.values()), 2)
+        self.assertLessEqual(len(mix), 2)
+
+    def test_parse_requested_counts_validates(self):
+        self.assertIsNone(parse_requested_difficulty_counts({}))
+        self.assertEqual(
+            parse_requested_difficulty_counts({"difficultyCounts": {"EASY": 2, "MEDIUM": 1, "HARD": 0}}),
+            {"EASY": 2, "MEDIUM": 1, "HARD": 0},
+        )
+        with self.assertRaises(ValueError):
+            parse_requested_difficulty_counts({"difficultyCounts": {"EASY": 0, "MEDIUM": 0, "HARD": 0}})
+        with self.assertRaises(ValueError):
+            parse_requested_difficulty_counts({"difficultyCounts": {"EASY": -1, "MEDIUM": 0, "HARD": 0}})
+
+    def test_resolve_group_mix_explicit_vs_default(self):
+        groups = [Grp(0, 1500), Grp(1, 1500)]
+        explicit = resolve_group_mix(groups, {"difficultyCounts": {"EASY": 3, "MEDIUM": 0, "HARD": 0}})
+        self.assertEqual(sum(m.get("EASY", 0) for m in explicit.values()), 3)
+        default = resolve_group_mix(groups, {})
+        self.assertTrue(default)  # falls back to token-derived counts
+
+
 class StructuredStudyOutputTest(unittest.TestCase):
     def test_generation_prompts_define_confidence_scale(self):
         class Group:
             index, token_count, chunks = 0, 100, []
         self.assertIn("0.0 to 1.0", flashcard_prompt("Doc", Group(), 1, 1))
-        self.assertIn("0.0 to 1.0", quiz_prompt("Doc", Group(), 1, 1))
+        self.assertIn("0.0 to 1.0", quiz_prompt("Doc", Group(), 1, {"EASY": 1}))
 
     def test_quiz_confidence_percent_and_string_are_normalized(self):
         percent = {"questions": [valid_question()]}
