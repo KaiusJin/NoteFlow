@@ -21,3 +21,6 @@ experiments/
 /tmp/
 /exported_ai_notes/
 /exported_raw_markdown_*/
+
+# Node (editor bundle build)
+node_modules/

@@ -24,6 +24,7 @@ const sidebarTasks = document.querySelector("#sidebar-tasks");
 // ---------------------------------------------------------------------------
 const VIEWS = {
   agent: renderAgentView,
+  editor: renderEditorView,
   flashcards: renderFlashcardsView,
   quiz: renderQuizView,
   general: renderGeneralView,
@@ -34,9 +35,11 @@ function navigate(view) {
   currentView = view;
   localStorage.setItem("noteflowView", view);
   stopAttemptPolling();
+  teardownEditor();
   document.querySelectorAll("[data-nav]").forEach((button) => {
     button.classList.toggle("active", button.dataset.nav === view);
   });
+  viewRoot.classList.toggle("editor-mode", view === "editor");
   VIEWS[view]();
 }
 
@@ -48,7 +51,7 @@ function selectDocument(documentId) {
   activeDocumentId = documentId;
   localStorage.setItem("noteflowActiveDocument", documentId || "");
   renderSidebarDocuments();
-  if (currentView === "flashcards" || currentView === "quiz") {
+  if (currentView === "flashcards" || currentView === "quiz" || currentView === "editor") {
     navigate(currentView);
   } else if (currentView === "agent") {
     const hint = viewRoot.querySelector("#chat-scope-hint");
@@ -1141,6 +1144,419 @@ function renderAssets(assets) {
       `).join("")}
     </div>
   `;
+}
+
+// ---------------------------------------------------------------------------
+// View: Editor (Notion-style markdown editor with a reference pane)
+//
+// Left: read-only rendered blocks of the PDF Markdown or the AI note, each
+// insertable into the editor at the cursor. Right: Milkdown-based WYSIWYG
+// editor (math + code) persisted through /documents/{id}/editable-note with
+// debounce autosave and a localStorage fallback while the API is offline.
+// ---------------------------------------------------------------------------
+let editorInstance = null;
+let editorDocumentId = null;
+let editorModulePromise = null;
+let editorSaveTimer = null;
+let editorDirty = false;
+let editorOfflineMode = false;
+let editorNoteTitle = "";
+let editorOutlineVisible = localStorage.getItem("noteflowEditorOutline") === "1";
+
+// Notion-ish palettes (label, css color). `null` clears the color.
+const EDITOR_TEXT_COLORS = [
+  ["Default", null], ["Gray", "#787774"], ["Brown", "#9F6B53"], ["Orange", "#D9730D"],
+  ["Yellow", "#CB912F"], ["Green", "#448361"], ["Blue", "#337EA9"], ["Purple", "#9065B0"],
+  ["Pink", "#C14C8A"], ["Red", "#D44C47"],
+];
+const EDITOR_BG_COLORS = [
+  ["Default", null], ["Gray", "#F1F1EF"], ["Brown", "#F4EEEE"], ["Orange", "#FAEBDD"],
+  ["Yellow", "#FBF3DB"], ["Green", "#EDF3EC"], ["Blue", "#E7F3F8"], ["Purple", "#F6F3F9"],
+  ["Pink", "#FAF1F5"], ["Red", "#FDEBEC"],
+];
+
+const ICON_UNDO = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-4"/></svg>';
+const ICON_REDO = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h4"/></svg>';
+
+function editorLocalKey(documentId) {
+  return `noteflowEditableNote:${documentId}`;
+}
+
+function loadEditorModule() {
+  if (!editorModulePromise) {
+    if (!document.querySelector("#noteflow-editor-css")) {
+      const link = document.createElement("link");
+      link.id = "noteflow-editor-css";
+      link.rel = "stylesheet";
+      link.href = "./vendor/editor/noteflow-editor.css";
+      document.head.appendChild(link);
+    }
+    editorModulePromise = import("./vendor/editor/noteflow-editor.js").catch((error) => {
+      editorModulePromise = null; // allow retry after a failed load
+      throw error;
+    });
+  }
+  return editorModulePromise;
+}
+
+function teardownEditor() {
+  if (editorSaveTimer) {
+    clearTimeout(editorSaveTimer);
+    editorSaveTimer = null;
+  }
+  if (editorInstance && editorDirty) {
+    // Fire-and-forget final save so switching views never loses edits.
+    try {
+      persistEditorMarkdown(editorInstance.getMarkdown());
+    } catch {
+      /* ignore */
+    }
+  }
+  if (editorInstance) {
+    try {
+      editorInstance.destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+  editorInstance = null;
+  editorDocumentId = null;
+  editorDirty = false;
+}
+
+async function renderEditorView() {
+  const doc = activeDocument();
+  if (!doc) {
+    viewRoot.innerHTML = viewNeedsDocument("Editor", "Select a document in the sidebar to start writing notes.");
+    return;
+  }
+  viewRoot.innerHTML = `
+    <div class="view-header editor-header">
+      <div>
+        <div class="eyebrow">Editor · ${escapeHtml(doc.title)}</div>
+        <h1>My Notes</h1>
+      </div>
+      <div class="editor-actions">
+        <span id="editor-save-status" class="editor-save-status"></span>
+        <button type="button" class="ghost-button" data-editor-action="reinit">Start over…</button>
+        <button type="button" data-editor-action="export">Export .md</button>
+      </div>
+    </div>
+    <div class="editor-columns ${editorOutlineVisible ? "with-outline" : ""}">
+      <section class="editor-pane">
+        <div id="editor-toolbar" class="editor-toolbar">
+          <button type="button" class="ed-btn ed-icon" data-ed-tool="undo" title="Undo (⌘Z)">${ICON_UNDO}</button>
+          <button type="button" class="ed-btn ed-icon" data-ed-tool="redo" title="Redo (⇧⌘Z)">${ICON_REDO}</button>
+          <span class="ed-sep"></span>
+          <div class="ed-dropdown">
+            <button type="button" class="ed-btn" data-ed-menu>Turn into ▾</button>
+            <div class="ed-menu" hidden>
+              ${[["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"], ["h4", "Heading 4"], ["bullet", "Bulleted list"], ["ordered", "Numbered list"], ["quote", "Quote"], ["code", "Code block"]]
+                .map(([kind, label]) => `<button type="button" class="ed-menu-item" data-ed-turninto="${kind}">${escapeHtml(label)}</button>`)
+                .join("")}
+            </div>
+          </div>
+          <div class="ed-dropdown">
+            <button type="button" class="ed-btn" data-ed-menu>Color ▾</button>
+            <div class="ed-menu ed-color-menu" hidden>
+              <div class="ed-menu-label">Text color</div>
+              ${EDITOR_TEXT_COLORS.map(([label, value]) => `
+                <button type="button" class="ed-menu-item" data-ed-color="text" data-value="${value ?? ""}">
+                  <span class="ed-swatch" style="color:${value ?? "inherit"}">A</span>${escapeHtml(label)}
+                </button>`).join("")}
+              <div class="ed-menu-label">Background</div>
+              ${EDITOR_BG_COLORS.map(([label, value]) => `
+                <button type="button" class="ed-menu-item" data-ed-color="bg" data-value="${value ?? ""}">
+                  <span class="ed-swatch" style="background:${value ?? "transparent"}"></span>${escapeHtml(label)}
+                </button>`).join("")}
+            </div>
+          </div>
+          <span class="ed-flex"></span>
+          <button type="button" class="ed-btn ${editorOutlineVisible ? "active" : ""}" data-ed-tool="outline" title="Toggle heading outline">☰ Outline</button>
+        </div>
+        <div id="editor-note-shell" class="editor-note-shell"><div class="study-loading">Loading note…</div></div>
+      </section>
+      <aside id="editor-outline" class="editor-outline" ${editorOutlineVisible ? "" : "hidden"}>
+        <div class="outline-title">Outline</div>
+        <div id="editor-outline-body" class="outline-body"></div>
+      </aside>
+    </div>
+  `;
+  wireEditorEvents(doc);
+  await loadEditorNote(doc);
+}
+
+function wireEditorEvents(doc) {
+  const toolbar = viewRoot.querySelector("#editor-toolbar");
+  // Keep the editor's selection alive while clicking toolbar controls.
+  toolbar.addEventListener("mousedown", (event) => event.preventDefault());
+  toolbar.addEventListener("click", (event) => {
+    const menuButton = event.target.closest("[data-ed-menu]");
+    if (menuButton) {
+      const menu = menuButton.parentElement.querySelector(".ed-menu");
+      const wasHidden = menu.hidden;
+      toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
+      menu.hidden = !wasHidden;
+      return;
+    }
+    const turnInto = event.target.closest("[data-ed-turninto]");
+    if (turnInto) {
+      editorInstance?.turnInto(turnInto.dataset.edTurninto);
+      toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
+      return;
+    }
+    const colorItem = event.target.closest("[data-ed-color]");
+    if (colorItem) {
+      const value = colorItem.dataset.value || null;
+      editorInstance?.setColor(colorItem.dataset.edColor === "text" ? { color: value } : { background: value });
+      toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
+      return;
+    }
+    const tool = event.target.closest("[data-ed-tool]");
+    if (!tool) return;
+    if (tool.dataset.edTool === "undo") editorInstance?.undo();
+    if (tool.dataset.edTool === "redo") editorInstance?.redo();
+    if (tool.dataset.edTool === "outline") toggleEditorOutline(tool);
+  });
+  viewRoot.addEventListener("click", (event) => {
+    if (!event.target.closest(".ed-dropdown")) {
+      toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
+    }
+  });
+  viewRoot.querySelector("#editor-outline-body").addEventListener("click", (event) => {
+    const item = event.target.closest("[data-outline-index]");
+    if (!item) return;
+    const headings = editorHeadings();
+    const heading = headings[Number(item.dataset.outlineIndex)];
+    if (heading) heading.scrollIntoView({ block: "start" });
+  });
+  viewRoot.querySelector(".editor-header").addEventListener("click", (event) => {
+    const action = event.target.closest("[data-editor-action]");
+    if (!action) return;
+    if (action.dataset.editorAction === "export") exportEditorMarkdown(doc);
+    if (action.dataset.editorAction === "reinit") renderEditorStart(doc, true);
+  });
+  viewRoot.querySelector("#editor-note-shell").addEventListener("click", async (event) => {
+    const init = event.target.closest("[data-editor-init]");
+    if (!init) return;
+    init.disabled = true;
+    try {
+      await initEditorNote(doc, init.dataset.editorInit);
+    } finally {
+      const button = viewRoot.querySelector(`[data-editor-init="${init.dataset.editorInit}"]`);
+      if (button) button.disabled = false;
+    }
+  });
+}
+
+async function loadEditorNote(doc) {
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  if (!shell) return;
+  try {
+    const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/editable-note`);
+    if (response.status === 404) {
+      renderEditorStart(doc);
+      return;
+    }
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "Could not load the note");
+    editorOfflineMode = false;
+    editorNoteTitle = payload.title || `${doc.title} - My Notes`;
+    await bootEditor(doc, payload.markdown || "");
+    setEditorStatus("Saved");
+  } catch (error) {
+    if (error instanceof TypeError) {
+      // API unreachable: degrade to browser-local persistence.
+      editorOfflineMode = true;
+      const local = parseJsonSafe(localStorage.getItem(editorLocalKey(doc.id)));
+      editorNoteTitle = local?.title || `${doc.title} - My Notes`;
+      await bootEditor(doc, local?.markdown || "");
+      setEditorStatus("Offline · stored in this browser", true);
+      return;
+    }
+    shell.innerHTML = `<div class="status-card study-error">${escapeHtml(error.message || "Could not load the note")}</div>`;
+  }
+}
+
+function renderEditorStart(doc, isReset = false) {
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  if (!shell) return;
+  if (editorInstance) {
+    try {
+      editorInstance.destroy();
+    } catch {
+      /* ignore */
+    }
+    editorInstance = null;
+    editorDocumentId = null;
+  }
+  const aiNoteReady = doc.aiNoteStatus === "READY";
+  shell.innerHTML = `
+    <div class="editor-start">
+      <h2>${isReset ? "Start over" : "Create your note"}</h2>
+      <p class="editor-start-sub">${isReset
+        ? "Re-initializing replaces the current note content. The PDF Markdown and AI note sources stay untouched."
+        : "Pick a starting point. You can edit freely afterwards; the original sources stay untouched."}</p>
+      <div class="editor-start-options">
+        <button type="button" class="editor-start-card" data-editor-init="AI_NOTE" ${aiNoteReady ? "" : "disabled"}>
+          <span class="start-card-title">From AI Note</span>
+          <span class="start-card-sub">${aiNoteReady ? "Copy the latest READY AI note into your editable note." : "No READY AI note for this document yet."}</span>
+        </button>
+        <button type="button" class="editor-start-card" data-editor-init="RAW">
+          <span class="start-card-title">From PDF Markdown</span>
+          <span class="start-card-sub">Copy the full parsed Markdown of the PDF.</span>
+        </button>
+        <button type="button" class="editor-start-card" data-editor-init="BLANK">
+          <span class="start-card-title">Blank note</span>
+          <span class="start-card-sub">Start from an empty page and insert blocks from the left.</span>
+        </button>
+      </div>
+      <div id="editor-start-error"></div>
+    </div>
+  `;
+}
+
+async function initEditorNote(doc, source) {
+  const errorBox = viewRoot.querySelector("#editor-start-error");
+  try {
+    const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/editable-note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source }),
+    });
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "Could not initialize the note");
+    editorOfflineMode = false;
+    editorNoteTitle = payload.title || `${doc.title} - My Notes`;
+    await bootEditor(doc, payload.markdown || "");
+    setEditorStatus("Saved");
+  } catch (error) {
+    if (errorBox) {
+      errorBox.innerHTML = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
+    }
+  }
+}
+
+async function bootEditor(doc, markdown) {
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  if (!shell) return;
+  shell.innerHTML = `<div class="study-loading">Preparing editor…</div>`;
+  let editorModule;
+  try {
+    editorModule = await loadEditorModule();
+  } catch (error) {
+    shell.innerHTML = `<div class="status-card study-error">Could not load the editor bundle: ${escapeHtml(error.message || "unknown error")}</div>`;
+    return;
+  }
+  if (editorInstance) {
+    try {
+      editorInstance.destroy();
+    } catch {
+      /* ignore */
+    }
+    editorInstance = null;
+  }
+  shell.innerHTML = "";
+  editorDocumentId = doc.id;
+  editorInstance = await editorModule.createNoteFlowEditor({
+    root: shell,
+    defaultValue: markdown,
+    onMarkdownChange: (updatedMarkdown) => scheduleEditorSave(updatedMarkdown),
+  });
+  rebuildEditorOutline();
+}
+
+function editorHeadings() {
+  return Array.from(viewRoot.querySelectorAll("#editor-note-shell .ProseMirror h1, #editor-note-shell .ProseMirror h2, #editor-note-shell .ProseMirror h3, #editor-note-shell .ProseMirror h4"));
+}
+
+function rebuildEditorOutline() {
+  const body = viewRoot.querySelector("#editor-outline-body");
+  if (!body || body.closest("#editor-outline").hidden) return;
+  const headings = editorHeadings();
+  if (!headings.length) {
+    body.innerHTML = `<div class="side-empty">No headings yet.</div>`;
+    return;
+  }
+  body.innerHTML = headings
+    .map((heading, index) => `
+      <button type="button" class="outline-item outline-l${heading.tagName.slice(1)}" data-outline-index="${index}">
+        ${escapeHtml(heading.textContent.trim() || "(empty heading)")}
+      </button>
+    `)
+    .join("");
+}
+
+function toggleEditorOutline(button) {
+  editorOutlineVisible = !editorOutlineVisible;
+  localStorage.setItem("noteflowEditorOutline", editorOutlineVisible ? "1" : "0");
+  const panel = viewRoot.querySelector("#editor-outline");
+  panel.hidden = !editorOutlineVisible;
+  viewRoot.querySelector(".editor-columns").classList.toggle("with-outline", editorOutlineVisible);
+  button.classList.toggle("active", editorOutlineVisible);
+  if (editorOutlineVisible) rebuildEditorOutline();
+}
+
+function scheduleEditorSave(markdown) {
+  editorDirty = true;
+  setEditorStatus("Unsaved changes…");
+  rebuildEditorOutline();
+  if (editorSaveTimer) clearTimeout(editorSaveTimer);
+  editorSaveTimer = setTimeout(() => {
+    editorSaveTimer = null;
+    persistEditorMarkdown(markdown);
+  }, 1200);
+}
+
+async function persistEditorMarkdown(markdown) {
+  const documentId = editorDocumentId;
+  if (!documentId) return;
+  editorDirty = false;
+  if (!editorOfflineMode) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/documents/${documentId}/editable-note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editorNoteTitle, markdown }),
+      });
+      if (!response.ok) throw new Error("Save failed");
+      setEditorStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+      return;
+    } catch {
+      editorOfflineMode = true;
+    }
+  }
+  try {
+    localStorage.setItem(editorLocalKey(documentId), JSON.stringify({ title: editorNoteTitle, markdown }));
+    setEditorStatus("Offline · stored in this browser", true);
+  } catch {
+    setEditorStatus("Could not save (storage full)", true);
+  }
+}
+
+function setEditorStatus(text, warn = false) {
+  const status = viewRoot.querySelector("#editor-save-status");
+  if (!status) return;
+  status.textContent = text;
+  status.classList.toggle("warn", warn);
+}
+
+function exportEditorMarkdown(doc) {
+  const markdown = editorInstance ? editorInstance.getMarkdown() : "";
+  if (!markdown.trim()) {
+    setEditorStatus("Nothing to export yet", true);
+    return;
+  }
+  const safeName = (editorNoteTitle || `${doc.title} - My Notes`).replace(/[\\/:*?"<>|]/g, "_");
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${safeName}.md`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+  setEditorStatus("Exported .md");
 }
 
 // ---------------------------------------------------------------------------

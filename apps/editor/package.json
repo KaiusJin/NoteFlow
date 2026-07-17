@@ -1,0 +1,18 @@
+{
+  "name": "noteflow-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Notion-style Markdown editor bundle for the NoteFlow web app (Milkdown Crepe + KaTeX + CodeMirror).",
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch"
+  },
+  "dependencies": {
+    "@milkdown/crepe": "^7.21.3",
+    "@milkdown/kit": "^7.21.3"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5"
+  }
+}
