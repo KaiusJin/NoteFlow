@@ -232,12 +232,6 @@ def completed_source_group_indexes(sections: list[AiNoteSection]) -> set[int]:
     }
 
 
-def next_section_index(sections: list[AiNoteSection]) -> int:
-    if not sections:
-        return 0
-    return max(section.section_index for section in sections) + 1
-
-
 def parse_json_object(value: str | None) -> dict:
     if not value:
         return {}

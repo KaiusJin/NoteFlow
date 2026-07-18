@@ -167,29 +167,3 @@ class GradeResult:
     key_points_hit: list[bool]
     graded_by: str
 
-
-# ---- Reports -------------------------------------------------------------
-
-@dataclass(frozen=True)
-class GenerationReport:
-    document_id: str
-    set_id: str
-    total_source_groups: int
-    completed_source_groups: int
-    produced_count: int
-    duplicate_count: int
-    dropped_low_confidence: int
-    failed_source_group_indexes: list[int] = field(default_factory=list)
-    error_message: str | None = None
-
-
-@dataclass(frozen=True)
-class GradingReport:
-    attempt_id: str
-    graded_count: int
-    auto_graded: int
-    llm_graded: int
-    total_score: float
-    max_score: float
-    remaining_ungraded: int
-    errors: list[str] = field(default_factory=list)

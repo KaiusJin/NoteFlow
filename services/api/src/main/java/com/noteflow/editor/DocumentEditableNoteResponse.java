@@ -1,5 +1,6 @@
 package com.noteflow.editor;
 
+import com.noteflow.library.Note;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -12,10 +13,10 @@ public record DocumentEditableNoteResponse(
     Instant createdAt,
     Instant updatedAt
 ) {
-    public static DocumentEditableNoteResponse from(DocumentEditableNote note) {
+    public static DocumentEditableNoteResponse fromNote(Note note) {
         return new DocumentEditableNoteResponse(
             note.getId(),
-            note.getDocumentId(),
+            note.getSourceDocumentId(),
             note.getTitle(),
             note.getMarkdown(),
             note.getSourceKind(),

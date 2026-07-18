@@ -141,6 +141,65 @@ CREATE INDEX idx_documents_status ON documents(status);
 CREATE INDEX idx_documents_type ON documents(document_type);
 ```
 
+### folders
+
+Stores the per-user Library tree used by the Folders section.
+`parent_id = NULL` means a top-level folder.
+
+```sql
+CREATE TABLE folders (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  parent_id UUID,
+  name VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+Recommended indexes:
+
+```sql
+CREATE INDEX idx_folders_user_name ON folders(user_id, name);
+CREATE INDEX idx_folders_parent ON folders(parent_id);
+```
+
+### notes
+
+Stores editable Markdown notes shown in the Library. Notes may be blank,
+imported, or seeded from generated document sources.
+
+```sql
+CREATE TABLE notes (
+  id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  folder_id UUID,
+  title VARCHAR(500) NOT NULL,
+  markdown TEXT NOT NULL,
+  source_kind VARCHAR(64) NOT NULL,
+  source_document_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+`source_kind` is normalized to one of:
+
+```text
+RAW
+AI_NOTE
+IMPORT
+BLANK
+```
+
+Recommended indexes:
+
+```sql
+CREATE INDEX idx_notes_user_updated ON notes(user_id, updated_at DESC);
+CREATE INDEX idx_notes_folder ON notes(folder_id);
+CREATE INDEX idx_notes_source_document_kind ON notes(source_document_id, source_kind);
+```
+
 ### tasks
 
 Stores async work status for parsing and later AI operations.

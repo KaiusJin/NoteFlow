@@ -1,4 +1,3 @@
-import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from dataclasses import dataclass
@@ -8,8 +7,7 @@ from typing import Optional
 
 import fitz
 
-from noteflow_worker.db.repository import PageAsset, TextChunk
-from noteflow_worker.pdf.parser import estimate_tokens
+from noteflow_worker.db.repository import PageAsset
 from noteflow_worker.pdf.ocr import clean_ocr_text, make_ocr_backend
 from noteflow_worker.runtime.resource_pools import ResourcePoolPlan
 from noteflow_worker.runtime.limits import process_resource_slot
@@ -220,60 +218,4 @@ def to_page_assets(document_id: str, pages: list[VisualPage]) -> list[PageAsset]
             visual_summary=page.summary if page.has_visual_content else None,
         )
         for page in pages
-    ]
-
-
-def build_visual_chunks(pages: list[VisualPage], asset_ids_by_page: dict[int, str]) -> list[TextChunk]:
-    chunks: list[TextChunk] = []
-    for page in pages:
-        if not page.needs_visual_chunk:
-            continue
-        metadata = {
-            "visual": True,
-            "imageCount": page.image_count,
-            "drawingCount": page.drawing_count,
-            "imageCoverage": page.image_coverage,
-            "ocrAvailable": page.ocr_text is not None,
-        }
-        content = page.summary
-        chunks.append(
-            TextChunk(
-                page_number=page.page_number,
-                chunk_index=0,
-                content=content,
-                section_title="Visual content",
-                page_start=page.page_number,
-                page_end=page.page_number,
-                chunk_type="MIXED" if page.text_length else "IMAGE",
-                token_count=estimate_tokens(content),
-                source_asset_id=asset_ids_by_page.get(page.page_number),
-                metadata_json=json.dumps(metadata, separators=(",", ":")),
-            )
-        )
-    return chunks
-
-
-def merge_and_reindex_chunks(text_chunks: list[TextChunk], visual_chunks: list[TextChunk]) -> list[TextChunk]:
-    ordered = sorted(
-        [*text_chunks, *visual_chunks],
-        key=lambda chunk: (
-            chunk.page_start or chunk.page_number,
-            1 if chunk.chunk_type in {"IMAGE", "MIXED"} and chunk.source_asset_id else 0,
-            chunk.chunk_index,
-        ),
-    )
-    return [
-        TextChunk(
-            page_number=chunk.page_number,
-            chunk_index=index,
-            content=chunk.content,
-            section_title=chunk.section_title,
-            page_start=chunk.page_start,
-            page_end=chunk.page_end,
-            chunk_type=chunk.chunk_type,
-            token_count=chunk.token_count,
-            source_asset_id=chunk.source_asset_id,
-            metadata_json=chunk.metadata_json,
-        )
-        for index, chunk in enumerate(ordered)
     ]

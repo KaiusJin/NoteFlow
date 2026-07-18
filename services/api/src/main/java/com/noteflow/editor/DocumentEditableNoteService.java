@@ -2,6 +2,8 @@ package com.noteflow.editor;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
+import com.noteflow.library.Note;
+import com.noteflow.library.NoteRepository;
 import com.noteflow.markdown.DocumentMarkdownDocumentRepository;
 import com.noteflow.notes.DocumentAiNoteRepository;
 import com.noteflow.users.DevUserService;
@@ -10,20 +12,25 @@ import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+/**
+ * Per-document editable note API, now backed by the unified {@code notes}
+ * table: the document's editable note is the note whose
+ * {@code sourceDocumentId} equals the document id.
+ */
 @Service
 public class DocumentEditableNoteService {
     private final DevUserService users;
     private final DocumentRepository documents;
-    private final DocumentEditableNoteRepository editableNotes;
+    private final NoteRepository notes;
     private final DocumentMarkdownDocumentRepository markdownDocuments;
     private final DocumentAiNoteRepository aiNotes;
 
     public DocumentEditableNoteService(DevUserService users, DocumentRepository documents,
-            DocumentEditableNoteRepository editableNotes, DocumentMarkdownDocumentRepository markdownDocuments,
+            NoteRepository notes, DocumentMarkdownDocumentRepository markdownDocuments,
             DocumentAiNoteRepository aiNotes) {
         this.users = users;
         this.documents = documents;
-        this.editableNotes = editableNotes;
+        this.notes = notes;
         this.markdownDocuments = markdownDocuments;
         this.aiNotes = aiNotes;
     }
@@ -31,7 +38,8 @@ public class DocumentEditableNoteService {
     public Optional<DocumentEditableNoteResponse> latest(UUID documentId) {
         UUID userId = users.currentUserId();
         loadCurrentUserDocument(documentId, userId);
-        return editableNotes.findByDocumentId(documentId).map(DocumentEditableNoteResponse::from);
+        return notes.findFirstBySourceDocumentIdOrderByUpdatedAtDesc(documentId)
+            .map(DocumentEditableNoteResponse::fromNote);
     }
 
     @Transactional
@@ -42,27 +50,27 @@ public class DocumentEditableNoteService {
         String markdown = sourceMarkdown(documentId, kind);
         String title = document.getTitle() + " - My Notes";
 
-        DocumentEditableNote note = editableNotes.findByDocumentId(documentId).orElse(null);
+        Note note = notes.findFirstBySourceDocumentIdAndSourceKindOrderByCreatedAtAsc(documentId, kind).orElse(null);
         if (note == null) {
-            note = new DocumentEditableNote(UUID.randomUUID(), documentId, userId, title, markdown, kind);
+            note = new Note(UUID.randomUUID(), userId, null, title, markdown, kind, documentId);
         } else {
             note.reset(title, markdown, kind);
         }
-        return DocumentEditableNoteResponse.from(editableNotes.save(note));
+        return DocumentEditableNoteResponse.fromNote(notes.save(note));
     }
 
     @Transactional
     public DocumentEditableNoteResponse save(UUID documentId, String title, String markdown) {
         UUID userId = users.currentUserId();
         Document document = loadCurrentUserDocument(documentId, userId);
-        DocumentEditableNote note = editableNotes.findByDocumentId(documentId).orElse(null);
+        Note note = notes.findFirstBySourceDocumentIdOrderByUpdatedAtDesc(documentId).orElse(null);
         if (note == null) {
             String noteTitle = title != null && !title.isBlank() ? title : document.getTitle() + " - My Notes";
-            note = new DocumentEditableNote(UUID.randomUUID(), documentId, userId, noteTitle, markdown, "BLANK");
+            note = new Note(UUID.randomUUID(), userId, null, noteTitle, markdown, "BLANK", documentId);
         } else {
             note.update(title, markdown);
         }
-        return DocumentEditableNoteResponse.from(editableNotes.save(note));
+        return DocumentEditableNoteResponse.fromNote(notes.save(note));
     }
 
     private String sourceMarkdown(UUID documentId, String kind) {

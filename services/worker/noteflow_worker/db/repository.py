@@ -142,22 +142,6 @@ class AiNoteSection:
 
 
 @dataclass(frozen=True)
-class AiNoteRecord:
-    id: str
-    document_id: str
-    note_version: int
-    status: str
-    title: str
-    markdown: str
-    summary: Optional[str]
-    model_provider: Optional[str]
-    model_name: Optional[str]
-    prompt_version: Optional[str]
-    quality_report_json: Optional[str]
-    metadata_json: Optional[str]
-
-
-@dataclass(frozen=True)
 class EmbeddingSource:
     document_id: str
     source_domain: str

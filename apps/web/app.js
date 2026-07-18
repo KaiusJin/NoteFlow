@@ -12,6 +12,10 @@ const pendingNotesTasks = new Map(); // taskId -> documentId
 const chatMessages = [];
 let activeConversationId = localStorage.getItem("noteflowConversationId") || null;
 let conversationHydrated = false;
+let conversationsList = [];
+let conversationsLoaded = false;
+let conversationsLoading = false;
+let conversationsError = null;
 let attemptPollTimer = null;
 let globalPollInterval = null;
 
@@ -24,7 +28,6 @@ const sidebarTasks = document.querySelector("#sidebar-tasks");
 // - Editor: top document tabs
 let agentSources = parseJsonSafe(localStorage.getItem("noteflowAgentSources")) || { pdf: [], aiNote: [] };
 let editorTabs = parseJsonSafe(localStorage.getItem("noteflowEditorTabs")) || [];
-let editorSidebarFolderId = localStorage.getItem("noteflowEditorSidebarFolder") || null;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -58,10 +61,6 @@ function activeDocument() {
 
 function selectDocument(documentId) {
   activeDocumentId = documentId;
-  if (currentView === "editor") {
-    editorSidebarFolderId = null;
-    localStorage.removeItem("noteflowEditorSidebarFolder");
-  }
   localStorage.setItem("noteflowActiveDocument", documentId || "");
   if (currentView === "flashcards" || currentView === "quiz" || currentView === "editor") {
     navigate(currentView);
@@ -187,30 +186,110 @@ function renderAgentView() {
         <h1>Ask your study material</h1>
       </div>
     </div>
-    <div class="chat-shell">
-      <div id="chat-messages" class="chat-messages">
-        ${chatMessages.length ? chatMessages.map(renderChatMessage).join("") : `
-          <div class="chat-empty">
-            <div class="chat-empty-mark">✦</div>
-          </div>`}
+    <div class="agent-layout">
+      <aside class="conversation-panel">
+        <div class="conversation-panel-head">
+          <strong>Conversations</strong>
+          <button type="button" class="icon-button" data-conversation-new title="New chat">＋</button>
+        </div>
+        <div id="conversation-list" class="conversation-list">
+          ${renderConversationList()}
+        </div>
+      </aside>
+      <div class="chat-shell">
+        <div id="chat-messages" class="chat-messages">
+          ${chatMessages.length ? chatMessages.map(renderChatMessage).join("") : `
+            <div class="chat-empty">
+              <div class="chat-empty-mark">✦</div>
+            </div>`}
+        </div>
+        <form id="chat-form" class="chat-composer">
+          <div class="chat-input-row">
+            <input id="chat-query" type="text" placeholder="Ask anything about your documents…" autocomplete="off" required />
+            <button type="submit">Send</button>
+          </div>
+          <div class="chat-source-row">
+            <button type="button" id="chat-open-sources" class="chip-button" title="Choose which files ground the answers">＋ Sources</button>
+            <span id="chat-source-summary" class="chat-scope-hint" title="Current retrieval scope for your questions">${escapeHtml(agentSourcesSummary())}</span>
+          </div>
+        </form>
       </div>
-      <form id="chat-form" class="chat-composer">
-        <div class="chat-input-row">
-          <input id="chat-query" type="text" placeholder="Ask anything about your documents…" autocomplete="off" required />
-          <button type="submit">Send</button>
-        </div>
-        <div class="chat-source-row">
-          <button type="button" id="chat-open-sources" class="chip-button" title="Choose which files ground the answers">＋ Sources</button>
-          <span id="chat-source-summary" class="chat-scope-hint" title="Current retrieval scope for your questions">${escapeHtml(agentSourcesSummary())}</span>
-        </div>
-      </form>
     </div>
     ${renderSourceModal()}
   `;
   wireSourceModal();
   scrollChatToBottom();
   viewRoot.querySelector("#chat-query").focus();
-  if (activeConversationId && !conversationHydrated && !chatMessages.length) hydrateConversation();
+  if (!conversationsLoaded && !conversationsLoading) loadConversationList({ hydrateLatestIfEmpty: true });
+  if (activeConversationId && !conversationHydrated && !chatMessages.length) hydrateConversation(activeConversationId);
+}
+
+function renderConversationList() {
+  if (conversationsLoading && !conversationsList.length) {
+    return `<div class="side-empty">Loading conversations…</div>`;
+  }
+  if (conversationsError) {
+    return `<div class="side-empty">${escapeHtml(conversationsError)}</div>`;
+  }
+  if (!conversationsList.length) {
+    return `<div class="side-empty">No conversations yet.</div>`;
+  }
+  return conversationsList.map((conversation) => {
+    const id = String(conversation.id);
+    const title = conversation.title || "New conversation";
+    const timestamp = conversation.last_message_at || conversation.updated_at || conversation.created_at;
+    return `
+      <button type="button" class="conversation-row ${id === activeConversationId ? "active" : ""}" data-conversation-id="${escapeHtml(id)}" title="${escapeHtml(title)}">
+        <span class="conversation-title">${escapeHtml(title)}</span>
+        <span class="conversation-time">${escapeHtml(formatConversationTime(timestamp))}</span>
+      </button>
+    `;
+  }).join("");
+}
+
+function refreshConversationList() {
+  const list = viewRoot.querySelector("#conversation-list");
+  if (list) list.innerHTML = renderConversationList();
+}
+
+async function loadConversationList(options = {}) {
+  conversationsLoading = true;
+  conversationsError = null;
+  refreshConversationList();
+  try {
+    conversationsList = await requestJson("/conversations");
+    conversationsLoaded = true;
+    if (!activeConversationId && options.hydrateLatestIfEmpty && conversationsList.length) {
+      activeConversationId = String(conversationsList[0].id);
+      localStorage.setItem("noteflowConversationId", activeConversationId);
+      conversationHydrated = false;
+    }
+  } catch (error) {
+    conversationsError = formatFetchError(error);
+  } finally {
+    conversationsLoading = false;
+    refreshConversationList();
+  }
+  if (currentView === "agent" && activeConversationId && !conversationHydrated && !chatMessages.length) {
+    hydrateConversation(activeConversationId);
+  }
+}
+
+async function selectConversation(conversationId) {
+  if (!conversationId || conversationId === activeConversationId) return;
+  activeConversationId = conversationId;
+  localStorage.setItem("noteflowConversationId", activeConversationId);
+  chatMessages.length = 0;
+  conversationHydrated = false;
+  renderAgentView();
+}
+
+function startNewConversation() {
+  activeConversationId = null;
+  localStorage.removeItem("noteflowConversationId");
+  chatMessages.length = 0;
+  conversationHydrated = false;
+  renderAgentView();
 }
 
 // Centered modal for picking retrieval sources, grouped Markdown / AI Notes.
@@ -305,6 +384,9 @@ async function handleChatSubmit(form) {
       const created = await requestJson("/conversations", "POST", { title: query.slice(0, 80) });
       activeConversationId = created.id;
       localStorage.setItem("noteflowConversationId", activeConversationId);
+      conversationsList = [created, ...conversationsList.filter((conversation) => conversation.id !== created.id)];
+      conversationsLoaded = true;
+      refreshConversationList();
     }
     const response = await fetch(`${API_BASE_URL}/conversations/${activeConversationId}/messages`, {
       method: "POST",
@@ -315,6 +397,7 @@ async function handleChatSubmit(form) {
     if (!response.ok) throw new Error(payload.message || "Unable to send message");
     const answer = await pollConversationMessage(payload.assistantMessageId);
     chatMessages[pendingIndex] = { role: "assistant", html: renderConversationAnswer(answer) };
+    loadConversationList();
   } catch (error) {
     chatMessages[pendingIndex] = {
       role: "assistant",
@@ -356,10 +439,13 @@ function renderConversationCitation(citation) {
   `;
 }
 
-async function hydrateConversation() {
+async function hydrateConversation(conversationId = activeConversationId) {
+  if (!conversationId) return;
   conversationHydrated = true;
+  const pendingMessages = [];
   try {
-    const stored = await requestJson(`/conversations/${activeConversationId}/messages`);
+    const stored = await requestJson(`/conversations/${conversationId}/messages`);
+    if (conversationId !== activeConversationId) return;
     for (const message of stored) {
       if (message.role === "USER") {
         chatMessages.push({ role: "user", text: message.content_markdown || "" });
@@ -368,13 +454,34 @@ async function hydrateConversation() {
       } else if (message.status === "FAILED") {
         chatMessages.push({ role: "assistant", html: `<p class="chat-note">${escapeHtml(message.error_message || "Answer generation failed")}</p>` });
       } else {
-        chatMessages.push({ role: "assistant", html: `<p class="chat-note">Answer generation is still in progress…</p>` });
+        const index = chatMessages.push({ role: "assistant", html: `<p class="chat-note">Answer generation is still in progress…</p>` }) - 1;
+        pendingMessages.push({ messageId: message.id, index });
       }
     }
     refreshChatMessages();
-  } catch {
-    activeConversationId = null;
-    localStorage.removeItem("noteflowConversationId");
+    resumePendingConversationMessages(conversationId, pendingMessages);
+  } catch (error) {
+    chatMessages.push({
+      role: "assistant",
+      html: `<p class="chat-note">Could not load this saved conversation. The conversation id is preserved; try again after the API is reachable.\n\n${escapeHtml(formatFetchError(error))}</p>`,
+    });
+    refreshChatMessages();
+  }
+}
+
+async function resumePendingConversationMessages(conversationId, pendingMessages) {
+  for (const pending of pendingMessages) {
+    try {
+      const answer = await pollConversationMessage(pending.messageId);
+      if (conversationId !== activeConversationId) return;
+      chatMessages[pending.index] = { role: "assistant", html: renderConversationAnswer(answer) };
+      refreshChatMessages();
+      loadConversationList();
+    } catch (error) {
+      if (conversationId !== activeConversationId) return;
+      chatMessages[pending.index] = { role: "assistant", html: `<p class="chat-note">${escapeHtml(formatFetchError(error))}</p>` };
+      refreshChatMessages();
+    }
   }
 }
 
@@ -1163,11 +1270,18 @@ let editorFullMarkdown = "";
 let editorSections = [];
 let editorLoadedSectionStart = 0;
 let editorLoadedSectionEnd = 0;
-let editorUnsavedDraft = false;
-let editorDraftFolderId = null;
 let editorDraftTitle = "Untitled note";
-let editorLocalFolders = parseJsonSafe(localStorage.getItem("noteflowEditorLocalFolders")) || [];
-let editorLocalNoteRef = null;
+// Standalone (folder-backed) note currently open in the editor, or null when a
+// document note is open. Note tabs use the key `note:<id>`; document tabs use
+// the raw document id.
+let editorNoteId = null;
+let editorNoteTitles = parseJsonSafe(localStorage.getItem("noteflowEditorNoteTitles")) || {};
+// Library (Files section) state, backed by /folders and /notes.
+let libraryFolders = [];
+let libraryNotes = [];
+let librarySelectedFolderId = localStorage.getItem("noteflowLibraryFolder") || "ALL";
+let libraryExpanded = new Set(parseJsonSafe(localStorage.getItem("noteflowLibraryExpanded")) || []);
+let libraryDragNoteId = null;
 let editorLoadObserver = null;
 let editorScrollPump = null;
 let editorPumpTimer = null;
@@ -1241,15 +1355,21 @@ function persistEditorTabs() {
   localStorage.setItem("noteflowEditorTabs", JSON.stringify(editorTabs));
 }
 
-function closeEditorTab(documentId) {
-  const index = editorTabs.indexOf(documentId);
+function closeEditorTab(key) {
+  const index = editorTabs.indexOf(key);
   if (index === -1) return;
   editorTabs.splice(index, 1);
-  if (activeDocumentId === documentId) {
-    editorStartDocumentId = documentId;
-    localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
-    activeDocumentId = editorTabs[index] || editorTabs[index - 1] || null;
-    localStorage.setItem("noteflowActiveDocument", activeDocumentId || "");
+  const wasActive = isNoteTabKey(key) ? editorNoteId === noteIdFromKey(key) : (!editorNoteId && activeDocumentId === key);
+  if (wasActive) {
+    editorNoteId = null;
+    activeDocumentId = null;
+    localStorage.setItem("noteflowActiveDocument", "");
+    const next = editorTabs[index] || editorTabs[index - 1] || null;
+    if (next) {
+      persistEditorTabs();
+      activateEditorTab(next);
+      return;
+    }
   }
   if (!editorTabs.length) {
     editorHomeMode = true;
@@ -1259,167 +1379,476 @@ function closeEditorTab(documentId) {
   navigate("editor");
 }
 
-function renderEditorTabs(documents) {
+function activateEditorTab(key) {
+  editorHomeMode = false;
+  localStorage.setItem("noteflowEditorHome", "0");
+  if (isNoteTabKey(key)) {
+    editorNoteId = noteIdFromKey(key);
+    activeDocumentId = null;
+    localStorage.setItem("noteflowActiveDocument", "");
+  } else {
+    editorNoteId = null;
+    activeDocumentId = key;
+    localStorage.setItem("noteflowActiveDocument", key);
+  }
+  navigate("editor");
+}
+
+function openStandaloneNoteInEditor(noteId, title) {
+  const key = `note:${noteId}`;
+  if (title) {
+    editorNoteTitles[noteId] = title;
+    localStorage.setItem("noteflowEditorNoteTitles", JSON.stringify(editorNoteTitles));
+  }
+  if (!editorTabs.includes(key)) {
+    editorTabs.push(key);
+    persistEditorTabs();
+  }
+  activateEditorTab(key);
+}
+
+function isNoteTabKey(key) {
+  return typeof key === "string" && key.startsWith("note:");
+}
+
+function noteIdFromKey(key) {
+  return key.slice(5);
+}
+
+function editorTabLabel(key) {
+  if (isNoteTabKey(key)) {
+    const id = noteIdFromKey(key);
+    return editorNoteTitles[id] || libraryNotes.find((n) => n.id === id)?.title || "Untitled note";
+  }
+  return documentsMap.get(key)?.title || "Document";
+}
+
+function isEditorTabActive(key) {
+  if (editorHomeMode) return false;
+  if (isNoteTabKey(key)) return editorNoteId === noteIdFromKey(key);
+  return !editorNoteId && key === activeDocumentId;
+}
+
+function renderEditorTabs() {
   return `
     <div class="editor-tabs">
-      ${editorTabs.map((id) => {
-        const tabDoc = documentsMap.get(id);
+      ${editorTabs.map((key) => {
+        const label = editorTabLabel(key);
         return `
-          <div class="editor-tab ${!editorHomeMode && !editorUnsavedDraft && id === activeDocumentId ? "active" : ""}" data-editor-tab="${escapeHtml(id)}" title="${escapeHtml(tabDoc.title)}">
-            <span class="editor-tab-title">${escapeHtml(tabDoc.title)}</span>
-            <button type="button" class="editor-tab-close" data-editor-tab-close="${escapeHtml(id)}" title="Close tab">✕</button>
+          <div class="editor-tab ${isEditorTabActive(key) ? "active" : ""}" data-editor-tab="${escapeHtml(key)}" title="${escapeHtml(label)}">
+            <span class="editor-tab-title">${escapeHtml(label)}</span>
+            <button type="button" class="editor-tab-close" data-editor-tab-close="${escapeHtml(key)}" title="Close tab">✕</button>
           </div>
         `;
       }).join("")}
       <div class="editor-tab-add">
-        <button type="button" class="editor-tab-plus" data-editor-tab-create title="Upload/Create document">＋</button>
+        <button type="button" class="editor-tab-plus" data-editor-tab-create title="New / open">＋</button>
       </div>
     </div>
   `;
 }
 
-function folderNameForDocument(doc) {
-  const original = doc?.originalFilename || doc?.title || "Untitled";
-  return original.replace(/\.[^/.]+$/, "") || doc?.title || "Untitled";
-}
 
-function editorFolders(documents) {
-  return [
-    ...documents.map((doc) => ({
-      id: doc.id,
-      name: folderNameForDocument(doc),
-      doc,
-      resources: [
-        { kind: "AI_NOTE", label: "AI Note", ready: doc.aiNoteStatus === "READY", meta: doc.aiNoteStatus || "Not Started" },
-        { kind: "RAW", label: "PDF Markdown", ready: doc.status === "READY", meta: doc.status || "Unknown" },
-        ...editorLocalNotesForFolder(doc.id),
-      ],
-    })),
-    ...editorLocalFolders.filter((folder) => !documentsMap.has(folder.id)).map((folder) => ({
-      ...folder,
-      local: true,
-      resources: editorLocalNotesForFolder(folder.id),
-    })),
-  ];
-}
-
-function editorLocalNotesForFolder(folderId) {
-  const folder = editorLocalFolders.find((candidate) => candidate.id === folderId);
-  return (folder?.notes || []).map((note) => ({
-    kind: "LOCAL_NOTE",
-    label: "Editable Note",
-    ready: true,
-    meta: new Date(note.updatedAt || Date.now()).toLocaleDateString(),
-    note,
-  }));
-}
-
-function ensureEditorLocalFolder(folderId, name) {
-  let folder = editorLocalFolders.find((candidate) => candidate.id === folderId);
-  if (!folder) {
-    folder = { id: folderId, name, notes: [] };
-    editorLocalFolders.push(folder);
-  } else if (name && folder.name !== name) {
-    folder.name = name;
-  }
-  if (!Array.isArray(folder.notes)) folder.notes = [];
-  return folder;
-}
-
-function renderEditorFolderBrowser(documents, activeFolderId = editorSidebarFolderId || editorDraftFolderId || activeDocumentId || editorStartDocumentId) {
-  const folders = editorFolders(documents);
-  const activeFolder = folders.find((folder) => folder.id === activeFolderId) || folders[0] || null;
-  return `
-    <section class="editor-folder-browser">
-      <aside class="editor-folder-panel">
-        <div class="resource-panel-title">Folders</div>
-        <div class="editor-folder-list">
-          ${folders.map((folder) => `
-            <button type="button" class="editor-folder-item ${activeFolder?.id === folder.id ? "active" : ""}" data-editor-folder="${escapeHtml(folder.id)}" title="${escapeHtml(folder.name)}">
-              <span class="folder-icon">▣</span>
-              <span>${escapeHtml(folder.name)}</span>
-            </button>
-          `).join("") || `<div class="side-empty">No folders yet.</div>`}
-        </div>
-      </aside>
-      <div class="editor-folder-content">
-        ${renderEditorFolderContent(activeFolder)}
-      </div>
-    </section>
-  `;
-}
-
-function renderEditorFolderContent(activeFolder) {
-  if (!activeFolder) return `<div class="side-empty">Upload a PDF in General to create folders.</div>`;
-  return `
-    <div class="folder-content-head">
-      <div><div class="eyebrow">Folder</div><h2>${escapeHtml(activeFolder.name)}</h2></div>
-    </div>
-    <div class="folder-file-grid">
-      ${activeFolder.resources.map((resource) => `
-        <button type="button" class="folder-file-card ${resource.ready ? "" : "disabled"}" data-editor-folder-source="${escapeHtml(resource.kind)}" data-editor-folder-doc="${escapeHtml(activeFolder.id)}" ${resource.note ? `data-editor-local-note="${escapeHtml(resource.note.id)}"` : ""} ${resource.ready ? "" : "disabled"}>
-          <span class="file-kind">${escapeHtml(resource.label)}</span>
-          <strong>${escapeHtml(resource.note?.title || activeFolder.doc?.title || activeFolder.name)}</strong>
-          <span>${resource.kind !== "LOCAL_NOTE" && activeFolder.doc?.pageCount ? `${activeFolder.doc.pageCount} pages` : escapeHtml(resource.meta)}</span>
-        </button>
-      `).join("") || `<div class="side-empty">No notes in this folder yet.</div>`}
-    </div>
-  `;
-}
-
-function persistEditorLocalFolders() {
-  localStorage.setItem("noteflowEditorLocalFolders", JSON.stringify(editorLocalFolders));
-}
-
-function renderFoldersView() {
-  const documents = Array.from(documentsMap.values());
-  const folders = editorFolders(documents);
-  if (editorSidebarFolderId && !folders.some((folder) => folder.id === editorSidebarFolderId)) {
-    editorSidebarFolderId = null;
-    localStorage.removeItem("noteflowEditorSidebarFolder");
-  }
-  if (!editorSidebarFolderId && folders[0]) {
-    editorSidebarFolderId = folders[0].id;
-    localStorage.setItem("noteflowEditorSidebarFolder", editorSidebarFolderId);
-  }
+// ---------------------------------------------------------------------------
+// Files section: backend-persisted folders (nested tree) + notes.
+// ---------------------------------------------------------------------------
+async function renderFoldersView() {
   viewRoot.innerHTML = `
     <div class="view-header">
-      <div>
-        <div class="eyebrow">Folders</div>
-        <h1>Resources</h1>
+      <div><div class="eyebrow">Files</div><h1>Library</h1></div>
+      <div class="editor-actions">
+        <button type="button" data-library-action="new-note">New note</button>
       </div>
     </div>
-    ${folders.length ? renderEditorFolderBrowser(documents, editorSidebarFolderId) : `
-      <div class="empty-view">
-        <div class="chat-empty-mark">▣</div>
-        <p>Upload a PDF in General to create a folder.</p>
-      </div>
-    `}
+    <div class="library-layout">
+      <aside class="library-tree" id="library-tree"><div class="study-loading">Loading…</div></aside>
+      <section class="library-notes" id="library-notes"></section>
+    </div>
+    <input type="file" id="library-import-input" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden />
   `;
-  wireEditorFolderBrowserEvents();
+  wireLibraryEvents();
+  await refreshLibrary();
+}
+
+// Selection model for the left panel:
+//   "ALL"            – every note
+//   "KIND:AI_NOTE"   – smart view filtered by source kind
+//   "KIND:RAW" / "KIND:IMPORT" / "KIND:BLANK"
+//   "UNFILED"        – notes with no folder
+//   <uuid>           – a real folder
+const LIBRARY_KIND_VIEWS = [
+  ["KIND:AI_NOTE", "AI notes", "AI_NOTE"],
+  ["KIND:RAW", "PDF markdown", "RAW"],
+  ["KIND:IMPORT", "Imported", "IMPORT"],
+  ["KIND:BLANK", "My notes", "BLANK"],
+];
+
+async function refreshLibrary() {
+  try {
+    const [foldersRes, notesRes] = await Promise.all([
+      fetch(`${API_BASE_URL}/folders`),
+      fetch(`${API_BASE_URL}/notes`),
+    ]);
+    libraryFolders = foldersRes.ok ? await readJson(foldersRes) : [];
+    libraryNotes = notesRes.ok ? await readJson(notesRes) : [];
+    // Fall back to "All notes" if the remembered folder no longer exists.
+    if (isRealLibraryFolder() && !libraryFolders.some((folder) => folder.id === librarySelectedFolderId)) {
+      librarySelectedFolderId = "ALL";
+      localStorage.setItem("noteflowLibraryFolder", "ALL");
+    }
+  } catch (error) {
+    const tree = viewRoot.querySelector("#library-tree");
+    if (tree) tree.innerHTML = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
+    return;
+  }
+  renderLibraryTree();
+  renderLibraryNotes();
+}
+
+function libraryChildFolders(parentId) {
+  return libraryFolders
+    .filter((folder) => (folder.parentId || null) === (parentId || null))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function libraryNoteCount(folderId) {
+  return libraryNotes.filter((note) => (note.folderId || null) === (folderId || null)).length;
+}
+
+function libraryKindCount(kind) {
+  return libraryNotes.filter((note) => (note.sourceKind || "BLANK") === kind).length;
+}
+
+function renderLibraryTree() {
+  const tree = viewRoot.querySelector("#library-tree");
+  if (!tree) return;
+  const renderNode = (folder, depth) => {
+    const children = libraryChildFolders(folder.id);
+    const expanded = libraryExpanded.has(folder.id);
+    const twisty = children.length ? (expanded ? "▾" : "▸") : "·";
+    return `
+      <div class="library-folder-row ${librarySelectedFolderId === folder.id ? "active" : ""}"
+           data-library-folder="${escapeHtml(folder.id)}" data-drop-folder="${escapeHtml(folder.id)}"
+           style="padding-left:${depth * 14 + 6}px" title="${escapeHtml(folder.name)}">
+        <button type="button" class="library-twisty" data-library-toggle="${escapeHtml(folder.id)}" ${children.length ? "" : "disabled"}>${twisty}</button>
+        <span class="folder-icon">▣</span>
+        <span class="library-folder-name">${escapeHtml(folder.name)}</span>
+        <button type="button" class="library-subfolder" data-library-subfolder="${escapeHtml(folder.id)}" title="New subfolder">＋</button>
+        <span class="library-folder-count">${libraryNoteCount(folder.id) || ""}</span>
+      </div>
+      ${expanded ? children.map((child) => renderNode(child, depth + 1)).join("") : ""}
+    `;
+  };
+  const smartView = (id, label, icon, count) => `
+    <div class="library-folder-row smart ${librarySelectedFolderId === id ? "active" : ""}" data-library-folder="${id}">
+      <span class="library-twisty disabled">·</span>
+      <span class="folder-icon">${icon}</span>
+      <span class="library-folder-name">${label}</span>
+      <span class="library-folder-count">${count || ""}</span>
+    </div>
+  `;
+  const unfiled = `
+    <div class="library-folder-row ${librarySelectedFolderId === "UNFILED" ? "active" : ""}"
+         data-library-folder="UNFILED" data-drop-folder="" title="Notes not in any folder">
+      <span class="library-twisty disabled">·</span>
+      <span class="folder-icon">○</span>
+      <span class="library-folder-name">Unfiled</span>
+      <span class="library-folder-count">${libraryNoteCount(null) || ""}</span>
+    </div>
+  `;
+  tree.innerHTML = `
+    <div class="library-group-label">Views</div>
+    ${smartView("ALL", "All notes", "≡", libraryNotes.length)}
+    ${LIBRARY_KIND_VIEWS.map(([id, label, kind]) => smartView(id, label, "◆", libraryKindCount(kind))).join("")}
+    <div class="library-group-label library-folders-head">
+      <span>Folders</span>
+      <button type="button" class="library-subfolder" data-library-subfolder="ROOT" title="New folder">＋</button>
+    </div>
+    ${unfiled}
+    ${libraryChildFolders(null).map((folder) => renderNode(folder, 0)).join("") || `<div class="side-empty">No folders yet. Use ＋ to create one.</div>`}
+  `;
+}
+
+function renderLibraryNotes() {
+  const panel = viewRoot.querySelector("#library-notes");
+  if (!panel) return;
+  const sel = librarySelectedFolderId;
+  let notes;
+  let heading;
+  let eyebrow = "Folder";
+  let isRealFolder = false;
+  if (sel === "ALL") {
+    notes = libraryNotes; heading = "All notes"; eyebrow = "View";
+  } else if (sel === "UNFILED") {
+    notes = libraryNotes.filter((note) => !note.folderId); heading = "Unfiled";
+  } else if (sel.startsWith("KIND:")) {
+    const kind = sel.slice(5);
+    notes = libraryNotes.filter((note) => (note.sourceKind || "BLANK") === kind);
+    heading = LIBRARY_KIND_VIEWS.find(([id]) => id === sel)?.[1] || "Notes";
+    eyebrow = "View";
+  } else {
+    notes = libraryNotes.filter((note) => note.folderId === sel);
+    heading = libraryFolders.find((folder) => folder.id === sel)?.name || "Folder";
+    isRealFolder = true;
+  }
+  const kindBadge = (note) => ({ AI_NOTE: "AI Note", RAW: "PDF Markdown", IMPORT: "Imported", BLANK: "Note" }[note.sourceKind] || "Note");
+  panel.innerHTML = `
+    <div class="folder-content-head">
+      <div><div class="eyebrow">${eyebrow}</div><h2>${escapeHtml(heading)}</h2></div>
+      <div class="editor-actions">
+        <button type="button" class="ghost-button" data-library-action="new-folder" title="${isRealFolder ? `New subfolder in “${escapeHtml(heading)}”` : "New folder at top level"}">New folder</button>
+        <button type="button" class="ghost-button" data-library-action="import" title="${isRealFolder ? `Import into “${escapeHtml(heading)}”` : "Import into Unfiled"}">Import .md</button>
+        ${isRealFolder ? `
+          <button type="button" class="ghost-button" data-library-action="rename-folder">Rename</button>
+          <button type="button" class="ghost-button" data-library-action="delete-folder">Delete</button>
+        ` : ""}
+      </div>
+    </div>
+    <p class="library-hint">Drag a note onto a folder on the left to move it.</p>
+    <div class="library-note-list">
+      ${notes.map((note) => `
+        <article class="library-note-card" draggable="true" data-library-note="${escapeHtml(note.id)}">
+          <span class="library-drag-handle" title="Drag to a folder">⠿</span>
+          <button type="button" class="library-note-open" data-library-open="${escapeHtml(note.id)}">
+            <strong>${escapeHtml(note.title || "Untitled note")}</strong>
+            <span class="library-note-meta">${kindBadge(note)}${note.folderId && sel !== note.folderId ? ` · ${escapeHtml(libraryFolders.find((f) => f.id === note.folderId)?.name || "")}` : ""} · ${new Date(note.updatedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span>
+          </button>
+          <div class="library-note-actions">
+            <button type="button" class="icon-button" data-library-export="${escapeHtml(note.id)}" title="Export .md">↓</button>
+            <button type="button" class="icon-button" data-library-delete="${escapeHtml(note.id)}" title="Delete note">✕</button>
+          </div>
+        </article>
+      `).join("") || `<div class="side-empty">No notes here yet.</div>`}
+    </div>
+  `;
+}
+
+// Parent folder id used by New folder / Import / New note when the current
+// selection is a real folder; null (top level / Unfiled) otherwise.
+function currentLibraryFolderTarget() {
+  return isRealLibraryFolder() ? librarySelectedFolderId : null;
+}
+
+function isRealLibraryFolder() {
+  return librarySelectedFolderId !== "ALL"
+    && librarySelectedFolderId !== "UNFILED"
+    && !librarySelectedFolderId.startsWith("KIND:");
+}
+
+function selectLibraryFolder(id) {
+  librarySelectedFolderId = id;
+  localStorage.setItem("noteflowLibraryFolder", id);
+}
+
+// Expands every ancestor of a folder so it is visible in the tree.
+function expandLibraryAncestors(folderId) {
+  let current = libraryFolders.find((folder) => folder.id === folderId);
+  while (current && current.parentId) {
+    libraryExpanded.add(current.parentId);
+    current = libraryFolders.find((folder) => folder.id === current.parentId);
+  }
+  localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
+}
+
+async function moveLibraryNote(noteId, folderId) {
+  try {
+    await fetch(`${API_BASE_URL}/notes/${noteId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folderId: folderId || null, move: true }),
+    });
+    // Switch the right panel into the destination folder (or Unfiled).
+    if (folderId) {
+      expandLibraryAncestors(folderId);
+      selectLibraryFolder(folderId);
+    } else {
+      selectLibraryFolder("UNFILED");
+    }
+    await refreshLibrary();
+  } catch (error) {
+    console.error("Move failed:", error);
+  }
+}
+
+async function createLibraryFolder(parentId) {
+  const name = prompt(parentId ? "New subfolder name" : "New folder name", "New folder");
+  if (name === null || !name.trim()) return;
+  const folder = await (await fetch(`${API_BASE_URL}/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: name.trim(), parentId: parentId || null }),
+  })).json();
+  if (parentId) {
+    libraryExpanded.add(parentId);
+    localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
+  }
+  if (folder && folder.id) selectLibraryFolder(folder.id);
+  await refreshLibrary();
+}
+
+function wireLibraryEvents() {
+  const importInput = viewRoot.querySelector("#library-import-input");
+  importInput.addEventListener("change", async () => {
+    const targetFolder = currentLibraryFolderTarget();
+    for (const file of Array.from(importInput.files || [])) {
+      const form = new FormData();
+      form.append("file", file);
+      if (targetFolder) form.append("folderId", targetFolder);
+      try {
+        await fetch(`${API_BASE_URL}/notes/import`, { method: "POST", body: form });
+      } catch (error) {
+        console.error("Import failed:", error);
+      }
+    }
+    importInput.value = "";
+    await refreshLibrary();
+  });
+
+  viewRoot.addEventListener("click", async (event) => {
+    const subfolder = event.target.closest("[data-library-subfolder]");
+    if (subfolder) {
+      const parent = subfolder.dataset.librarySubfolder;
+      await createLibraryFolder(parent === "ROOT" ? null : parent);
+      return;
+    }
+    const action = event.target.closest("[data-library-action]");
+    if (action) {
+      await handleLibraryAction(action.dataset.libraryAction);
+      return;
+    }
+    const toggle = event.target.closest("[data-library-toggle]");
+    if (toggle) {
+      const id = toggle.dataset.libraryToggle;
+      if (libraryExpanded.has(id)) libraryExpanded.delete(id);
+      else libraryExpanded.add(id);
+      localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
+      renderLibraryTree();
+      return;
+    }
+    const folderRow = event.target.closest("[data-library-folder]");
+    if (folderRow) {
+      selectLibraryFolder(folderRow.dataset.libraryFolder);
+      renderLibraryTree();
+      renderLibraryNotes();
+      return;
+    }
+    const open = event.target.closest("[data-library-open]");
+    if (open) {
+      openStandaloneNoteInEditor(open.dataset.libraryOpen);
+      return;
+    }
+    const exportBtn = event.target.closest("[data-library-export]");
+    if (exportBtn) {
+      window.location.href = `${API_BASE_URL}/notes/${exportBtn.dataset.libraryExport}/export`;
+      return;
+    }
+    const del = event.target.closest("[data-library-delete]");
+    if (del) {
+      if (!confirm("Delete this note? This cannot be undone.")) return;
+      await fetch(`${API_BASE_URL}/notes/${del.dataset.libraryDelete}`, { method: "DELETE" });
+      await refreshLibrary();
+      return;
+    }
+  });
+
+  // Drag a note card onto a folder (or Unfiled) to move it — file-explorer style.
+  viewRoot.addEventListener("dragstart", (event) => {
+    const card = event.target.closest("[data-library-note]");
+    if (!card) return;
+    libraryDragNoteId = card.dataset.libraryNote;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", libraryDragNoteId);
+    card.classList.add("dragging");
+  });
+  viewRoot.addEventListener("dragend", (event) => {
+    const card = event.target.closest("[data-library-note]");
+    if (card) card.classList.remove("dragging");
+    libraryDragNoteId = null;
+    viewRoot.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+  });
+  viewRoot.addEventListener("dragover", (event) => {
+    const target = event.target.closest("[data-drop-folder]");
+    if (!target || !libraryDragNoteId) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    viewRoot.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+    target.classList.add("drop-target");
+  });
+  viewRoot.addEventListener("dragleave", (event) => {
+    const target = event.target.closest("[data-drop-folder]");
+    if (target && !target.contains(event.relatedTarget)) target.classList.remove("drop-target");
+  });
+  viewRoot.addEventListener("drop", async (event) => {
+    const target = event.target.closest("[data-drop-folder]");
+    if (!target) return;
+    event.preventDefault();
+    const noteId = libraryDragNoteId || event.dataTransfer.getData("text/plain");
+    target.classList.remove("drop-target");
+    libraryDragNoteId = null;
+    if (noteId) await moveLibraryNote(noteId, target.dataset.dropFolder || null);
+  });
+}
+
+async function handleLibraryAction(kind) {
+  try {
+    if (kind === "new-folder") {
+      await createLibraryFolder(currentLibraryFolderTarget());
+    } else if (kind === "rename-folder" && isRealLibraryFolder()) {
+      const current = libraryFolders.find((folder) => folder.id === librarySelectedFolderId);
+      const name = prompt("Rename folder", current?.name || "");
+      if (name === null || !name.trim()) return;
+      await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), move: false }),
+      });
+      await refreshLibrary();
+    } else if (kind === "delete-folder" && isRealLibraryFolder()) {
+      if (!confirm("Delete this folder and its subfolders? Notes inside are moved to Unfiled.")) return;
+      await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, { method: "DELETE" });
+      selectLibraryFolder("ALL");
+      await refreshLibrary();
+    } else if (kind === "new-note") {
+      const folderId = currentLibraryFolderTarget();
+      const response = await fetch(`${API_BASE_URL}/notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Untitled note", markdown: "", folderId, sourceKind: "BLANK" }),
+      });
+      const note = await readJson(response);
+      await refreshLibrary();
+      openStandaloneNoteInEditor(note.id);
+    } else if (kind === "import") {
+      viewRoot.querySelector("#library-import-input")?.click();
+    }
+  } catch (error) {
+    console.error("Library action failed:", error);
+  }
 }
 
 async function renderEditorView() {
   const documents = Array.from(documentsMap.values());
-  // Drop tabs whose documents no longer exist. When the last tab is closed,
-  // keep a separate start document so Start Over can re-initialize it.
-  editorTabs = editorTabs.filter((id) => documentsMap.has(id));
+  // Reconcile tabs: keep note tabs (backed by the library), drop document tabs
+  // whose document no longer exists.
+  editorTabs = editorTabs.filter((key) => isNoteTabKey(key) ? true : documentsMap.has(key));
   if (editorStartDocumentId && !documentsMap.has(editorStartDocumentId)) editorStartDocumentId = null;
-  if (editorTabs.length && activeDocumentId && documentsMap.has(activeDocumentId) && !editorTabs.includes(activeDocumentId)) {
+  if (activeDocumentId && documentsMap.has(activeDocumentId) && !editorTabs.includes(activeDocumentId)) {
     editorTabs.push(activeDocumentId);
   }
-  if (!activeDocumentId && editorTabs.length) activeDocumentId = editorTabs[0];
-  if (!editorTabs.length && activeDocumentId) {
-    editorStartDocumentId = activeDocumentId;
-    activeDocumentId = null;
-    localStorage.setItem("noteflowActiveDocument", "");
+  // Resolve the active tab. A note tab wins when editorNoteId points at one.
+  if (editorNoteId && !editorTabs.includes(`note:${editorNoteId}`)) editorNoteId = null;
+  if (!editorNoteId && !activeDocumentId && editorTabs.length) {
+    const first = editorTabs[0];
+    if (isNoteTabKey(first)) editorNoteId = noteIdFromKey(first);
+    else activeDocumentId = first;
   }
   if (!editorStartDocumentId && documents.length) editorStartDocumentId = documents[0].id;
   localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId || "");
   persistEditorTabs();
-  const doc = activeDocument();
+  const doc = editorNoteId ? null : activeDocument();
   const startDoc = doc || (editorStartDocumentId ? documentsMap.get(editorStartDocumentId) : null) || null;
-  const showHome = editorHomeMode || !editorTabs.length || !doc;
+  const hasActive = Boolean(editorNoteId || doc);
+  const showHome = editorHomeMode || !editorTabs.length || !hasActive;
   if (showHome) {
     editorHomeMode = true;
     localStorage.setItem("noteflowEditorHome", "1");
@@ -1431,32 +1860,32 @@ async function renderEditorView() {
           <h1>My Notes</h1>
         </div>
       </div>
-      ${renderEditorTabs(documents)}
+      ${renderEditorTabs()}
       <section class="editor-home-page">
         <div class="editor-home-inner">
           ${renderEditorStartContent()}
         </div>
       </section>
       ${renderEditorSourceModal()}
-      ${renderEditorSaveModal(documents)}
     `;
     wireEditorHomeEvents();
     return;
   }
+  const headerTitle = editorNoteId ? (editorNoteTitles[editorNoteId] || "Note") : (doc || startDoc)?.title;
   viewRoot.innerHTML = `
     <div class="view-header editor-header">
       <div>
-        <div class="eyebrow">Editor${(doc || startDoc) ? ` · ${escapeHtml((doc || startDoc).title)}` : ""}</div>
+        <div class="eyebrow">Editor${headerTitle ? ` · ${escapeHtml(headerTitle)}` : ""}</div>
         <h1>My Notes</h1>
       </div>
       <div class="editor-actions">
         <span id="editor-save-status" class="editor-save-status"></span>
-        <button type="button" class="ghost-button" data-editor-action="save" ${!doc ? "disabled" : ""}>Save</button>
+        ${editorNoteId ? `<button type="button" class="ghost-button" data-editor-action="rename">Rename</button>` : ""}
         <button type="button" class="ghost-button" data-editor-action="reinit" ${!startDoc ? "disabled" : ""}>Start over…</button>
-        <button type="button" data-editor-action="export" ${!doc ? "disabled" : ""}>Export .md</button>
+        <button type="button" data-editor-action="export">Export .md</button>
       </div>
     </div>
-    ${renderEditorTabs(documents)}
+    ${renderEditorTabs()}
     <div class="editor-columns ${editorOutlineVisible ? "with-outline" : ""}">
       <section class="editor-pane">
         <div id="editor-toolbar" class="editor-toolbar">
@@ -1496,74 +1925,35 @@ async function renderEditorView() {
         <div id="editor-outline-body" class="outline-body"></div>
       </aside>
     </div>
-    ${renderEditorSaveModal(documents)}
   `;
   wireEditorEvents(doc, startDoc);
-  if (!editorTabs.length) {
-    editorHomeMode = true;
-    localStorage.setItem("noteflowEditorHome", "1");
-    navigate("editor");
-    return;
+  if (editorNoteId) {
+    await loadStandaloneNote(editorNoteId);
+  } else {
+    await loadEditorNote(doc);
   }
-  await loadEditorNote(doc);
 }
 
 function renderEditorStartContent() {
   return `
     <div class="editor-start">
-      <h2>Start over</h2>
-      <p class="editor-start-sub">Pick a starting point. Existing document tabs stay open.</p>
+      <h2>New note</h2>
+      <p class="editor-start-sub">Blank notes are saved to your Files library. You can also seed a note from a document.</p>
       <div class="editor-start-options">
+        <button type="button" class="editor-start-card" data-editor-blank>
+          <span class="start-card-title">Blank note</span>
+          <span class="start-card-sub">Create a note in your library and start writing.</span>
+        </button>
         <button type="button" class="editor-start-card" data-editor-source-picker="AI_NOTE">
           <span class="start-card-title">From AI Note</span>
-          <span class="start-card-sub">Choose a READY AI note to copy into the editor.</span>
+          <span class="start-card-sub">Choose a READY AI note to copy into a document note.</span>
         </button>
         <button type="button" class="editor-start-card" data-editor-source-picker="RAW">
           <span class="start-card-title">From PDF Markdown</span>
           <span class="start-card-sub">Choose a parsed PDF Markdown file to copy.</span>
         </button>
-        <button type="button" class="editor-start-card" data-editor-blank>
-          <span class="start-card-title">Blank note</span>
-          <span class="start-card-sub">Start a blank note, then choose where to save it.</span>
-        </button>
       </div>
       <div id="editor-start-error"></div>
-    </div>
-  `;
-}
-
-function renderEditorSaveModal(documents) {
-  const folders = editorFolders(documents);
-  return `
-    <div id="editor-save-modal" class="modal-overlay" hidden>
-      <div class="modal-card">
-        <div class="modal-head">
-          <h3>Save note</h3>
-          <button type="button" class="icon-button" id="editor-save-close" title="Close">✕</button>
-        </div>
-        <p class="modal-sub">Choose an existing folder or create a local folder for this editable note.</p>
-        <div class="modal-body editor-save-body">
-          <label>Note title
-            <input id="editor-save-title" type="text" value="${escapeHtml(editorDraftTitle)}" />
-          </label>
-          <div class="source-group-label">Existing folders</div>
-          <div class="save-folder-list">
-            ${folders.map((folder) => `
-              <button type="button" class="save-folder-row ${folder.id === (editorDraftFolderId || activeDocumentId) ? "active" : ""}" data-save-folder="${escapeHtml(folder.id)}">
-                <span>${escapeHtml(folder.name)}</span>
-                <small>${folder.local ? `${folder.resources.length} notes` : escapeHtml(folder.doc.title)}</small>
-              </button>
-            `).join("") || `<div class="side-empty">No folders yet.</div>`}
-          </div>
-          <label>New folder
-            <input id="editor-new-folder" type="text" placeholder="Folder name" />
-          </label>
-        </div>
-        <div class="modal-foot">
-          <button type="button" class="ghost-button" id="editor-save-cancel">Cancel</button>
-          <button type="button" id="editor-save-confirm">Save</button>
-        </div>
-      </div>
     </div>
   `;
 }
@@ -1647,166 +2037,24 @@ function wireEditorHomeEvents() {
       sourceDocButton.disabled = false;
     }
   });
-  wireEditorSaveModal();
 }
 
-function wireEditorFolderBrowserEvents() {
-  const browser = viewRoot.querySelector(".editor-folder-browser");
-  if (!browser) return;
-  browser.addEventListener("click", async (event) => {
-    const folderButton = event.target.closest("[data-editor-folder]");
-    if (folderButton) {
-      editorSidebarFolderId = folderButton.dataset.editorFolder;
-      editorDraftFolderId = editorSidebarFolderId;
-      localStorage.setItem("noteflowEditorSidebarFolder", editorSidebarFolderId);
-      viewRoot.querySelector(".editor-folder-browser").outerHTML =
-        renderEditorFolderBrowser(Array.from(documentsMap.values()), editorSidebarFolderId);
-      wireEditorFolderBrowserEvents();
-      return;
-    }
-    const folderSource = event.target.closest("[data-editor-folder-source]");
-    if (!folderSource) return;
-    if (folderSource.dataset.editorFolderSource === "LOCAL_NOTE") {
-      const folder = editorLocalFolders.find((candidate) => candidate.id === folderSource.dataset.editorFolderDoc);
-      const note = folder?.notes?.find((candidate) => candidate.id === folderSource.dataset.editorLocalNote);
-      if (folder && note) await openLocalEditorNote(folder, note);
-      return;
-    }
-    const doc = documentsMap.get(folderSource.dataset.editorFolderDoc);
-    if (!doc) return;
-    folderSource.disabled = true;
-    try {
-      await initEditorNote(doc, folderSource.dataset.editorFolderSource);
-    } finally {
-      folderSource.disabled = false;
-    }
-  });
-}
-
-async function openLocalEditorNote(folder, note) {
-  currentView = "editor";
-  localStorage.setItem("noteflowView", "editor");
-  document.querySelectorAll("[data-nav]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.nav === "editor");
-  });
-  viewRoot.classList.add("editor-mode");
-  viewRoot.classList.remove("agent-mode");
-  editorHomeMode = false;
-  editorUnsavedDraft = true;
-  editorSidebarFolderId = null;
-  editorDraftFolderId = folder.id;
-  editorDraftTitle = note.title;
-  editorLocalNoteRef = { folderId: folder.id, noteId: note.id };
-  editorDocumentId = null;
-  editorFullMarkdown = note.markdown || "";
-  localStorage.setItem("noteflowEditorHome", "0");
-  localStorage.removeItem("noteflowEditorSidebarFolder");
-  viewRoot.innerHTML = `
-    <div class="view-header editor-header">
-      <div>
-        <div class="eyebrow">Editor · ${escapeHtml(folder.name)}</div>
-        <h1>${escapeHtml(note.title)}</h1>
-      </div>
-      <div class="editor-actions">
-        <span id="editor-save-status" class="editor-save-status">Local</span>
-        <button type="button" class="ghost-button" data-editor-action="save">Save</button>
-      </div>
-    </div>
-    ${renderEditorTabs(Array.from(documentsMap.values()))}
-    ${renderEditorEditingShell(false)}
-    ${renderEditorSaveModal(Array.from(documentsMap.values()))}
-  `;
-  wireEditorEvents(null, null);
-  wireEditorSaveModal();
-  await loadEditorMarkdownSections({ id: null, title: note.title }, note.markdown || "");
-}
-
-function renderEditorEditingShell(withOutline = editorOutlineVisible) {
-  return `
-    <div class="editor-columns ${withOutline ? "with-outline" : ""}">
-      <section class="editor-pane">
-        <div id="editor-toolbar" class="editor-toolbar">
-          <button type="button" class="ed-btn ed-icon" data-ed-tool="undo" title="Undo (⌘Z)">${ICON_UNDO}</button>
-          <button type="button" class="ed-btn ed-icon" data-ed-tool="redo" title="Redo (⇧⌘Z)">${ICON_REDO}</button>
-          <span class="ed-sep"></span>
-          <div class="ed-dropdown">
-            <button type="button" class="ed-btn" data-ed-menu>Turn into ▾</button>
-            <div class="ed-menu" hidden>
-              ${[["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"], ["h4", "Heading 4"], ["bullet", "Bulleted list"], ["ordered", "Numbered list"], ["quote", "Quote"], ["code", "Code block"]]
-                .map(([kind, label]) => `<button type="button" class="ed-menu-item" data-ed-turninto="${kind}">${escapeHtml(label)}</button>`)
-                .join("")}
-            </div>
-          </div>
-          <span class="ed-flex"></span>
-          ${withOutline ? `<button type="button" class="ed-btn active" data-ed-tool="outline" title="Toggle heading outline">☰ Outline</button>` : ""}
-        </div>
-        <div id="editor-note-shell" class="editor-note-shell"><div class="study-loading">Preparing editor…</div></div>
-      </section>
-      ${withOutline ? `<aside id="editor-outline" class="editor-outline"><div class="outline-title">Outline</div><div id="editor-outline-body" class="outline-body"></div></aside>` : ""}
-    </div>
-  `;
-}
-
-function wireEditorSaveModal() {
-  const modal = viewRoot.querySelector("#editor-save-modal");
-  if (!modal) return;
-  const close = () => { modal.hidden = true; };
-  const open = () => {
-    const title = modal.querySelector("#editor-save-title");
-    if (title) title.value = editorDraftTitle;
-    modal.hidden = false;
-  };
-  viewRoot.querySelectorAll("[data-editor-open-save]").forEach((button) => {
-    button.addEventListener("click", open);
-  });
-  modal.addEventListener("click", async (event) => {
-    if (event.target === modal || event.target.closest("#editor-save-close") || event.target.closest("#editor-save-cancel")) {
-      close();
-      return;
-    }
-    const folder = event.target.closest("[data-save-folder]");
-    if (folder) {
-      editorDraftFolderId = folder.dataset.saveFolder;
-      modal.querySelectorAll(".save-folder-row").forEach((row) => row.classList.toggle("active", row === folder));
-      return;
-    }
-    if (event.target.closest("#editor-save-confirm")) {
-      await saveEditorToChosenFolder(modal);
-    }
-  });
-}
-
+// Blank note: create a backend note (Unfiled) and open it as a note tab, so it
+// is persisted and appears in the Files library immediately.
 async function startBlankEditorDraft() {
-  editorHomeMode = false;
-  editorUnsavedDraft = true;
-  editorSidebarFolderId = null;
-  editorDraftTitle = "Untitled note";
-  editorLocalNoteRef = null;
-  editorDocumentId = null;
-  editorFullMarkdown = "";
-  editorSections = splitMarkdownSections("");
-  editorLoadedSectionStart = 0;
-  editorLoadedSectionEnd = editorSections.length;
-  localStorage.setItem("noteflowEditorHome", "0");
-  localStorage.removeItem("noteflowEditorSidebarFolder");
-  viewRoot.innerHTML = `
-    <div class="view-header editor-header">
-      <div>
-        <div class="eyebrow">Editor · Unsaved</div>
-        <h1>${escapeHtml(editorDraftTitle)}</h1>
-      </div>
-      <div class="editor-actions">
-        <span id="editor-save-status" class="editor-save-status warn">Unsaved</span>
-        <button type="button" class="ghost-button" data-editor-action="save">Save</button>
-      </div>
-    </div>
-    ${renderEditorTabs(Array.from(documentsMap.values()))}
-    ${renderEditorEditingShell(false)}
-    ${renderEditorSaveModal(Array.from(documentsMap.values()))}
-  `;
-  wireEditorEvents(null, null);
-  wireEditorSaveModal();
-  await bootEditor({ id: null, title: editorDraftTitle }, "");
+  try {
+    const response = await fetch(`${API_BASE_URL}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Untitled note", markdown: "", folderId: null, sourceKind: "BLANK" }),
+    });
+    const note = await readJson(response);
+    if (!response.ok) throw new Error(note.message || "Could not create note");
+    openStandaloneNoteInEditor(note.id, note.title);
+  } catch (error) {
+    const errorBox = viewRoot.querySelector("#editor-start-error");
+    if (errorBox) errorBox.innerHTML = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
+  }
 }
 
 function wireEditorEvents(doc, startDoc = doc) {
@@ -1854,24 +2102,32 @@ function wireEditorEvents(doc, startDoc = doc) {
       jumpToEditorSection(Number(item.dataset.editorSectionIndex));
     });
   }
-  viewRoot.querySelector(".editor-header").addEventListener("click", (event) => {
+  viewRoot.querySelector(".editor-header").addEventListener("click", async (event) => {
     const action = event.target.closest("[data-editor-action]");
     if (!action) return;
-    if (action.dataset.editorAction === "save") {
-      const modal = viewRoot.querySelector("#editor-save-modal");
-      if (modal) {
-        const title = modal.querySelector("#editor-save-title");
-        if (title) title.value = editorDraftTitle || editorNoteTitle || activeDocument()?.title || "Untitled note";
-        modal.hidden = false;
+    if (action.dataset.editorAction === "rename" && editorNoteId) {
+      const current = editorNoteTitles[editorNoteId] || editorNoteTitle || "Untitled note";
+      const name = prompt("Rename note", current);
+      if (name === null || !name.trim()) return;
+      editorNoteTitle = name.trim();
+      editorNoteTitles[editorNoteId] = editorNoteTitle;
+      localStorage.setItem("noteflowEditorNoteTitles", JSON.stringify(editorNoteTitles));
+      try {
+        await fetch(`${API_BASE_URL}/notes/${editorNoteId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: editorNoteTitle }),
+        });
+      } catch (error) {
+        console.error("Rename failed:", error);
       }
+      navigate("editor");
     }
     if (action.dataset.editorAction === "export") exportEditorMarkdown(activeDocument() || startDoc);
     if (action.dataset.editorAction === "reinit") {
       editorHomeMode = true;
-      editorSidebarFolderId = null;
       editorStartDocumentId = startDoc?.id || activeDocumentId || editorStartDocumentId;
       localStorage.setItem("noteflowEditorHome", "1");
-      localStorage.removeItem("noteflowEditorSidebarFolder");
       localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId || "");
       navigate("editor");
     }
@@ -1882,7 +2138,6 @@ async function loadEditorNote(doc) {
   const shell = viewRoot.querySelector("#editor-note-shell");
   if (!shell) return;
   if (!doc) return;
-  editorLocalNoteRef = null;
   try {
     const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/editable-note`);
     if (response.status === 404) {
@@ -1898,7 +2153,6 @@ async function loadEditorNote(doc) {
     editorOfflineMode = false;
     editorNoteTitle = payload.title || `${doc.title} - My Notes`;
     editorDraftTitle = editorNoteTitle;
-    editorDraftFolderId = doc.id;
     await loadEditorMarkdownSections(doc, payload.markdown || "");
     setEditorStatus("Saved");
   } catch (error) {
@@ -1908,12 +2162,31 @@ async function loadEditorNote(doc) {
       const local = parseJsonSafe(localStorage.getItem(editorLocalKey(doc.id)));
       editorNoteTitle = local?.title || `${doc.title} - My Notes`;
       editorDraftTitle = editorNoteTitle;
-      editorDraftFolderId = doc.id;
       await loadEditorMarkdownSections(doc, local?.markdown || "");
       setEditorStatus("Offline · stored in this browser", true);
       return;
     }
     shell.innerHTML = `<div class="status-card study-error">${escapeHtml(error.message || "Could not load the note")}</div>`;
+  }
+}
+
+// Loads a standalone (folder-backed) note into the editor.
+async function loadStandaloneNote(noteId) {
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  if (!shell) return;
+  editorOfflineMode = false;
+  try {
+    const response = await fetch(`${API_BASE_URL}/notes/${noteId}`);
+    const payload = await readJson(response);
+    if (!response.ok) throw new Error(payload.message || "Could not load the note");
+    editorNoteTitle = payload.title || "Untitled note";
+    editorDraftTitle = editorNoteTitle;
+    editorNoteTitles[noteId] = editorNoteTitle;
+    localStorage.setItem("noteflowEditorNoteTitles", JSON.stringify(editorNoteTitles));
+    await loadEditorMarkdownSections({ id: null, title: editorNoteTitle }, payload.markdown || "");
+    setEditorStatus("Saved");
+  } catch (error) {
+    shell.innerHTML = `<div class="status-card study-error">${escapeHtml(error.message || formatFetchError(error))}</div>`;
   }
 }
 
@@ -1932,16 +2205,12 @@ async function initEditorNote(doc, source) {
       persistEditorTabs();
     }
     activeDocumentId = doc.id;
+    editorNoteId = null;
     editorStartDocumentId = doc.id;
     editorHomeMode = false;
-    editorUnsavedDraft = false;
-    editorLocalNoteRef = null;
-    editorSidebarFolderId = null;
-    editorDraftFolderId = doc.id;
     localStorage.setItem("noteflowActiveDocument", activeDocumentId);
     localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
     localStorage.setItem("noteflowEditorHome", "0");
-    localStorage.removeItem("noteflowEditorSidebarFolder");
     navigate("editor");
     return;
   } catch (error) {
@@ -2250,28 +2519,32 @@ function scheduleEditorSave(markdown) {
 
 async function persistEditorMarkdown(markdown) {
   const documentId = editorDocumentId;
+  const noteId = editorNoteId;
   applyEditorSectionMarkdown(markdown);
   const fullMarkdown = editorFullMarkdown;
   editorDirty = false;
   rebuildEditorOutline();
   updateEditorSentinel();
-  if (!documentId) {
-    if (editorLocalNoteRef) {
-      const folder = editorLocalFolders.find((candidate) => candidate.id === editorLocalNoteRef.folderId);
-      const note = folder?.notes?.find((candidate) => candidate.id === editorLocalNoteRef.noteId);
-      if (folder && note) {
-        note.title = editorDraftTitle || note.title || "Untitled note";
-        note.markdown = fullMarkdown;
-        note.updatedAt = new Date().toISOString();
-        persistEditorLocalFolders();
-        setEditorStatus(`Saved to ${folder.name}`);
-        return;
-      }
-      editorLocalNoteRef = null;
+  // Standalone library note.
+  if (noteId) {
+    try {
+      const response = await fetch(`${API_BASE_URL}/notes/${noteId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editorNoteTitle, markdown: fullMarkdown }),
+      });
+      if (!response.ok) throw new Error("Save failed");
+      setEditorStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
+    } catch {
+      setEditorStatus("Could not save (offline)", true);
     }
+    return;
+  }
+  if (!documentId) {
     setEditorStatus("Unsaved draft", true);
     return;
   }
+  // Per-document editable note.
   if (!editorOfflineMode) {
     try {
       const response = await fetch(`${API_BASE_URL}/documents/${documentId}/editable-note`, {
@@ -2291,49 +2564,6 @@ async function persistEditorMarkdown(markdown) {
     setEditorStatus("Offline · stored in this browser", true);
   } catch {
     setEditorStatus("Could not save (storage full)", true);
-  }
-}
-
-async function saveEditorToChosenFolder(modal) {
-  const newFolderName = modal.querySelector("#editor-new-folder")?.value.trim();
-  if (newFolderName) {
-    const folder = {
-      id: `local-${Date.now()}`,
-      name: newFolderName,
-      notes: [],
-    };
-    editorLocalFolders.push(folder);
-    editorDraftFolderId = folder.id;
-  }
-  const selectedFolderId = editorDraftFolderId || activeDocumentId || Array.from(documentsMap.keys())[0];
-  const selectedDoc = selectedFolderId ? documentsMap.get(selectedFolderId) : null;
-  const localFolder = selectedFolderId
-    ? ensureEditorLocalFolder(selectedFolderId, selectedDoc ? folderNameForDocument(selectedDoc) : "Untitled folder")
-    : null;
-  const markdown = editorInstance ? composeEditorFullMarkdown(editorInstance.getMarkdown()) : editorFullMarkdown;
-  editorDraftTitle = modal.querySelector("#editor-save-title")?.value.trim() || "Untitled note";
-  if (localFolder) {
-    const existingNote = editorLocalNoteRef?.folderId === localFolder.id
-      ? localFolder.notes.find((note) => note.id === editorLocalNoteRef.noteId)
-      : localFolder.notes.find((note) => note.title === editorDraftTitle);
-    const note = existingNote || { id: `note-${Date.now()}`, title: editorDraftTitle, markdown: "" };
-    note.title = editorDraftTitle;
-    note.markdown = markdown;
-    note.updatedAt = new Date().toISOString();
-    if (!existingNote) localFolder.notes.push(note);
-    persistEditorLocalFolders();
-    editorUnsavedDraft = false;
-    editorLocalNoteRef = { folderId: localFolder.id, noteId: note.id };
-    editorDocumentId = null;
-    editorNoteTitle = editorDraftTitle;
-    editorFullMarkdown = markdown;
-    modal.hidden = true;
-    setEditorStatus(`Saved to ${localFolder.name}`);
-    return;
-  }
-  if (!selectedFolderId) {
-    setEditorStatus("Create or upload a folder first", true);
-    return;
   }
 }
 
@@ -2387,6 +2617,16 @@ document.addEventListener("click", async (event) => {
     navigate(nav.dataset.nav);
     return;
   }
+  const conversationNew = event.target.closest("[data-conversation-new]");
+  if (conversationNew) {
+    startNewConversation();
+    return;
+  }
+  const conversationRow = event.target.closest("[data-conversation-id]");
+  if (conversationRow) {
+    await selectConversation(conversationRow.dataset.conversationId);
+    return;
+  }
   const docSelect = event.target.closest("[data-doc-select]");
   if (docSelect && !event.target.closest("[data-study-action]")) {
     selectDocument(docSelect.dataset.docSelect);
@@ -2402,28 +2642,14 @@ document.addEventListener("click", async (event) => {
   }
   const editorTabCreate = event.target.closest("[data-editor-tab-create]");
   if (editorTabCreate) {
-    const startDoc = activeDocument() || (editorStartDocumentId ? documentsMap.get(editorStartDocumentId) : null) || Array.from(documentsMap.values())[0] || null;
-    if (startDoc) {
-      editorStartDocumentId = startDoc.id;
-      localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
-    }
     editorHomeMode = true;
-    editorSidebarFolderId = null;
     localStorage.setItem("noteflowEditorHome", "1");
-    localStorage.removeItem("noteflowEditorSidebarFolder");
     navigate("editor");
     return;
   }
   const editorTab = event.target.closest("[data-editor-tab]");
-  if (editorTab) {
-    activeDocumentId = editorTab.dataset.editorTab;
-    editorHomeMode = false;
-    editorUnsavedDraft = false;
-    editorSidebarFolderId = null;
-    localStorage.setItem("noteflowActiveDocument", activeDocumentId);
-    localStorage.setItem("noteflowEditorHome", "0");
-    localStorage.removeItem("noteflowEditorSidebarFolder");
-    navigate("editor");
+  if (editorTab && !event.target.closest("[data-editor-tab-close]")) {
+    activateEditorTab(editorTab.dataset.editorTab);
     return;
   }
   const refreshView = event.target.closest("[data-refresh-view]");
@@ -2611,6 +2837,13 @@ function formatBytes(bytes) {
   const units = ["B", "KB", "MB", "GB"];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatConversationTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function formatFetchError(error) {

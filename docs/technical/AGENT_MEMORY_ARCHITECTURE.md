@@ -285,12 +285,30 @@ user profile in prompts and **must never be cited as academic evidence** —
 factual answers still require retrieved source evidence, per the multi-turn
 RAG contract.
 
-The browser uses `POST /conversations/{id}/messages` and polls the assistant
-resource until `COMPLETED` or `FAILED`. This first vertical deliberately uses
-polling rather than SSE; message and citation state is durable, so browser
-navigation or reload does not lose a turn. The implementation is an explicit
-pipeline, not LangGraph. LangGraph remains an optional orchestration direction
-for later branching/tool workflows and is not required by this linear contract.
+The browser conversation surface uses the persisted conversation APIs directly:
+
+| Browser operation | API contract | Recovery behavior |
+|---|---|---|
+| Conversation sidebar | `GET /conversations` | If the browser has no active `localStorage.noteflowConversationId`, the newest active conversation is selected from the durable server list. |
+| Switch conversation | `GET /conversations/{id}/messages` | The in-memory chat array is rebuilt from persisted `rag_messages`; the local id is preserved even if a transient request fails. |
+| New chat | `POST /conversations` on first send | The created row is inserted into the sidebar immediately, then the list is refreshed from the server after the turn completes. |
+| Send message | `POST /conversations/{id}/messages` | The browser polls `GET /conversations/messages/{assistantMessageId}` until `COMPLETED` or `FAILED`. |
+| Reload with pending answer | `GET /conversations/{id}/messages` + message polling | `GENERATING` assistant placeholders are shown and polling resumes for those message ids. |
+
+This first vertical deliberately uses polling rather than SSE; message and
+citation state is durable, so browser navigation or reload does not lose a
+turn. The UI must not delete the saved conversation pointer merely because one
+hydrate request fails, because the database remains the source of truth and the
+sidebar can recover from the durable `GET /conversations` list.
+
+The message read API orders turns by `created_at`, then by role priority
+(`USER` before `ASSISTANT`) before UUID. This avoids a random UUID tie-break
+when the user and assistant placeholder are inserted in the same transaction and
+therefore share the same timestamp.
+
+The implementation is an explicit pipeline, not LangGraph. LangGraph remains an
+optional orchestration direction for later branching/tool workflows and is not
+required by this linear contract.
 
 ---
 

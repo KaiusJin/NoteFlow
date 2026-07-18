@@ -49,7 +49,11 @@ public class ConversationService {
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> row : jdbc.queryForList("""
             SELECT id,role,status,content_markdown,model_provider,model_name,error_message,created_at,completed_at
-              FROM rag_messages WHERE conversation_id=? ORDER BY created_at,id
+              FROM rag_messages
+             WHERE conversation_id=?
+             ORDER BY created_at,
+                      CASE role WHEN 'USER' THEN 0 WHEN 'ASSISTANT' THEN 1 ELSE 2 END,
+                      id
             """, conversationId)) {
             result.add(withCitations(row));
         }

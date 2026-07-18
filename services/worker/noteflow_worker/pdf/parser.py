@@ -629,20 +629,6 @@ def estimate_tokens(text: str) -> int:
     return max(word_estimate, char_estimate)
 
 
-def detect_content_source_type(page_count: int, extracted_text_length: int, document_type: str) -> str:
-    """Legacy compatibility helper; routing uses per-page profiles instead."""
-    if page_count == 0:
-        return "UNKNOWN"
-    chars_per_page = extracted_text_length / page_count
-    if document_type == "HANDWRITTEN_NOTES" and chars_per_page < 100:
-        return "HANDWRITTEN_SCAN"
-    if chars_per_page < 100:
-        return "SCANNED_PDF"
-    if chars_per_page < 300:
-        return "MIXED"
-    return "TEXT_PDF"
-
-
 def ensure_pdf_exists(path: str) -> None:
     if not Path(path).exists():
         raise FileNotFoundError(f"PDF not found: {path}")

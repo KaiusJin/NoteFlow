@@ -382,7 +382,7 @@ All P0/P1 items above were addressed by the Converter V2 rewrite; see
 
 | Fact | Location |
 |---|---|
-| Source-type thresholds | `pdf/parser.py::detect_content_source_type` |
+| Source-type thresholds | Historical `pdf/parser.py::detect_content_source_type` helper, removed after Converter V2 moved source detection to per-page profiles |
 | Routing priority | `pdf/strategies.py::resolve_processing_strategy` |
 | The two main pipelines | `pipelines/parse_document.py::ParseDocumentPipeline.run` |
 | Page rendering and OCR conditions | `pdf/visual.py::analyze_pdf_visuals`, `should_run_ocr` |

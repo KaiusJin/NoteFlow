@@ -28,33 +28,6 @@ public class DocumentEditableNote {
     protected DocumentEditableNote() {
     }
 
-    public DocumentEditableNote(UUID id, UUID documentId, UUID userId, String title, String markdown,
-            String sourceKind) {
-        this.id = id;
-        this.documentId = documentId;
-        this.userId = userId;
-        this.title = title;
-        this.markdown = markdown == null ? "" : markdown;
-        this.sourceKind = sourceKind;
-        this.createdAt = Instant.now();
-        this.updatedAt = this.createdAt;
-    }
-
-    public void update(String title, String markdown) {
-        if (title != null && !title.isBlank()) {
-            this.title = title;
-        }
-        this.markdown = markdown == null ? "" : markdown;
-        this.updatedAt = Instant.now();
-    }
-
-    public void reset(String title, String markdown, String sourceKind) {
-        this.title = title;
-        this.markdown = markdown == null ? "" : markdown;
-        this.sourceKind = sourceKind;
-        this.updatedAt = Instant.now();
-    }
-
     public UUID getId() {
         return id;
     }
