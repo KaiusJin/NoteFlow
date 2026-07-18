@@ -106,6 +106,8 @@ class PriorityQueueTest(unittest.TestCase):
     class FakeRedis:
         def __init__(self):
             self.lists = {}
+            self.hashes = {}
+            self.zsets = {}
 
         def rpush(self, name, payload):
             self.lists.setdefault(name, []).append(payload)
@@ -120,6 +122,44 @@ class PriorityQueueTest(unittest.TestCase):
                 if value is not None:
                     return name, value
             return None
+
+        def eval(self, script, keys_count, *args):
+            queue_name, payloads_key, deadlines_key, lease_id, deadline = args
+            payload = self.lpop(queue_name)
+            if payload is None:
+                return None
+            self.hset(payloads_key, lease_id, payload)
+            self.zadd(deadlines_key, {lease_id: float(deadline)})
+            return payload
+
+        def hset(self, name, key, value):
+            self.hashes.setdefault(name, {})[key] = value
+
+        def hget(self, name, key):
+            return self.hashes.get(name, {}).get(key)
+
+        def hdel(self, name, key):
+            self.hashes.get(name, {}).pop(key, None)
+
+        def hexists(self, name, key):
+            return key in self.hashes.get(name, {})
+
+        def zadd(self, name, values):
+            self.zsets.setdefault(name, {}).update(values)
+
+        def zrem(self, name, key):
+            self.zsets.get(name, {}).pop(key, None)
+
+        def zrangebyscore(self, name, min, max, start=0, num=None):
+            ceiling = float(max)
+            values = [key for key, score in self.zsets.get(name, {}).items() if float(score) <= ceiling]
+            return values[start : start + num if num else None]
+
+        def pipeline(self):
+            return self
+
+        def execute(self):
+            return []
 
     def make_queue(self):
         fake = self.FakeRedis()
@@ -147,6 +187,7 @@ class PriorityQueueTest(unittest.TestCase):
         queue.push(TaskPayload("parse", "doc", "user", "PARSE_DOCUMENT"))
         payload = queue.pop((PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE))
         self.assertEqual(payload.task_id, "parse")
+        self.assertIsNotNone(payload.lease_id)
 
     def test_legacy_background_payload_is_rehomed_instead_of_bypassing_reservation(self):
         queue, fake = self.make_queue()
@@ -157,6 +198,22 @@ class PriorityQueueTest(unittest.TestCase):
         payload = queue.pop((PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE))
         self.assertIsNone(payload)
         self.assertEqual(len(fake.lists[queue.queue_name(PRIORITY_BACKGROUND)]), 1)
+
+    def test_ack_removes_processing_lease(self):
+        queue, fake = self.make_queue()
+        queue.push(TaskPayload("parse", "doc", "user", "PARSE_DOCUMENT"))
+        payload = queue.pop()
+        self.assertTrue(fake.hashes[f"{queue.queue_name(PRIORITY_USER_VISIBLE).rsplit(':priority:', 1)[0]}:processing:payloads"])
+        queue.ack(payload)
+        self.assertFalse(fake.hashes[f"{queue.queue_name(PRIORITY_USER_VISIBLE).rsplit(':priority:', 1)[0]}:processing:payloads"])
+
+    def test_expired_lease_is_requeued(self):
+        queue, fake = self.make_queue()
+        queue.push(TaskPayload("parse", "doc", "user", "PARSE_DOCUMENT"))
+        payload = queue.pop()
+        fake.zsets[f"{queue.queue_name(PRIORITY_USER_VISIBLE).rsplit(':priority:', 1)[0]}:processing:deadlines"][payload.lease_id] = time.time() - 1
+        self.assertEqual(queue.reclaim_expired_leases(), 1)
+        self.assertEqual(fake.lpop(queue.queue_name(PRIORITY_USER_VISIBLE)) is not None, True)
 
 
 class EvidenceRouterTest(unittest.TestCase):

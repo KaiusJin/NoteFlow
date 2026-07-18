@@ -59,7 +59,9 @@ class VectorCandidateRetriever {
 
     private List<RetrievalCandidate> retrieveSingle(String query, RetrievalScope scope, int limit) {
         float[] queryEmbedding = embeddingClient.embed(query);
+        int dimension = queryEmbedding.length;
         String vector = vectorLiteral(queryEmbedding);
+        String distanceExpression = distanceExpression("embeddings.embedding", dimension);
         List<Object> params = new ArrayList<>();
         StringBuilder sql = new StringBuilder(
             """
@@ -91,7 +93,7 @@ class VectorCandidateRetriever {
                 chunks.token_count,
                 (embeddings.metadata_json::jsonb ->> 'tokenCount')::integer
               ) AS token_count,
-              1 - (embeddings.embedding <=> ?::vector) AS score
+              1 - (%s) AS score
             FROM document_embeddings embeddings
             JOIN documents ON documents.id = embeddings.document_id
             LEFT JOIN document_chunks chunks
@@ -105,12 +107,14 @@ class VectorCandidateRetriever {
             WHERE embeddings.embedding IS NOT NULL
               AND embeddings.embedding_provider = ?
               AND embeddings.embedding_model = ?
+              AND embeddings.embedding_dimension = ?
               AND (
-            """
+            """.formatted(distanceExpression)
         );
         params.add(vector);
         params.add(embeddingClient.providerName());
         params.add(embeddingClient.model());
+        params.add(dimension);
 
         List<String> domainClauses = new ArrayList<>();
         if (!scope.pdfDocumentIds().isEmpty()) {
@@ -140,9 +144,9 @@ class VectorCandidateRetriever {
         sql.append(
             """
               )
-            ORDER BY embeddings.embedding <=> ?::vector
+            ORDER BY %s
             LIMIT ?
-            """
+            """.formatted(distanceExpression)
         );
         params.add(vector);
         params.add(limit);
@@ -179,5 +183,12 @@ class VectorCandidateRetriever {
 
     private String placeholders(int count) {
         return String.join(",", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private String distanceExpression(String column, int dimension) {
+        if (dimension > 2_000 && dimension <= 4_000) {
+            return column + "::halfvec(" + dimension + ") <=> ?::halfvec(" + dimension + ")";
+        }
+        return column + "::vector(" + dimension + ") <=> ?::vector(" + dimension + ")";
     }
 }

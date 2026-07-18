@@ -65,7 +65,9 @@ public class SearchService {
         }
 
         float[] queryEmbedding = embeddingClient.embed(query);
+        int dimension = queryEmbedding.length;
         String vector = vectorLiteral(queryEmbedding);
+        String distanceExpression = distanceExpression("embedding", dimension);
         List<Object> params = new ArrayList<>();
         StringBuilder sql = new StringBuilder(
             """
@@ -79,17 +81,19 @@ public class SearchService {
               COALESCE(metadata_json::jsonb ->> 'title', '') AS title,
               COALESCE(text_preview, '') AS snippet,
               metadata_json,
-              1 - (embedding <=> ?::vector) AS score
+              1 - (%s) AS score
             FROM document_embeddings
             WHERE embedding IS NOT NULL
               AND embedding_provider = ?
               AND embedding_model = ?
+              AND embedding_dimension = ?
               AND (
-            """
+            """.formatted(distanceExpression)
         );
         params.add(vector);
         params.add(embeddingClient.providerName());
         params.add(embeddingClient.model());
+        params.add(dimension);
 
         List<String> domainClauses = new ArrayList<>();
         if (!scope.pdfDocumentIds().isEmpty()) {
@@ -104,9 +108,9 @@ public class SearchService {
         sql.append(
             """
               )
-            ORDER BY embedding <=> ?::vector
+            ORDER BY %s
             LIMIT ?
-            """
+            """.formatted(distanceExpression)
         );
         params.add(vector);
         params.add(topK);
@@ -187,6 +191,13 @@ public class SearchService {
 
     private String placeholders(int count) {
         return String.join(",", java.util.Collections.nCopies(count, "?"));
+    }
+
+    private String distanceExpression(String column, int dimension) {
+        if (dimension > 2_000 && dimension <= 4_000) {
+            return column + "::halfvec(" + dimension + ") <=> ?::halfvec(" + dimension + ")";
+        }
+        return column + "::vector(" + dimension + ") <=> ?::vector(" + dimension + ")";
     }
 
     private record SearchScope(List<UUID> pdfDocumentIds, List<UUID> aiNoteDocumentIds) {

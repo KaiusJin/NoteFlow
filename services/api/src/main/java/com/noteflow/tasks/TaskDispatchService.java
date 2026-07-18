@@ -43,17 +43,16 @@ public class TaskDispatchService {
     }
 
     public Task latestActiveTask(UUID documentId, TaskType taskType) {
-        return tasks.findByDocumentIdOrderByCreatedAtDesc(documentId).stream()
-            .filter(task -> task.getTaskType() == taskType)
-            .filter(task -> ACTIVE_STATUSES.contains(task.getStatus()))
-            .findFirst()
+        return tasks.findFirstByDocumentIdAndTaskTypeAndStatusInOrderByCreatedAtDesc(
+                documentId,
+                taskType,
+                ACTIVE_STATUSES.stream().toList()
+            )
             .orElse(null);
     }
 
     public Optional<Task> latestTask(UUID documentId, TaskType taskType) {
-        return tasks.findByDocumentIdOrderByCreatedAtDesc(documentId).stream()
-            .filter(task -> task.getTaskType() == taskType)
-            .findFirst();
+        return tasks.findFirstByDocumentIdAndTaskTypeOrderByCreatedAtDesc(documentId, taskType);
     }
 
     private void enqueueAfterCommit(Task task, UUID attemptId) {

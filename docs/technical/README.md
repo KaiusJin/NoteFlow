@@ -28,6 +28,7 @@ The documents below are supporting references. If a supporting document conflict
 | `AGENT_MEMORY_ARCHITECTURE.md` | Implemented conversation vertical: persistent REST/messages, grounded answer worker, durable citations, short-term window, rolling summary, long-term memory, source scope, and maintenance coordination. |
 | `STUDY_MODULES_ARCHITECTURE.md` | Worker implementation and service contracts for independent Flashcards/Quiz sections, source-grounded generation, resumable grading, SM-2, concurrency, token budgets, tests, and benchmarks. |
 | `LIBRARY_FOLDERS_ARCHITECTURE.md` | Implemented Folders/library architecture: nested folders, unified notes, source-kind smart views, PDF Markdown note sync, editor integration, and API contracts. |
+| `PERFORMANCE_AND_CONCURRENCY_OPTIMIZATION.md` | Implemented hot-path performance fixes: batched document statuses, pure-read note lists, bounded task lists, reduced polling, parse-preview payload bounds, retrieval executor tuning, and hot indexes. |
 | `MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` | Source of truth for the next phase: multi-turn conversation state, prompts, streaming, context compression, memory, LangGraph, local SLM deployment, and speculative decoding. |
 | `DATABASE_SCHEMA.md` | Database table design and data ownership. |
 | `WORKFLOW_AND_ARCHITECTURE.md` | Product workflow and system architecture. |

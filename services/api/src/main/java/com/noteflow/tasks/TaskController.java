@@ -1,7 +1,10 @@
 package com.noteflow.tasks;
 
 import com.noteflow.users.DevUserService;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -38,7 +41,16 @@ public class TaskController {
     @GetMapping("/tasks")
     public List<TaskResponse> listAll() {
         UUID userId = users.currentUserId();
-        return tasks.findByUserIdOrderByCreatedAtDesc(userId).stream()
+        Map<UUID, Task> visible = new LinkedHashMap<>();
+        tasks.findByUserIdAndStatusInOrderByCreatedAtDesc(
+                userId,
+                List.of(TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.RETRYING)
+            )
+            .forEach(task -> visible.put(task.getId(), task));
+        tasks.findTop100ByUserIdOrderByCreatedAtDesc(userId)
+            .forEach(task -> visible.putIfAbsent(task.getId(), task));
+        return visible.values().stream()
+            .sorted(Comparator.comparing(Task::getCreatedAt).reversed())
             .map(TaskResponse::from)
             .toList();
     }

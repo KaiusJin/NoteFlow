@@ -9,8 +9,12 @@ import com.noteflow.tasks.TaskType;
 import com.noteflow.users.DevUserService;
 import com.noteflow.notes.DocumentAiNote;
 import com.noteflow.notes.DocumentAiNoteRepository;
+import com.noteflow.tasks.TaskRepository;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -24,15 +28,17 @@ public class DocumentService {
     private final TaskDispatchService taskDispatcher;
     private final LocalFileStorageService storage;
     private final DocumentAiNoteRepository notes;
+    private final TaskRepository taskRepository;
     private final JdbcTemplate jdbc;
 
     public DocumentService(DevUserService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
-            LocalFileStorageService storage, DocumentAiNoteRepository notes, JdbcTemplate jdbc) {
+            LocalFileStorageService storage, DocumentAiNoteRepository notes, TaskRepository taskRepository, JdbcTemplate jdbc) {
         this.users = users;
         this.documents = documents;
         this.taskDispatcher = taskDispatcher;
         this.storage = storage;
         this.notes = notes;
+        this.taskRepository = taskRepository;
         this.jdbc = jdbc;
     }
 
@@ -62,14 +68,16 @@ public class DocumentService {
 
     public List<DocumentResponse> listCurrentUserDocuments() {
         UUID userId = users.currentUserId();
-        return documents.findByUserIdOrderByCreatedAtDesc(userId).stream()
-            .map(document -> {
-                String aiNoteStatus = notes.findFirstByDocumentIdOrderByNoteVersionDesc(document.getId())
-                    .map(DocumentAiNote::getStatus)
-                    .orElse("NOT_STARTED");
-                String embeddingStatus = embeddingStatus(document.getId());
-                return DocumentResponse.from(document, aiNoteStatus, embeddingStatus);
-            })
+        List<Document> userDocuments = documents.findByUserIdOrderByCreatedAtDesc(userId);
+        List<UUID> documentIds = userDocuments.stream().map(Document::getId).toList();
+        Map<UUID, String> aiNoteStatuses = latestAiNoteStatuses(documentIds);
+        Map<UUID, String> embeddingStatuses = embeddingStatuses(documentIds);
+        return userDocuments.stream()
+            .map(document -> DocumentResponse.from(
+                document,
+                aiNoteStatuses.getOrDefault(document.getId(), "NOT_STARTED"),
+                embeddingStatuses.getOrDefault(document.getId(), "NOT_STARTED")
+            ))
             .toList();
     }
 
@@ -102,6 +110,57 @@ public class DocumentService {
             return "NOT_STARTED";
         }
         return latestEmbeddingTaskStatus(documentId);
+    }
+
+    private Map<UUID, String> latestAiNoteStatuses(List<UUID> documentIds) {
+        if (documentIds.isEmpty()) return Map.of();
+        return notes.findByDocumentIdInOrderByDocumentIdAscNoteVersionDesc(documentIds).stream()
+            .collect(Collectors.toMap(
+                DocumentAiNote::getDocumentId,
+                DocumentAiNote::getStatus,
+                (existing, ignored) -> existing
+            ));
+    }
+
+    private Map<UUID, String> embeddingStatuses(List<UUID> documentIds) {
+        if (documentIds.isEmpty()) return Map.of();
+        Map<UUID, String> result = taskRepository.findByDocumentIdInAndTaskTypeOrderByCreatedAtDesc(
+                documentIds,
+                TaskType.GENERATE_EMBEDDINGS
+            ).stream()
+            .collect(Collectors.toMap(
+                Task::getDocumentId,
+                task -> activeEmbeddingStatuses().contains(task.getStatus())
+                    ? "PROCESSING"
+                    : task.getStatus() == TaskStatus.FAILED ? "FAILED" : "NOT_STARTED",
+                (existing, ignored) -> existing
+            ));
+        for (UUID readyDocumentId : documentsWithEmbeddings(documentIds)) {
+            if (!"PROCESSING".equals(result.get(readyDocumentId))) {
+                result.put(readyDocumentId, "READY");
+            }
+        }
+        return result;
+    }
+
+    private Set<TaskStatus> activeEmbeddingStatuses() {
+        return Set.of(TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.RETRYING);
+    }
+
+    private Set<UUID> documentsWithEmbeddings(List<UUID> documentIds) {
+        if (documentIds.isEmpty()) return Set.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(documentIds.size(), "?"));
+        try {
+            return jdbc.queryForList(
+                    "SELECT document_id FROM document_embeddings WHERE document_id IN (" + placeholders + ") AND embedding IS NOT NULL GROUP BY document_id",
+                    UUID.class,
+                    documentIds.toArray()
+                )
+                .stream()
+                .collect(Collectors.toSet());
+        } catch (DataAccessException ignored) {
+            return Set.of();
+        }
     }
 
     private String latestEmbeddingTaskStatus(UUID documentId) {

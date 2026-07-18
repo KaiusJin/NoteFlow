@@ -92,11 +92,13 @@ class SearchServiceTest {
 
         QueryInvocation invocation = captureQueryInvocation();
         assertThat(invocation.sql()).contains("source_domain = 'PDF'");
+        assertThat(invocation.sql()).contains("embedding_dimension = ?");
         assertThat(invocation.sql()).doesNotContain("source_domain = 'AI_NOTE'");
         assertThat(invocation.params()).containsExactly(
             "[0.25,-0.5]",
             "gemini",
             "gemini-embedding-001",
+            2,
             READY_DOCUMENT_ID,
             "[0.25,-0.5]",
             30
@@ -116,10 +118,12 @@ class SearchServiceTest {
         QueryInvocation invocation = captureQueryInvocation();
         assertThat(invocation.sql()).contains("source_domain = 'PDF'");
         assertThat(invocation.sql()).contains("source_domain = 'AI_NOTE'");
+        assertThat(invocation.sql()).contains("embedding_dimension = ?");
         assertThat(invocation.params()).containsExactly(
             "[1.0]",
             "gemini",
             "gemini-embedding-001",
+            1,
             READY_DOCUMENT_ID,
             SECOND_DOCUMENT_ID,
             READY_DOCUMENT_ID,
@@ -147,10 +151,12 @@ class SearchServiceTest {
         ));
 
         QueryInvocation invocation = captureQueryInvocation();
+        assertThat(invocation.sql()).contains("embedding_dimension = ?");
         assertThat(invocation.params()).containsExactly(
             "[0.75]",
             "gemini",
             "gemini-embedding-001",
+            1,
             READY_DOCUMENT_ID,
             SECOND_DOCUMENT_ID,
             "[0.75]",

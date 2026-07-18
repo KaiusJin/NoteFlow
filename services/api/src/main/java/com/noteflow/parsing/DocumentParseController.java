@@ -7,8 +7,10 @@ import com.noteflow.documents.DocumentRepository;
 import com.noteflow.users.DevUserService;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -45,11 +47,20 @@ public class DocumentParseController {
     }
 
     @GetMapping("/documents/{documentId}/chunks")
-    public List<DocumentChunkResponse> getChunks(@PathVariable UUID documentId) {
+    public List<DocumentChunkResponse> getChunks(
+            @PathVariable UUID documentId,
+            @RequestParam(required = false) Integer limit) {
         ensureDocumentAccess(documentId);
-        return chunks.findByDocumentIdOrderByChunkIndexAsc(documentId).stream()
+        List<com.noteflow.chunks.DocumentChunk> rows = limit == null
+            ? chunks.findByDocumentIdOrderByChunkIndexAsc(documentId)
+            : chunks.findByDocumentIdOrderByChunkIndexAsc(documentId, PageRequest.of(0, safeLimit(limit, 500)));
+        return rows.stream()
             .map(DocumentChunkResponse::from)
             .toList();
+    }
+
+    private int safeLimit(Integer value, int maximum) {
+        return Math.max(1, Math.min(maximum, value == null ? maximum : value));
     }
 
     private void ensureDocumentAccess(UUID documentId) {

@@ -200,11 +200,6 @@ class StudyRepository(Repository):
               status=EXCLUDED.status,produced_count=EXCLUDED.produced_count,error_message=EXCLUDED.error_message,updated_at=NOW()""",
               (generation_type, set_id, group_index, status, produced, error[:2000] if error else None))
 
-    def _completed_groups(self, table: str, key: str, value: str) -> set[int]:
-        with self.connect() as conn:
-            rows = conn.execute(f"SELECT DISTINCT source_group_index FROM {table} WHERE {key}=%s", (value,)).fetchall()
-        return {row["source_group_index"] for row in rows}
-
     def save_flashcard(self, card: Flashcard) -> None:
         with self.connect() as conn:
             conn.execute("""INSERT INTO flashcards (id,deck_id,document_id,source_group_index,item_index,card_type,front,back,

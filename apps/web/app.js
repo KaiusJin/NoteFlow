@@ -17,7 +17,7 @@ let conversationsLoaded = false;
 let conversationsLoading = false;
 let conversationsError = null;
 let attemptPollTimer = null;
-let globalPollInterval = null;
+let globalPollTimeout = null;
 
 const viewRoot = document.querySelector("#view-root");
 const sidebarTasks = document.querySelector("#sidebar-tasks");
@@ -113,12 +113,17 @@ function formatStepLabel(step) {
 let pollFailureCount = 0;
 
 async function startGlobalPolling() {
-  if (globalPollInterval) clearInterval(globalPollInterval);
+  if (globalPollTimeout) clearTimeout(globalPollTimeout);
   const tick = async () => {
-    // Back off while the API is unreachable: poll every 10s instead of 1.5s
-    // and log the outage once instead of flooding the console.
+    if (document.hidden) {
+      globalPollTimeout = setTimeout(tick, 5000);
+      return;
+    }
+    // Back off while the API is unreachable and log the outage once instead of
+    // flooding the console.
     if (pollFailureCount >= 3 && pollFailureCount % 7 !== 0) {
       pollFailureCount += 1;
+      globalPollTimeout = setTimeout(tick, 5000);
       return;
     }
     try {
@@ -145,9 +150,10 @@ async function startGlobalPolling() {
       pollFailureCount += 1;
       if (pollFailureCount <= 3) console.error("Polling error:", error);
     }
+    const hasActiveTasks = latestTasksList.some((task) => ["PENDING", "PROCESSING", "RETRYING"].includes(task.status));
+    globalPollTimeout = setTimeout(tick, hasActiveTasks ? 1500 : 5000);
   };
   await tick();
-  globalPollInterval = setInterval(tick, 1500);
 }
 
 function handleTaskTransitions() {
@@ -1011,39 +1017,47 @@ async function loadParsedOutput(documentId) {
   output.classList.remove("muted");
   output.innerHTML = `<div class="output-title">Parsed Output</div><div class="status-card muted">Loading parsed output…</div>`;
   try {
-    const [summaryResponse, chunksResponse, assetsResponse, blocksResponse, regionsResponse, vlmResponse, markdownPagesResponse, markdownResponse] = await Promise.all([
+    const [summaryResponse, chunksResponse, assetsResponse, blocksResponse] = await Promise.all([
       fetch(`${API_BASE_URL}/documents/${documentId}/parse-result`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/chunks`),
+      fetch(`${API_BASE_URL}/documents/${documentId}/chunks?limit=120`),
       fetch(`${API_BASE_URL}/documents/${documentId}/assets`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/layout-blocks`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/visual-regions`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/vlm-results`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/markdown-pages`),
-      fetch(`${API_BASE_URL}/documents/${documentId}/markdown`),
+      fetch(`${API_BASE_URL}/documents/${documentId}/layout-blocks?limit=240`),
     ]);
     const summary = await readJson(summaryResponse);
     const chunks = await readJson(chunksResponse);
     const assets = await readJson(assetsResponse);
     const blocks = await readJson(blocksResponse);
-    const regions = await readJson(regionsResponse);
-    const vlmResults = await readJson(vlmResponse);
-    const markdownPages = await readJson(markdownPagesResponse);
-    const markdownDocument = await readJson(markdownResponse);
     if (!summaryResponse.ok) throw new Error(summary.message || "Parse summary is not available yet");
     if (!chunksResponse.ok) throw new Error(chunks.message || "Chunks are not available yet");
     if (!assetsResponse.ok) throw new Error(assets.message || "Visual assets are not available yet");
     if (!blocksResponse.ok) throw new Error(blocks.message || "Layout blocks are not available yet");
-    if (!regionsResponse.ok) throw new Error(regions.message || "Visual regions are not available yet");
-    if (!vlmResponse.ok) throw new Error(vlmResults.message || "VLM results are not available yet");
-    renderParsedOutput(
-      summary, chunks, assets, blocks, regions, vlmResults,
-      markdownPagesResponse.ok ? markdownPages : [],
-      markdownResponse.ok ? markdownDocument : null
-    );
+    renderParsedOutput(summary, chunks, assets, blocks, [], [], [], null, true);
+    loadParsedOutputDetails(documentId, summary, chunks, assets, blocks);
   } catch (error) {
     output.classList.add("muted");
     output.textContent = error.message;
   }
+}
+
+async function loadParsedOutputDetails(documentId, summary, chunks, assets, blocks) {
+  const [regionsResult, vlmResult, markdownPagesResult, markdownResult] = await Promise.allSettled([
+    requestJson(`/documents/${documentId}/visual-regions?limit=80`),
+    requestJson(`/documents/${documentId}/vlm-results?limit=80`),
+    requestJson(`/documents/${documentId}/markdown-pages?limit=20`),
+    requestJson(`/documents/${documentId}/markdown?previewChars=24000`),
+  ]);
+  if (!generalOutput()) return;
+  renderParsedOutput(
+    summary,
+    chunks,
+    assets,
+    blocks,
+    fulfilledValue(regionsResult, []),
+    fulfilledValue(vlmResult, []),
+    fulfilledValue(markdownPagesResult, []),
+    fulfilledValue(markdownResult, null),
+    false
+  );
 }
 
 async function generateNotes(documentId) {
@@ -1109,7 +1123,7 @@ function renderNotes(note) {
   `;
 }
 
-function renderParsedOutput(summary, chunks, assets, blocks, regions, vlmResults, markdownPages, markdownDocument) {
+function renderParsedOutput(summary, chunks, assets, blocks, regions, vlmResults, markdownPages, markdownDocument, detailsLoading = false) {
   const visualAssetCount = assets.filter((asset) => asset.visualSummary).length;
   const blockCounts = countBy(blocks, "blockType");
   const successfulVlm = vlmResults.filter((result) => result.searchText || result.description || result.transcription).length;
@@ -1131,6 +1145,7 @@ function renderParsedOutput(summary, chunks, assets, blocks, regions, vlmResults
     <div class="layout-blocks">
       ${Object.entries(blockCounts).map(([type, count]) => `<span class="pill">${escapeHtml(type)} ${count}</span>`).join("")}
     </div>
+    ${detailsLoading ? `<div class="status-card muted">Loading visual details and Markdown…</div>` : ""}
     ${regions.length ? renderVisionPanel(regions, vlmResults) : ""}
     ${markdownDocument ? renderMarkdownPanel(markdownDocument, markdownPages) : ""}
     <div class="preview-block">
@@ -2855,6 +2870,10 @@ function formatFetchError(error) {
     ].join("\n");
   }
   return error.message || "Unexpected request error";
+}
+
+function fulfilledValue(result, fallback) {
+  return result.status === "fulfilled" ? result.value : fallback;
 }
 
 function summaryItem(label, value) {

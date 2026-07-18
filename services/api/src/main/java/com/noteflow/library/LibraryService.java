@@ -1,17 +1,10 @@
 package com.noteflow.library;
 
-import com.noteflow.documents.Document;
-import com.noteflow.documents.DocumentRepository;
-import com.noteflow.markdown.DocumentMarkdownDocument;
-import com.noteflow.markdown.DocumentMarkdownDocumentRepository;
 import com.noteflow.users.DevUserService;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Function;
-import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,16 +13,11 @@ public class LibraryService {
     private final DevUserService users;
     private final FolderRepository folders;
     private final NoteRepository notes;
-    private final DocumentRepository documents;
-    private final DocumentMarkdownDocumentRepository markdownDocuments;
 
-    public LibraryService(DevUserService users, FolderRepository folders, NoteRepository notes,
-            DocumentRepository documents, DocumentMarkdownDocumentRepository markdownDocuments) {
+    public LibraryService(DevUserService users, FolderRepository folders, NoteRepository notes) {
         this.users = users;
         this.folders = folders;
         this.notes = notes;
-        this.documents = documents;
-        this.markdownDocuments = markdownDocuments;
     }
 
     // ----- Folders -------------------------------------------------------
@@ -95,7 +83,6 @@ public class LibraryService {
     @Transactional
     public List<NoteResponse> listNotes() {
         UUID userId = users.currentUserId();
-        ensureRawMarkdownNotes(userId);
         return notes.findByUserIdOrderByUpdatedAtDesc(userId).stream().map(NoteResponse::summary).toList();
     }
 
@@ -171,31 +158,6 @@ public class LibraryService {
     private Note requireNote(UUID noteId, UUID userId) {
         return notes.findByIdAndUserId(noteId, userId)
             .orElseThrow(() -> new IllegalArgumentException("Note not found"));
-    }
-
-    private void ensureRawMarkdownNotes(UUID userId) {
-        List<Document> userDocuments = documents.findByUserIdOrderByCreatedAtDesc(userId);
-        if (userDocuments.isEmpty()) return;
-
-        Map<UUID, Document> documentById = userDocuments.stream()
-            .collect(Collectors.toMap(Document::getId, Function.identity()));
-        for (DocumentMarkdownDocument markdownDocument : markdownDocuments.findByDocumentIdIn(documentById.keySet())) {
-            UUID documentId = markdownDocument.getDocumentId();
-            if (notes.findFirstBySourceDocumentIdAndSourceKindOrderByCreatedAtAsc(documentId, "RAW").isPresent()) {
-                continue;
-            }
-            Document document = documentById.get(documentId);
-            if (document == null) continue;
-            notes.save(new Note(
-                UUID.randomUUID(),
-                userId,
-                null,
-                document.getTitle() + " - PDF Markdown",
-                markdownDocument.getMarkdown(),
-                "RAW",
-                documentId
-            ));
-        }
     }
 
     private String normalizeSourceKind(String sourceKind) {

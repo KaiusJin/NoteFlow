@@ -1274,6 +1274,61 @@ class Repository:
                     document.quality_report_json,
                 ),
             )
+            self._sync_raw_markdown_note(conn, document)
+
+    def _sync_raw_markdown_note(self, conn: CleanConnection, document: MarkdownDocument) -> None:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notes (
+              id UUID PRIMARY KEY,
+              user_id UUID,
+              folder_id UUID,
+              title VARCHAR(255),
+              markdown TEXT,
+              source_kind VARCHAR(255),
+              source_document_id UUID,
+              created_at TIMESTAMPTZ,
+              updated_at TIMESTAMPTZ
+            )
+            """
+        )
+        updated = conn.execute(
+            """
+            UPDATE notes
+               SET title = COALESCE((SELECT title FROM documents WHERE id = %s), title) || ' - PDF Markdown',
+                   markdown = %s,
+                   updated_at = NOW()
+             WHERE source_document_id = %s
+               AND source_kind = 'RAW'
+            """,
+            (document.document_id, document.markdown, document.document_id),
+        )
+        if updated.rowcount:
+            return
+        conn.execute(
+            """
+            INSERT INTO notes (
+              id,
+              user_id,
+              folder_id,
+              title,
+              markdown,
+              source_kind,
+              source_document_id,
+              created_at,
+              updated_at
+            )
+            SELECT %s, user_id, NULL, title || ' - PDF Markdown', %s, 'RAW', id, NOW(), NOW()
+              FROM documents
+             WHERE id = %s
+               AND NOT EXISTS (
+                 SELECT 1 FROM notes
+                  WHERE source_document_id = %s
+                    AND source_kind = 'RAW'
+               )
+            """,
+            (str(uuid4()), document.markdown, document.document_id, document.document_id),
+        )
 
     def ensure_embedding_schema(self) -> None:
         with self.connect() as conn:

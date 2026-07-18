@@ -5,8 +5,10 @@ import com.noteflow.documents.DocumentRepository;
 import com.noteflow.users.DevUserService;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -25,19 +27,34 @@ public class DocumentMarkdownController {
     }
 
     @GetMapping("/documents/{documentId}/markdown-pages")
-    public List<DocumentMarkdownPageResponse> getMarkdownPages(@PathVariable UUID documentId) {
+    public List<DocumentMarkdownPageResponse> getMarkdownPages(
+            @PathVariable UUID documentId,
+            @RequestParam(required = false) Integer limit) {
         ensureDocumentAccess(documentId);
-        return pages.findByDocumentIdOrderByPageNumberAsc(documentId).stream()
+        List<DocumentMarkdownPage> rows = limit == null
+            ? pages.findByDocumentIdOrderByPageNumberAsc(documentId)
+            : pages.findByDocumentIdOrderByPageNumberAsc(documentId, PageRequest.of(0, safeLimit(limit, 100)));
+        return rows.stream()
             .map(DocumentMarkdownPageResponse::from)
             .toList();
     }
 
     @GetMapping("/documents/{documentId}/markdown")
-    public DocumentMarkdownDocumentResponse getMarkdownDocument(@PathVariable UUID documentId) {
+    public DocumentMarkdownDocumentResponse getMarkdownDocument(
+            @PathVariable UUID documentId,
+            @RequestParam(required = false) Integer previewChars) {
         ensureDocumentAccess(documentId);
         return markdownDocuments.findByDocumentId(documentId)
-            .map(DocumentMarkdownDocumentResponse::from)
+            .map(document -> DocumentMarkdownDocumentResponse.from(document, safePreviewChars(previewChars)))
             .orElseThrow(() -> new IllegalArgumentException("Markdown document not found"));
+    }
+
+    private int safeLimit(Integer value, int maximum) {
+        return Math.max(1, Math.min(maximum, value == null ? maximum : value));
+    }
+
+    private int safePreviewChars(Integer value) {
+        return value == null ? Integer.MAX_VALUE : Math.max(1, Math.min(200_000, value));
     }
 
     private void ensureDocumentAccess(UUID documentId) {

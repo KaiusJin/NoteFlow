@@ -10,7 +10,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 class RetrievalExecutorConfig {
     @Bean("retrievalExecutor")
     Executor retrievalExecutor(
-        @Value("${noteflow.retrieval.channel-concurrency:3}") int concurrency
+        @Value("${noteflow.retrieval.channel-concurrency:12}") int concurrency
     ) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(concurrency);

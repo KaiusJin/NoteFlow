@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface DocumentAiNoteRepository extends JpaRepository<DocumentAiNote, UUID> {
     List<DocumentAiNote> findByDocumentIdOrderByNoteVersionDesc(UUID documentId);
+    List<DocumentAiNote> findByDocumentIdInOrderByDocumentIdAscNoteVersionDesc(List<UUID> documentIds);
     Optional<DocumentAiNote> findFirstByDocumentIdOrderByNoteVersionDesc(UUID documentId);
     Optional<DocumentAiNote> findFirstByDocumentIdAndStatusOrderByNoteVersionDesc(UUID documentId, String status);
 }

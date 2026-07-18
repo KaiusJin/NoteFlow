@@ -38,7 +38,7 @@ noteflow:
     vector-candidate-limit: ${RETRIEVAL_VECTOR_CANDIDATE_LIMIT:30}
     lexical-candidate-limit: ${RETRIEVAL_LEXICAL_CANDIDATE_LIMIT:30}
     exact-candidate-limit: ${RETRIEVAL_EXACT_CANDIDATE_LIMIT:15}
-    channel-concurrency: ${RETRIEVAL_CHANNEL_CONCURRENCY:3}
+    channel-concurrency: ${RETRIEVAL_CHANNEL_CONCURRENCY:12}
     channel-timeout-seconds: ${RETRIEVAL_CHANNEL_TIMEOUT_SECONDS:20}
     default-context-tokens: ${RETRIEVAL_DEFAULT_CONTEXT_TOKENS:6000}
     max-tokens-per-item: ${RETRIEVAL_MAX_TOKENS_PER_ITEM:1400}
@@ -62,7 +62,7 @@ noteflow:
     gemini-reranker-model: ${GEMINI_RERANK_MODEL:gemini-2.5-flash}
     external-reranker-timeout-seconds: ${RETRIEVAL_EXTERNAL_RERANKER_TIMEOUT_SECONDS:20}
     external-reranker-candidate-limit: ${RETRIEVAL_EXTERNAL_RERANKER_CANDIDATE_LIMIT:12}
-    hyde-provider: ${HYDE_PROVIDER:auto}
+    hyde-provider: ${HYDE_PROVIDER:disabled}
     hyde-gemini-model: ${HYDE_GEMINI_MODEL:gemini-2.5-flash}
     openai-api-key: ${OPENAI_API_KEY:}
     hyde-openai-model: ${HYDE_OPENAI_MODEL:gpt-4o-mini}

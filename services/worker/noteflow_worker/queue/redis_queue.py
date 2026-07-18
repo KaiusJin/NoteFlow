@@ -2,6 +2,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import Optional
+from uuid import uuid4
 
 import redis
 
@@ -48,6 +49,8 @@ class TaskPayload:
     attempt_id: str | None = None
     # Answer-turn tasks target the assistant placeholder message.
     message_id: str | None = None
+    # Redis-side delivery lease. New producers do not need to set this.
+    lease_id: str | None = None
 
     @property
     def resolved_priority(self) -> int:
@@ -64,6 +67,14 @@ class RedisTaskQueue:
     def queue_name(self, priority: int) -> str:
         return f"{settings.document_queue}:priority:{priority}"
 
+    @property
+    def _lease_payloads_key(self) -> str:
+        return f"{settings.document_queue}:processing:payloads"
+
+    @property
+    def _lease_deadlines_key(self) -> str:
+        return f"{settings.document_queue}:processing:deadlines"
+
     def pop(self, allowed_priorities: tuple[int, ...] = ALL_PRIORITIES) -> Optional[TaskPayload]:
         allowed = tuple(priority for priority in allowed_priorities if priority in ALL_PRIORITIES)
         if not allowed:
@@ -76,28 +87,26 @@ class RedisTaskQueue:
             self._schedule_index += 1
             if priority not in allowed:
                 continue
-            raw_payload = self._client.lpop(self.queue_name(priority))
+            raw_payload, lease_id = self._lease_from_queue(self.queue_name(priority))
             if raw_payload is not None:
-                return self._decode(raw_payload, priority)
+                return self._decode(raw_payload, priority, lease_id)
 
-        # Block only after every allowed queue has been probed. The legacy base
-        # queue remains last for zero-downtime upgrades.
-        queue_names = [self.queue_name(priority) for priority in allowed]
-        queue_names.append(settings.document_queue)
-        item = self._client.blpop(queue_names, timeout=settings.block_timeout_seconds)
-        if item is None:
-            return None
-        queue_name, raw_payload = item
-        priority = next(
-            (value for value in allowed if queue_name == self.queue_name(value)),
-            priority_for_task_type(json.loads(raw_payload).get("taskType", "")),
-        )
-        decoded = self._decode(raw_payload, priority)
-        if queue_name == settings.document_queue and decoded.resolved_priority not in allowed:
+        # Probe the legacy base queue last for zero-downtime upgrades. Keep this
+        # on the same atomic lease path as priority queues; BLPOP would create a
+        # crash window between removing the item and recording its lease.
+        raw_payload, lease_id = self._lease_from_queue(settings.document_queue)
+        if raw_payload is not None:
+            priority = priority_for_task_type(json.loads(raw_payload).get("taskType", ""))
+            decoded = self._decode(raw_payload, priority, lease_id)
+            if decoded.resolved_priority in allowed:
+                return decoded
             # Re-home legacy payloads instead of violating the admission limit.
+            self.ack(decoded)
             self.push(decoded)
             return None
-        return decoded
+
+        time.sleep(max(0.1, min(1.0, settings.block_timeout_seconds)))
+        return None
 
     def push(self, payload: TaskPayload) -> None:
         priority = payload.resolved_priority
@@ -117,7 +126,69 @@ class RedisTaskQueue:
         )
         self._client.rpush(self.queue_name(priority), raw_payload)
 
-    def _decode(self, raw_payload: str, queue_priority: int) -> TaskPayload:
+    def ack(self, payload: TaskPayload) -> None:
+        if not payload.lease_id:
+            return
+        pipe = self._client.pipeline()
+        pipe.hdel(self._lease_payloads_key, payload.lease_id)
+        pipe.zrem(self._lease_deadlines_key, payload.lease_id)
+        pipe.execute()
+
+    def extend_lease(self, payload: TaskPayload) -> None:
+        if not payload.lease_id:
+            return
+        if not self._client.hexists(self._lease_payloads_key, payload.lease_id):
+            return
+        deadline = time.time() + max(30, settings.queue_lease_seconds)
+        self._client.zadd(self._lease_deadlines_key, {payload.lease_id: deadline})
+
+    def reclaim_expired_leases(self) -> int:
+        now = time.time()
+        limit = max(1, settings.queue_reclaim_batch_size)
+        expired = self._client.zrangebyscore(
+            self._lease_deadlines_key,
+            min="-inf",
+            max=now,
+            start=0,
+            num=limit,
+        )
+        reclaimed = 0
+        for lease_id in expired:
+            raw_payload = self._client.hget(self._lease_payloads_key, lease_id)
+            pipe = self._client.pipeline()
+            pipe.hdel(self._lease_payloads_key, lease_id)
+            pipe.zrem(self._lease_deadlines_key, lease_id)
+            pipe.execute()
+            if raw_payload is None:
+                continue
+            self.push(self._decode(raw_payload, priority_for_task_type(json.loads(raw_payload).get("taskType", ""))))
+            reclaimed += 1
+        return reclaimed
+
+    def _lease_from_queue(self, queue_name: str) -> tuple[str | None, str | None]:
+        lease_id = str(uuid4())
+        deadline = time.time() + max(30, settings.queue_lease_seconds)
+        raw_payload = self._client.eval(
+            """
+            local payload = redis.call('LPOP', KEYS[1])
+            if payload then
+              redis.call('HSET', KEYS[2], ARGV[1], payload)
+              redis.call('ZADD', KEYS[3], ARGV[2], ARGV[1])
+            end
+            return payload
+            """,
+            3,
+            queue_name,
+            self._lease_payloads_key,
+            self._lease_deadlines_key,
+            lease_id,
+            deadline,
+        )
+        if raw_payload is None:
+            return None, None
+        return raw_payload, lease_id
+
+    def _decode(self, raw_payload: str, queue_priority: int, lease_id: str | None = None) -> TaskPayload:
         payload = json.loads(raw_payload)
         priority = payload.get("priority")
         document_id = payload.get("documentId") or ""
@@ -132,4 +203,5 @@ class RedisTaskQueue:
             conversation_id=payload.get("conversationId") or None,
             attempt_id=payload.get("attemptId") or None,
             message_id=payload.get("messageId") or None,
+            lease_id=lease_id,
         )

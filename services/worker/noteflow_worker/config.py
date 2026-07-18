@@ -12,8 +12,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     document_queue: str = "queue:document-analysis"
     block_timeout_seconds: int = 5
-    worker_max_concurrent_tasks: int = 3
-    worker_max_background_tasks: int = 1
+    queue_lease_seconds: int = 1800
+    queue_reclaim_batch_size: int = 100
+    worker_max_concurrent_tasks: int = 4
+    worker_max_background_tasks: int = 2
     pdf_cpu_workers: int = 0
     pdf_io_workers: int = 0
     pdf_gpu_workers: int = 0

@@ -68,7 +68,7 @@ def main() -> None:
         max(1, settings.worker_max_background_tasks),
         max_tasks if max_tasks == 1 else max_tasks - 1,
     )
-    active: dict[Future, int] = {}
+    active: dict[Future, TaskPayload] = {}
     print(
         "NoteFlow worker started. Waiting for document tasks... "
         f"max_concurrent_tasks={max_tasks} max_background_tasks={background_limit}"
@@ -80,36 +80,54 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=max_tasks) as executor:
         while True:
-            active = reap_completed(active)
+            reclaimed = queue.reclaim_expired_leases()
+            if reclaimed:
+                print(f"Reclaimed {reclaimed} expired Redis task lease(s).")
+            refresh_active_leases(queue, active)
+            active = reap_completed(queue, active)
             if len(active) >= max_tasks:
-                done, _ = wait(set(active), return_when=FIRST_COMPLETED)
-                log_completed(done)
-                active = {future: priority for future, priority in active.items() if future not in done}
+                done, _ = wait(set(active), timeout=lease_wait_timeout_seconds(), return_when=FIRST_COMPLETED)
+                finish_completed(queue, done, active)
+                active = {future: payload for future, payload in active.items() if future not in done}
                 continue
 
-            background_active = sum(priority == PRIORITY_BACKGROUND for priority in active.values())
+            background_active = sum(payload.resolved_priority == PRIORITY_BACKGROUND for payload in active.values())
             allowed_priorities = (PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE)
             if background_active < background_limit:
                 allowed_priorities = (*allowed_priorities, PRIORITY_BACKGROUND)
             payload = queue.pop(allowed_priorities)
             if payload is None:
                 continue
-            active[executor.submit(process_payload, payload)] = payload.resolved_priority
+            active[executor.submit(process_payload, payload)] = payload
 
 
-def reap_completed(active: dict[Future, int]) -> dict[Future, int]:
+def lease_wait_timeout_seconds() -> float:
+    return max(5.0, min(30.0, settings.queue_lease_seconds / 3))
+
+
+def refresh_active_leases(queue: RedisTaskQueue, active: dict[Future, TaskPayload]) -> None:
+    for future, payload in active.items():
+        if not future.done():
+            queue.extend_lease(payload)
+
+
+def reap_completed(queue: RedisTaskQueue, active: dict[Future, TaskPayload]) -> dict[Future, TaskPayload]:
     done = {future for future in active if future.done()}
     if done:
-        log_completed(done)
-    return {future: priority for future, priority in active.items() if future not in done}
+        finish_completed(queue, done, active)
+    return {future: payload for future, payload in active.items() if future not in done}
 
 
-def log_completed(done: set[Future]) -> None:
+def finish_completed(queue: RedisTaskQueue, done: set[Future], active: dict[Future, TaskPayload]) -> None:
     for future in done:
+        payload = active.get(future)
         try:
             future.result()
         except Exception as exc:
             print(f"Task failed but worker will continue: {exc}")
+        finally:
+            if payload is not None:
+                queue.ack(payload)
 
 
 def recover_stale_notes_tasks(queue: RedisTaskQueue) -> None:

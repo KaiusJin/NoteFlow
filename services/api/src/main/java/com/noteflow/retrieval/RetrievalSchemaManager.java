@@ -1,8 +1,10 @@
 package com.noteflow.retrieval;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.List;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
@@ -82,7 +84,40 @@ class RetrievalSchemaManager implements ApplicationRunner {
             ON document_embeddings(embedding_provider, embedding_model)
             """
         );
+        ensureVectorIndexes();
         ready.set(true);
         return true;
+    }
+
+    private void ensureVectorIndexes() {
+        List<Integer> dimensions = jdbc.queryForList(
+            """
+            SELECT DISTINCT embedding_dimension
+              FROM document_embeddings
+             WHERE embedding IS NOT NULL
+               AND embedding_dimension IS NOT NULL
+             ORDER BY embedding_dimension
+            """,
+            Integer.class
+        );
+        for (Integer dimension : dimensions) {
+            if (dimension == null || dimension <= 0 || dimension > 16_384) continue;
+            try {
+                String indexedExpression = dimension > 2_000 && dimension <= 4_000
+                    ? "(embedding::halfvec(" + dimension + ")) halfvec_cosine_ops"
+                    : "(embedding::vector(" + dimension + ")) vector_cosine_ops";
+                jdbc.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_document_embeddings_embedding_hnsw_%d
+                    ON document_embeddings
+                    USING hnsw (%s)
+                    WHERE embedding IS NOT NULL AND embedding_dimension = %d
+                    """.formatted(dimension, indexedExpression, dimension)
+                );
+            } catch (DataAccessException error) {
+                System.out.println("Skipping pgvector HNSW index creation for dimension "
+                    + dimension + ": " + error.getMessage());
+            }
+        }
     }
 }

@@ -528,15 +528,6 @@ def format_sections_coverage(sections: list[AiNoteSection]) -> str:
     return f" covering pages {page_start}-{page_end}"
 
 
-def build_summary(generations: list[NotesGeneration]) -> str:
-    headings = [generation.heading for generation in generations if generation.heading]
-    if not headings:
-        return "AI-generated notes are ready."
-    if len(headings) <= 8:
-        return "AI-generated notes covering: " + "; ".join(headings)
-    return "AI-generated notes covering " + str(len(headings)) + " sections, including: " + "; ".join(headings[:8]) + f"; and {len(headings) - 8} more."
-
-
 def build_section_summary(sections: list[AiNoteSection]) -> str:
     sections = sort_note_sections(sections)
     headings = [section.heading for section in sections if section.heading]
