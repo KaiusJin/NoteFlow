@@ -16,8 +16,15 @@ let attemptPollTimer = null;
 let globalPollInterval = null;
 
 const viewRoot = document.querySelector("#view-root");
-const sidebarDocuments = document.querySelector("#sidebar-documents");
 const sidebarTasks = document.querySelector("#sidebar-tasks");
+
+// Per-module selection UIs replaced the old shared sidebar document list:
+// - AI Agent: "+ Sources" modal (multi-select across Markdown / AI Notes)
+// - Flashcards & Quiz: right-side file panel with per-file generate buttons
+// - Editor: top document tabs
+let agentSources = parseJsonSafe(localStorage.getItem("noteflowAgentSources")) || { pdf: [], aiNote: [] };
+let editorTabs = parseJsonSafe(localStorage.getItem("noteflowEditorTabs")) || [];
+let editorSidebarFolderId = localStorage.getItem("noteflowEditorSidebarFolder") || null;
 
 // ---------------------------------------------------------------------------
 // Router
@@ -25,6 +32,7 @@ const sidebarTasks = document.querySelector("#sidebar-tasks");
 const VIEWS = {
   agent: renderAgentView,
   editor: renderEditorView,
+  folders: renderFoldersView,
   flashcards: renderFlashcardsView,
   quiz: renderQuizView,
   general: renderGeneralView,
@@ -40,6 +48,7 @@ function navigate(view) {
     button.classList.toggle("active", button.dataset.nav === view);
   });
   viewRoot.classList.toggle("editor-mode", view === "editor");
+  viewRoot.classList.toggle("agent-mode", view === "agent");
   VIEWS[view]();
 }
 
@@ -49,39 +58,19 @@ function activeDocument() {
 
 function selectDocument(documentId) {
   activeDocumentId = documentId;
+  if (currentView === "editor") {
+    editorSidebarFolderId = null;
+    localStorage.removeItem("noteflowEditorSidebarFolder");
+  }
   localStorage.setItem("noteflowActiveDocument", documentId || "");
-  renderSidebarDocuments();
   if (currentView === "flashcards" || currentView === "quiz" || currentView === "editor") {
     navigate(currentView);
-  } else if (currentView === "agent") {
-    const hint = viewRoot.querySelector("#chat-scope-hint");
-    if (hint) hint.textContent = scopeHintText();
-  } else {
-    renderSidebarDocuments();
   }
 }
 
 // ---------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------
-function renderSidebarDocuments() {
-  const documents = Array.from(documentsMap.values());
-  if (!documents.length) {
-    sidebarDocuments.innerHTML = `<div class="side-empty">No documents yet.<br/>Upload one in General.</div>`;
-    return;
-  }
-  sidebarDocuments.innerHTML = documents
-    .map((doc) => {
-      const dotClass = doc.status === "READY" ? "ready" : doc.status === "FAILED" ? "failed" : "processing";
-      return `
-        <button type="button" class="side-doc ${doc.id === activeDocumentId ? "active" : ""}" data-doc-select="${escapeHtml(doc.id)}" title="${escapeHtml(doc.title)}">
-          <span class="doc-dot ${dotClass}"></span>
-          <span class="side-doc-title">${escapeHtml(doc.title)}</span>
-        </button>
-      `;
-    })
-    .join("");
-}
 
 function renderSidebarTasks() {
   const active = latestTasksList.filter((t) => ["PENDING", "PROCESSING", "RETRYING"].includes(t.status));
@@ -143,7 +132,6 @@ async function startGlobalPolling() {
         const documents = await readJson(docsResponse);
         documentsMap = new Map(documents.map((d) => [d.id, d]));
         if (activeDocumentId && !documentsMap.has(activeDocumentId)) activeDocumentId = null;
-        renderSidebarDocuments();
         const generalDocs = viewRoot.querySelector("#general-documents");
         if (generalDocs) renderGeneralDocuments(generalDocs, documents);
       }
@@ -186,13 +174,12 @@ function handleTaskTransitions() {
 // ---------------------------------------------------------------------------
 // View: AI Agent (persistent retrieval-grounded conversation)
 // ---------------------------------------------------------------------------
-function scopeHintText() {
-  const doc = activeDocument();
-  return doc ? `Scoped to: ${doc.title}` : "Scope: all documents";
+function agentSourcesSummary() {
+  const count = agentSources.pdf.length + agentSources.aiNote.length;
+  return count ? `Scope: ${count} source${count === 1 ? "" : "s"} selected` : "Scope: all sources";
 }
 
 function renderAgentView() {
-  const documents = Array.from(documentsMap.values());
   viewRoot.innerHTML = `
     <div class="view-header">
       <div>
@@ -201,52 +188,89 @@ function renderAgentView() {
       </div>
     </div>
     <div class="chat-shell">
-      <div class="chat-banner">
-        Answers are grounded in retrieved evidence from your PDFs and AI notes with page-level citations.
-      </div>
       <div id="chat-messages" class="chat-messages">
         ${chatMessages.length ? chatMessages.map(renderChatMessage).join("") : `
           <div class="chat-empty">
             <div class="chat-empty-mark">✦</div>
-            <p>Ask about a theorem, formula, proof step, or code snippet.<br/>Sources are cited with document and page.</p>
           </div>`}
       </div>
       <form id="chat-form" class="chat-composer">
-        <div class="chat-controls">
-          <label>Scope
-            <select id="chat-doc-scope">
-              <option value="ALL">All documents</option>
-              <option value="ACTIVE" ${activeDocumentId ? "" : "disabled"}>Selected document</option>
-              <option value="CUSTOM">Custom selection</option>
-            </select>
-          </label>
-          <label>Sources
-            <select id="chat-mode">
-              <option value="MIXED">PDF + AI Notes</option>
-              <option value="PDF">PDF only</option>
-              <option value="AI_NOTE">AI Notes only</option>
-            </select>
-          </label>
-          <span id="chat-scope-hint" class="chat-scope-hint">${escapeHtml(scopeHintText())}</span>
-        </div>
-        <div id="chat-custom-scope" class="custom-search-scope" hidden>
-          ${renderCustomSearchScope(documents)}
-        </div>
         <div class="chat-input-row">
           <input id="chat-query" type="text" placeholder="Ask anything about your documents…" autocomplete="off" required />
           <button type="submit">Send</button>
         </div>
+        <div class="chat-source-row">
+          <button type="button" id="chat-open-sources" class="chip-button" title="Choose which files ground the answers">＋ Sources</button>
+          <span id="chat-source-summary" class="chat-scope-hint" title="Current retrieval scope for your questions">${escapeHtml(agentSourcesSummary())}</span>
+        </div>
       </form>
     </div>
+    ${renderSourceModal()}
   `;
-  const scopeSelect = viewRoot.querySelector("#chat-doc-scope");
-  const customScope = viewRoot.querySelector("#chat-custom-scope");
-  scopeSelect.addEventListener("change", () => {
-    customScope.hidden = scopeSelect.value !== "CUSTOM";
-  });
+  wireSourceModal();
   scrollChatToBottom();
   viewRoot.querySelector("#chat-query").focus();
   if (activeConversationId && !conversationHydrated && !chatMessages.length) hydrateConversation();
+}
+
+// Centered modal for picking retrieval sources, grouped Markdown / AI Notes.
+// Selections can mix both groups; an empty selection means "all sources".
+function renderSourceModal() {
+  const documents = Array.from(documentsMap.values());
+  const row = (doc, kind, ready, checked) => `
+    <label class="source-row ${ready ? "" : "disabled"}">
+      <input type="checkbox" data-source-kind="${kind}" value="${escapeHtml(doc.id)}" ${checked ? "checked" : ""} ${ready ? "" : "disabled"} />
+      <span class="source-row-title">${escapeHtml(doc.title)}</span>
+      <span class="source-row-meta">${doc.pageCount ? `${doc.pageCount} pages` : escapeHtml(doc.documentType || "")}</span>
+    </label>
+  `;
+  return `
+    <div id="source-modal" class="modal-overlay" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>Sources</h3>
+          <button type="button" class="icon-button" id="source-modal-close" title="Close">✕</button>
+        </div>
+        <p class="modal-sub">Pick the files that ground the answers. Leave everything unchecked to search all sources.</p>
+        <div class="modal-body">
+          <div class="source-group-label">Markdown</div>
+          ${documents.map((doc) => row(doc, "pdf", doc.status === "READY", agentSources.pdf.includes(doc.id))).join("") || `<div class="side-empty">No documents yet.</div>`}
+          <div class="source-group-label">AI Notes</div>
+          ${documents.map((doc) => row(doc, "aiNote", doc.aiNoteStatus === "READY", agentSources.aiNote.includes(doc.id))).join("") || `<div class="side-empty">No documents yet.</div>`}
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="ghost-button" id="source-clear">Clear all</button>
+          <button type="button" id="source-done">Done</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireSourceModal() {
+  const modal = viewRoot.querySelector("#source-modal");
+  if (!modal) return;
+  const applyAndClose = () => {
+    agentSources = {
+      pdf: Array.from(modal.querySelectorAll('input[data-source-kind="pdf"]:checked')).map((input) => input.value),
+      aiNote: Array.from(modal.querySelectorAll('input[data-source-kind="aiNote"]:checked')).map((input) => input.value),
+    };
+    localStorage.setItem("noteflowAgentSources", JSON.stringify(agentSources));
+    const summary = viewRoot.querySelector("#chat-source-summary");
+    if (summary) summary.textContent = agentSourcesSummary();
+    modal.hidden = true;
+  };
+  viewRoot.querySelector("#chat-open-sources").addEventListener("click", () => {
+    modal.hidden = false;
+  });
+  viewRoot.querySelector("#source-modal-close").addEventListener("click", applyAndClose);
+  viewRoot.querySelector("#source-done").addEventListener("click", applyAndClose);
+  viewRoot.querySelector("#source-clear").addEventListener("click", () => {
+    modal.querySelectorAll("input[type=checkbox]").forEach((input) => { input.checked = false; });
+  });
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) applyAndClose();
+  });
 }
 
 function renderChatMessage(message) {
@@ -265,13 +289,11 @@ async function handleChatSubmit(form) {
   const queryInput = form.querySelector("#chat-query");
   const query = queryInput.value.trim();
   if (!query) return;
-  const scope = form.querySelector("#chat-doc-scope").value;
-  const mode = form.querySelector("#chat-mode").value;
-  const sourceScope = conversationSourceScope(form, scope, mode);
-  if (scope === "CUSTOM" && !sourceScope.pdfDocumentIds.length && !sourceScope.aiNoteDocumentIds.length) {
-      pushAssistantMessage(`<p class="chat-note">Choose at least one PDF or AI Note for a custom scope.</p>`);
-      return;
-  }
+  // Empty selection means "all sources" (backend treats empty id lists as unscoped).
+  const sourceScope = {
+    pdfDocumentIds: agentSources.pdf.filter((id) => documentsMap.has(id)),
+    aiNoteDocumentIds: agentSources.aiNote.filter((id) => documentsMap.has(id)),
+  };
 
   chatMessages.push({ role: "user", text: query });
   const pendingIndex = chatMessages.push({ role: "assistant", html: `<p class="chat-note">Reading context and sources…</p>` }) - 1;
@@ -300,25 +322,6 @@ async function handleChatSubmit(form) {
     };
   }
   refreshChatMessages();
-}
-
-function conversationSourceScope(form, scope, mode) {
-  let pdfDocumentIds = [];
-  let aiNoteDocumentIds = [];
-  if (scope === "CUSTOM") {
-    pdfDocumentIds = checkedValues(form, "pdfDocumentIds");
-    aiNoteDocumentIds = checkedValues(form, "aiNoteDocumentIds");
-  } else if (scope === "ACTIVE" && activeDocumentId) {
-    pdfDocumentIds = [activeDocumentId];
-    aiNoteDocumentIds = [activeDocumentId];
-  } else if (mode !== "MIXED") {
-    const allIds = Array.from(documentsMap.keys());
-    pdfDocumentIds = mode === "PDF" ? allIds : [];
-    aiNoteDocumentIds = mode === "AI_NOTE" ? allIds : [];
-  }
-  if (mode === "PDF") aiNoteDocumentIds = [];
-  if (mode === "AI_NOTE") pdfDocumentIds = [];
-  return { pdfDocumentIds, aiNoteDocumentIds };
 }
 
 async function pollConversationMessage(messageId) {
@@ -382,117 +385,97 @@ function refreshChatMessages() {
   scrollChatToBottom();
 }
 
-function pushAssistantMessage(html) {
-  chatMessages.push({ role: "assistant", html });
-  refreshChatMessages();
-}
+// ---------------------------------------------------------------------------
+// View: Flashcards
+// ---------------------------------------------------------------------------
 
-function renderEvidenceAnswer(payload, query) {
-  const results = payload.results || [];
-  if (!results.length) {
-    return `<p class="chat-note">No matching embedded source was found for “${escapeHtml(query)}”. Generate embeddings in General, or broaden the scope.</p>`;
-  }
+// Right-side file panel shared by Flashcards and Quiz: every document listed
+// under Markdown and (when ready) AI Notes, each with a per-file generate
+// button. Both groups hit the same per-document generation endpoint; the
+// grouping is presentational.
+function renderStudySourcePanel(kind) {
+  const documents = Array.from(documentsMap.values());
+  const generateAction = kind === "quiz" ? "generate-quiz" : "generate-cards";
+  const generateTitle = kind === "quiz" ? "Generate a quiz from this file" : "Generate flashcards from this file";
+  const card = (doc, ready) => `
+    <article class="study-source-card ${doc.id === activeDocumentId ? "active" : ""}" data-doc-select="${escapeHtml(doc.id)}">
+      <div class="source-card-main">
+        <strong>${escapeHtml(doc.title)}</strong>
+        <span class="source-card-meta">${doc.pageCount ? `${doc.pageCount} pages` : escapeHtml(doc.documentType || "")}</span>
+      </div>
+      <button type="button" class="source-generate" data-study-action="${generateAction}" data-doc-id="${escapeHtml(doc.id)}" ${ready ? "" : "disabled"} title="${generateTitle}">＋</button>
+    </article>
+  `;
+  const aiNoteDocs = documents.filter((doc) => doc.aiNoteStatus === "READY");
   return `
-    <p class="chat-answer-head">Top ${results.length} source${results.length > 1 ? "s" : ""} for “${escapeHtml(query)}”:</p>
-    <div class="chat-evidence">${results.map(renderSearchResult).join("")}</div>
+    <aside class="study-sources">
+      <div class="study-sources-title">Files</div>
+      <div class="source-group-label">Markdown</div>
+      ${documents.map((doc) => card(doc, doc.status === "READY")).join("") || `<div class="side-empty">No documents yet. Upload one in General.</div>`}
+      <div class="source-group-label">AI Notes</div>
+      ${aiNoteDocs.map((doc) => card(doc, true)).join("") || `<div class="side-empty">No AI notes ready.</div>`}
+    </aside>
   `;
 }
 
-function renderCustomSearchScope(documents) {
-  if (!documents.length) {
-    return `<div class="status-card muted">No documents are available for custom scope.</div>`;
-  }
+function studyEmptyMain(icon, hint) {
   return `
-    <div class="source-picker">
-      ${documents.map((document) => {
-        const ready = document.status === "READY";
-        const aiNoteReady = document.aiNoteStatus === "READY";
-        return `
-          <article class="source-picker-row">
-            <div>
-              <strong>${escapeHtml(document.title)}</strong>
-              <div class="document-meta">${escapeHtml(document.documentType)} · ${escapeHtml(document.originalFilename)}</div>
-            </div>
-            <label class="checkbox-label">
-              <input type="checkbox" name="pdfDocumentIds" value="${escapeHtml(document.id)}" ${ready ? "" : "disabled"} />
-              PDF
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" name="aiNoteDocumentIds" value="${escapeHtml(document.id)}" ${aiNoteReady ? "" : "disabled"} />
-              AI Note
-            </label>
-          </article>
-        `;
-      }).join("")}
+    <div class="empty-view study-empty-main">
+      <div class="chat-empty-mark">${icon}</div>
+      <p>${escapeHtml(hint)}</p>
     </div>
   `;
 }
 
-function renderSearchResult(result) {
-  const sourceLabel = result.sourceDomain === "AI_NOTE" ? "AI Note" : "PDF";
-  const document = documentsMap.get(result.documentId);
-  const pageLabel = result.pageStart && result.pageEnd && result.pageEnd !== result.pageStart
-    ? `Pages ${result.pageStart}-${result.pageEnd}`
-    : result.pageStart
-      ? `Page ${result.pageStart}`
-      : "Page unknown";
-  return `
-    <article class="search-result-card">
-      <div class="search-result-header">
-        <span class="badge ${result.sourceDomain === "AI_NOTE" ? "note-source" : "pdf-source"}">${escapeHtml(sourceLabel)}</span>
-        <span>${escapeHtml(pageLabel)} · score ${Number(result.score || 0).toFixed(3)}</span>
-      </div>
-      <strong>${escapeHtml(result.title || sourceLabel)}</strong>
-      <div class="document-meta">${escapeHtml(document?.title || result.documentId)}</div>
-      <p class="rich">${renderRich(result.snippet || "No preview available.")}</p>
-    </article>
-  `;
-}
-
-// ---------------------------------------------------------------------------
-// View: Flashcards
-// ---------------------------------------------------------------------------
 async function renderFlashcardsView() {
   const doc = activeDocument();
+  let mainHtml;
   if (!doc) {
-    viewRoot.innerHTML = viewNeedsDocument("Flashcards", "Pick a document in the sidebar to see its flashcard decks.");
-    return;
+    mainHtml = studyEmptyMain("▣", "Pick a file on the right, or press ＋ to generate a deck from it.");
+  } else {
+    try {
+      const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/flashcard-decks`);
+      const decks = await readJson(response);
+      if (!response.ok) throw new Error(decks.message || "Could not load flashcard decks");
+      const deck = decks[0];
+      mainHtml = `
+        <article class="study-module flashcard-module">
+          <div class="study-module-head">
+            <div><span class="study-icon">▣</span><h3>${escapeHtml(doc.title)}</h3></div>
+            <span class="badge ${statusClass(deck?.status)}">${escapeHtml(deck?.status || "NOT STARTED")}</span>
+          </div>
+          <p>Source-grounded cards with SM-2 scheduling and page citations.</p>
+          ${deck ? studyProgress(deck) : `<div class="empty-study">No deck generated yet.</div>`}
+          ${decks.length > 1 ? `<div class="study-history">History: ${decks.map((d) => `v${d.version} ${escapeHtml(d.status)}`).join(" · ")}</div>` : ""}
+          <div class="study-actions">
+            <button data-study-action="generate-cards" ${doc.status === "READY" ? "" : "disabled"}>${deck ? "Generate new deck" : "Generate flashcards"}</button>
+            ${deck?.status === "READY" ? `
+              <button class="secondary" data-study-action="review" data-deck-id="${deck.id}">Review due cards</button>
+              <button class="secondary" data-study-action="browse-cards" data-deck-id="${deck.id}">Browse all cards</button>
+            ` : ""}
+          </div>
+        </article>
+      `;
+    } catch (error) {
+      mainHtml = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
+    }
   }
-  viewRoot.innerHTML = viewLoading("Flashcards", doc.title);
-  try {
-    const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/flashcard-decks`);
-    const decks = await readJson(response);
-    if (!response.ok) throw new Error(decks.message || "Could not load flashcard decks");
-    const deck = decks[0];
-    viewRoot.innerHTML = `
-      <div class="view-header">
-        <div>
-          <div class="eyebrow">Flashcards · ${escapeHtml(doc.title)}</div>
-          <h1>Spaced repetition</h1>
-        </div>
-        <button class="secondary" type="button" data-refresh-view="flashcards">Refresh</button>
+  viewRoot.innerHTML = `
+    <div class="view-header">
+      <div>
+        <div class="eyebrow">Flashcards${doc ? ` · ${escapeHtml(doc.title)}` : ""}</div>
+        <h1>Spaced repetition</h1>
       </div>
-      <article class="study-module flashcard-module">
-        <div class="study-module-head">
-          <div><span class="study-icon">▣</span><h3>Deck</h3></div>
-          <span class="badge ${statusClass(deck?.status)}">${escapeHtml(deck?.status || "NOT STARTED")}</span>
-        </div>
-        <p>Source-grounded cards with SM-2 scheduling and page citations.</p>
-        ${deck ? studyProgress(deck) : `<div class="empty-study">No deck generated yet.</div>`}
-        ${decks.length > 1 ? `<div class="study-history">History: ${decks.map((d) => `v${d.version} ${escapeHtml(d.status)}`).join(" · ")}</div>` : ""}
-        <div class="study-actions">
-          <button data-study-action="generate-cards" ${doc.status === "READY" ? "" : "disabled"}>${deck ? "Generate new deck" : "Generate flashcards"}</button>
-          ${deck?.status === "READY" ? `
-            <button class="secondary" data-study-action="review" data-deck-id="${deck.id}">Review due cards</button>
-            <button class="secondary" data-study-action="browse-cards" data-deck-id="${deck.id}">Browse all cards</button>
-          ` : ""}
-        </div>
-      </article>
-      <div id="study-detail" class="study-detail"></div>
-    `;
-  } catch (error) {
-    viewRoot.innerHTML = viewError("Flashcards", error);
-  }
+      <button class="secondary" type="button" data-refresh-view="flashcards">Refresh</button>
+    </div>
+    <div class="study-layout">
+      <div class="study-main">
+        ${mainHtml}
+        <div id="study-detail" class="study-detail"></div>
+      </div>
+      ${renderStudySourcePanel("cards")}
+    </div>
+  `;
 }
 
 async function renderReview(deckId) {
@@ -561,49 +544,57 @@ async function renderCardBrowser(deckId) {
 // ---------------------------------------------------------------------------
 async function renderQuizView() {
   const doc = activeDocument();
+  let mainHtml;
   if (!doc) {
-    viewRoot.innerHTML = viewNeedsDocument("Quiz", "Pick a document in the sidebar to see its quizzes.");
-    return;
+    mainHtml = studyEmptyMain("?", "Pick a file on the right, or press ＋ to generate a quiz from it.");
+  } else {
+    try {
+      const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/quiz-sets`);
+      const quizzes = await readJson(response);
+      if (!response.ok) throw new Error(quizzes.message || "Could not load quizzes");
+      const quiz = quizzes[0];
+      mainHtml = `
+        <article class="study-module quiz-module">
+          <div class="study-module-head">
+            <div><span class="study-icon">?</span><h3>${escapeHtml(doc.title)}</h3></div>
+            <span class="badge ${statusClass(quiz?.status)}">${escapeHtml(quiz?.status || "NOT STARTED")}</span>
+          </div>
+          <p>Mixed-difficulty questions with rubric grading, explanations, and citations.</p>
+          ${quiz ? studyProgress(quiz) : `<div class="empty-study">No quiz generated yet.</div>`}
+          ${quizzes.length > 1 ? `<div class="study-history">History: ${quizzes.map((q) => `v${q.version} ${escapeHtml(q.status)}`).join(" · ")}</div>` : ""}
+          <fieldset class="quiz-options" ${doc.status === "READY" ? "" : "disabled"}>
+            <legend>New quiz composition</legend>
+            <label>Easy <input type="number" id="quiz-easy" min="0" max="60" value="3" /></label>
+            <label>Medium <input type="number" id="quiz-medium" min="0" max="60" value="5" /></label>
+            <label>Hard <input type="number" id="quiz-hard" min="0" max="60" value="2" /></label>
+            <span class="quiz-total" id="quiz-total">Total: 10</span>
+          </fieldset>
+          <div class="study-actions">
+            <button data-study-action="generate-quiz" ${doc.status === "READY" ? "" : "disabled"}>${quiz ? "Generate new quiz" : "Generate quiz"}</button>
+            ${quiz?.status === "READY" ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${quiz.id}">Start quiz</button>` : ""}
+          </div>
+        </article>
+      `;
+    } catch (error) {
+      mainHtml = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
+    }
   }
-  viewRoot.innerHTML = viewLoading("Quiz", doc.title);
-  try {
-    const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/quiz-sets`);
-    const quizzes = await readJson(response);
-    if (!response.ok) throw new Error(quizzes.message || "Could not load quizzes");
-    const quiz = quizzes[0];
-    viewRoot.innerHTML = `
-      <div class="view-header">
-        <div>
-          <div class="eyebrow">Quiz · ${escapeHtml(doc.title)}</div>
-          <h1>Practice and grading</h1>
-        </div>
-        <button class="secondary" type="button" data-refresh-view="quiz">Refresh</button>
+  viewRoot.innerHTML = `
+    <div class="view-header">
+      <div>
+        <div class="eyebrow">Quiz${doc ? ` · ${escapeHtml(doc.title)}` : ""}</div>
+        <h1>Practice and grading</h1>
       </div>
-      <article class="study-module quiz-module">
-        <div class="study-module-head">
-          <div><span class="study-icon">?</span><h3>Quiz set</h3></div>
-          <span class="badge ${statusClass(quiz?.status)}">${escapeHtml(quiz?.status || "NOT STARTED")}</span>
-        </div>
-        <p>Mixed-difficulty questions with rubric grading, explanations, and citations.</p>
-        ${quiz ? studyProgress(quiz) : `<div class="empty-study">No quiz generated yet.</div>`}
-        ${quizzes.length > 1 ? `<div class="study-history">History: ${quizzes.map((q) => `v${q.version} ${escapeHtml(q.status)}`).join(" · ")}</div>` : ""}
-        <fieldset class="quiz-options" ${doc.status === "READY" ? "" : "disabled"}>
-          <legend>New quiz composition</legend>
-          <label>Easy <input type="number" id="quiz-easy" min="0" max="60" value="3" /></label>
-          <label>Medium <input type="number" id="quiz-medium" min="0" max="60" value="5" /></label>
-          <label>Hard <input type="number" id="quiz-hard" min="0" max="60" value="2" /></label>
-          <span class="quiz-total" id="quiz-total">Total: 10</span>
-        </fieldset>
-        <div class="study-actions">
-          <button data-study-action="generate-quiz" ${doc.status === "READY" ? "" : "disabled"}>${quiz ? "Generate new quiz" : "Generate quiz"}</button>
-          ${quiz?.status === "READY" ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${quiz.id}">Start quiz</button>` : ""}
-        </div>
-      </article>
-      <div id="study-detail" class="study-detail"></div>
-    `;
-  } catch (error) {
-    viewRoot.innerHTML = viewError("Quiz", error);
-  }
+      <button class="secondary" type="button" data-refresh-view="quiz">Refresh</button>
+    </div>
+    <div class="study-layout">
+      <div class="study-main">
+        ${mainHtml}
+        <div id="study-detail" class="study-detail"></div>
+      </div>
+      ${renderStudySourcePanel("quiz")}
+    </div>
+  `;
 }
 
 async function startQuiz(quizId) {
@@ -1162,6 +1153,27 @@ let editorDirty = false;
 let editorOfflineMode = false;
 let editorNoteTitle = "";
 let editorOutlineVisible = localStorage.getItem("noteflowEditorOutline") === "1";
+let editorStartDocumentId = localStorage.getItem("noteflowEditorStartDocument") || activeDocumentId;
+let editorHomeMode = localStorage.getItem("noteflowEditorHome") === "1";
+// Chunked loading for large notes: the note is split into heading-delimited
+// sections; the editor always holds a PREFIX [0, editorLoadedSectionEnd) of
+// them, and a scroll sentinel appends further batches. Saving composes the
+// editor content with the unloaded suffix so nothing is ever lost.
+let editorFullMarkdown = "";
+let editorSections = [];
+let editorLoadedSectionStart = 0;
+let editorLoadedSectionEnd = 0;
+let editorUnsavedDraft = false;
+let editorDraftFolderId = null;
+let editorDraftTitle = "Untitled note";
+let editorLocalFolders = parseJsonSafe(localStorage.getItem("noteflowEditorLocalFolders")) || [];
+let editorLocalNoteRef = null;
+let editorLoadObserver = null;
+let editorScrollPump = null;
+let editorPumpTimer = null;
+let editorAppendBusy = false;
+const EDITOR_SECTION_BATCH = 30;
+const EDITOR_SECTION_BYTE_BUDGET = 64000;
 
 // Notion-ish palettes (label, css color). `null` clears the color.
 const EDITOR_TEXT_COLORS = [
@@ -1219,29 +1231,232 @@ function teardownEditor() {
       /* ignore */
     }
   }
+  removeEditorSentinel();
   editorInstance = null;
   editorDocumentId = null;
   editorDirty = false;
 }
 
+function persistEditorTabs() {
+  localStorage.setItem("noteflowEditorTabs", JSON.stringify(editorTabs));
+}
+
+function closeEditorTab(documentId) {
+  const index = editorTabs.indexOf(documentId);
+  if (index === -1) return;
+  editorTabs.splice(index, 1);
+  if (activeDocumentId === documentId) {
+    editorStartDocumentId = documentId;
+    localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
+    activeDocumentId = editorTabs[index] || editorTabs[index - 1] || null;
+    localStorage.setItem("noteflowActiveDocument", activeDocumentId || "");
+  }
+  if (!editorTabs.length) {
+    editorHomeMode = true;
+    localStorage.setItem("noteflowEditorHome", "1");
+  }
+  persistEditorTabs();
+  navigate("editor");
+}
+
+function renderEditorTabs(documents) {
+  return `
+    <div class="editor-tabs">
+      ${editorTabs.map((id) => {
+        const tabDoc = documentsMap.get(id);
+        return `
+          <div class="editor-tab ${!editorHomeMode && !editorUnsavedDraft && id === activeDocumentId ? "active" : ""}" data-editor-tab="${escapeHtml(id)}" title="${escapeHtml(tabDoc.title)}">
+            <span class="editor-tab-title">${escapeHtml(tabDoc.title)}</span>
+            <button type="button" class="editor-tab-close" data-editor-tab-close="${escapeHtml(id)}" title="Close tab">✕</button>
+          </div>
+        `;
+      }).join("")}
+      <div class="editor-tab-add">
+        <button type="button" class="editor-tab-plus" data-editor-tab-create title="Upload/Create document">＋</button>
+      </div>
+    </div>
+  `;
+}
+
+function folderNameForDocument(doc) {
+  const original = doc?.originalFilename || doc?.title || "Untitled";
+  return original.replace(/\.[^/.]+$/, "") || doc?.title || "Untitled";
+}
+
+function editorFolders(documents) {
+  return [
+    ...documents.map((doc) => ({
+      id: doc.id,
+      name: folderNameForDocument(doc),
+      doc,
+      resources: [
+        { kind: "AI_NOTE", label: "AI Note", ready: doc.aiNoteStatus === "READY", meta: doc.aiNoteStatus || "Not Started" },
+        { kind: "RAW", label: "PDF Markdown", ready: doc.status === "READY", meta: doc.status || "Unknown" },
+        ...editorLocalNotesForFolder(doc.id),
+      ],
+    })),
+    ...editorLocalFolders.filter((folder) => !documentsMap.has(folder.id)).map((folder) => ({
+      ...folder,
+      local: true,
+      resources: editorLocalNotesForFolder(folder.id),
+    })),
+  ];
+}
+
+function editorLocalNotesForFolder(folderId) {
+  const folder = editorLocalFolders.find((candidate) => candidate.id === folderId);
+  return (folder?.notes || []).map((note) => ({
+    kind: "LOCAL_NOTE",
+    label: "Editable Note",
+    ready: true,
+    meta: new Date(note.updatedAt || Date.now()).toLocaleDateString(),
+    note,
+  }));
+}
+
+function ensureEditorLocalFolder(folderId, name) {
+  let folder = editorLocalFolders.find((candidate) => candidate.id === folderId);
+  if (!folder) {
+    folder = { id: folderId, name, notes: [] };
+    editorLocalFolders.push(folder);
+  } else if (name && folder.name !== name) {
+    folder.name = name;
+  }
+  if (!Array.isArray(folder.notes)) folder.notes = [];
+  return folder;
+}
+
+function renderEditorFolderBrowser(documents, activeFolderId = editorSidebarFolderId || editorDraftFolderId || activeDocumentId || editorStartDocumentId) {
+  const folders = editorFolders(documents);
+  const activeFolder = folders.find((folder) => folder.id === activeFolderId) || folders[0] || null;
+  return `
+    <section class="editor-folder-browser">
+      <aside class="editor-folder-panel">
+        <div class="resource-panel-title">Folders</div>
+        <div class="editor-folder-list">
+          ${folders.map((folder) => `
+            <button type="button" class="editor-folder-item ${activeFolder?.id === folder.id ? "active" : ""}" data-editor-folder="${escapeHtml(folder.id)}" title="${escapeHtml(folder.name)}">
+              <span class="folder-icon">▣</span>
+              <span>${escapeHtml(folder.name)}</span>
+            </button>
+          `).join("") || `<div class="side-empty">No folders yet.</div>`}
+        </div>
+      </aside>
+      <div class="editor-folder-content">
+        ${renderEditorFolderContent(activeFolder)}
+      </div>
+    </section>
+  `;
+}
+
+function renderEditorFolderContent(activeFolder) {
+  if (!activeFolder) return `<div class="side-empty">Upload a PDF in General to create folders.</div>`;
+  return `
+    <div class="folder-content-head">
+      <div><div class="eyebrow">Folder</div><h2>${escapeHtml(activeFolder.name)}</h2></div>
+    </div>
+    <div class="folder-file-grid">
+      ${activeFolder.resources.map((resource) => `
+        <button type="button" class="folder-file-card ${resource.ready ? "" : "disabled"}" data-editor-folder-source="${escapeHtml(resource.kind)}" data-editor-folder-doc="${escapeHtml(activeFolder.id)}" ${resource.note ? `data-editor-local-note="${escapeHtml(resource.note.id)}"` : ""} ${resource.ready ? "" : "disabled"}>
+          <span class="file-kind">${escapeHtml(resource.label)}</span>
+          <strong>${escapeHtml(resource.note?.title || activeFolder.doc?.title || activeFolder.name)}</strong>
+          <span>${resource.kind !== "LOCAL_NOTE" && activeFolder.doc?.pageCount ? `${activeFolder.doc.pageCount} pages` : escapeHtml(resource.meta)}</span>
+        </button>
+      `).join("") || `<div class="side-empty">No notes in this folder yet.</div>`}
+    </div>
+  `;
+}
+
+function persistEditorLocalFolders() {
+  localStorage.setItem("noteflowEditorLocalFolders", JSON.stringify(editorLocalFolders));
+}
+
+function renderFoldersView() {
+  const documents = Array.from(documentsMap.values());
+  const folders = editorFolders(documents);
+  if (editorSidebarFolderId && !folders.some((folder) => folder.id === editorSidebarFolderId)) {
+    editorSidebarFolderId = null;
+    localStorage.removeItem("noteflowEditorSidebarFolder");
+  }
+  if (!editorSidebarFolderId && folders[0]) {
+    editorSidebarFolderId = folders[0].id;
+    localStorage.setItem("noteflowEditorSidebarFolder", editorSidebarFolderId);
+  }
+  viewRoot.innerHTML = `
+    <div class="view-header">
+      <div>
+        <div class="eyebrow">Folders</div>
+        <h1>Resources</h1>
+      </div>
+    </div>
+    ${folders.length ? renderEditorFolderBrowser(documents, editorSidebarFolderId) : `
+      <div class="empty-view">
+        <div class="chat-empty-mark">▣</div>
+        <p>Upload a PDF in General to create a folder.</p>
+      </div>
+    `}
+  `;
+  wireEditorFolderBrowserEvents();
+}
+
 async function renderEditorView() {
+  const documents = Array.from(documentsMap.values());
+  // Drop tabs whose documents no longer exist. When the last tab is closed,
+  // keep a separate start document so Start Over can re-initialize it.
+  editorTabs = editorTabs.filter((id) => documentsMap.has(id));
+  if (editorStartDocumentId && !documentsMap.has(editorStartDocumentId)) editorStartDocumentId = null;
+  if (editorTabs.length && activeDocumentId && documentsMap.has(activeDocumentId) && !editorTabs.includes(activeDocumentId)) {
+    editorTabs.push(activeDocumentId);
+  }
+  if (!activeDocumentId && editorTabs.length) activeDocumentId = editorTabs[0];
+  if (!editorTabs.length && activeDocumentId) {
+    editorStartDocumentId = activeDocumentId;
+    activeDocumentId = null;
+    localStorage.setItem("noteflowActiveDocument", "");
+  }
+  if (!editorStartDocumentId && documents.length) editorStartDocumentId = documents[0].id;
+  localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId || "");
+  persistEditorTabs();
   const doc = activeDocument();
-  if (!doc) {
-    viewRoot.innerHTML = viewNeedsDocument("Editor", "Select a document in the sidebar to start writing notes.");
+  const startDoc = doc || (editorStartDocumentId ? documentsMap.get(editorStartDocumentId) : null) || null;
+  const showHome = editorHomeMode || !editorTabs.length || !doc;
+  if (showHome) {
+    editorHomeMode = true;
+    localStorage.setItem("noteflowEditorHome", "1");
+    teardownEditor();
+    viewRoot.innerHTML = `
+      <div class="view-header editor-header">
+        <div>
+          <div class="eyebrow">Editor</div>
+          <h1>My Notes</h1>
+        </div>
+      </div>
+      ${renderEditorTabs(documents)}
+      <section class="editor-home-page">
+        <div class="editor-home-inner">
+          ${renderEditorStartContent()}
+        </div>
+      </section>
+      ${renderEditorSourceModal()}
+      ${renderEditorSaveModal(documents)}
+    `;
+    wireEditorHomeEvents();
     return;
   }
   viewRoot.innerHTML = `
     <div class="view-header editor-header">
       <div>
-        <div class="eyebrow">Editor · ${escapeHtml(doc.title)}</div>
+        <div class="eyebrow">Editor${(doc || startDoc) ? ` · ${escapeHtml((doc || startDoc).title)}` : ""}</div>
         <h1>My Notes</h1>
       </div>
       <div class="editor-actions">
         <span id="editor-save-status" class="editor-save-status"></span>
-        <button type="button" class="ghost-button" data-editor-action="reinit">Start over…</button>
-        <button type="button" data-editor-action="export">Export .md</button>
+        <button type="button" class="ghost-button" data-editor-action="save" ${!doc ? "disabled" : ""}>Save</button>
+        <button type="button" class="ghost-button" data-editor-action="reinit" ${!startDoc ? "disabled" : ""}>Start over…</button>
+        <button type="button" data-editor-action="export" ${!doc ? "disabled" : ""}>Export .md</button>
       </div>
     </div>
+    ${renderEditorTabs(documents)}
     <div class="editor-columns ${editorOutlineVisible ? "with-outline" : ""}">
       <section class="editor-pane">
         <div id="editor-toolbar" class="editor-toolbar">
@@ -1281,12 +1496,320 @@ async function renderEditorView() {
         <div id="editor-outline-body" class="outline-body"></div>
       </aside>
     </div>
+    ${renderEditorSaveModal(documents)}
   `;
-  wireEditorEvents(doc);
+  wireEditorEvents(doc, startDoc);
+  if (!editorTabs.length) {
+    editorHomeMode = true;
+    localStorage.setItem("noteflowEditorHome", "1");
+    navigate("editor");
+    return;
+  }
   await loadEditorNote(doc);
 }
 
-function wireEditorEvents(doc) {
+function renderEditorStartContent() {
+  return `
+    <div class="editor-start">
+      <h2>Start over</h2>
+      <p class="editor-start-sub">Pick a starting point. Existing document tabs stay open.</p>
+      <div class="editor-start-options">
+        <button type="button" class="editor-start-card" data-editor-source-picker="AI_NOTE">
+          <span class="start-card-title">From AI Note</span>
+          <span class="start-card-sub">Choose a READY AI note to copy into the editor.</span>
+        </button>
+        <button type="button" class="editor-start-card" data-editor-source-picker="RAW">
+          <span class="start-card-title">From PDF Markdown</span>
+          <span class="start-card-sub">Choose a parsed PDF Markdown file to copy.</span>
+        </button>
+        <button type="button" class="editor-start-card" data-editor-blank>
+          <span class="start-card-title">Blank note</span>
+          <span class="start-card-sub">Start a blank note, then choose where to save it.</span>
+        </button>
+      </div>
+      <div id="editor-start-error"></div>
+    </div>
+  `;
+}
+
+function renderEditorSaveModal(documents) {
+  const folders = editorFolders(documents);
+  return `
+    <div id="editor-save-modal" class="modal-overlay" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3>Save note</h3>
+          <button type="button" class="icon-button" id="editor-save-close" title="Close">✕</button>
+        </div>
+        <p class="modal-sub">Choose an existing folder or create a local folder for this editable note.</p>
+        <div class="modal-body editor-save-body">
+          <label>Note title
+            <input id="editor-save-title" type="text" value="${escapeHtml(editorDraftTitle)}" />
+          </label>
+          <div class="source-group-label">Existing folders</div>
+          <div class="save-folder-list">
+            ${folders.map((folder) => `
+              <button type="button" class="save-folder-row ${folder.id === (editorDraftFolderId || activeDocumentId) ? "active" : ""}" data-save-folder="${escapeHtml(folder.id)}">
+                <span>${escapeHtml(folder.name)}</span>
+                <small>${folder.local ? `${folder.resources.length} notes` : escapeHtml(folder.doc.title)}</small>
+              </button>
+            `).join("") || `<div class="side-empty">No folders yet.</div>`}
+          </div>
+          <label>New folder
+            <input id="editor-new-folder" type="text" placeholder="Folder name" />
+          </label>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="ghost-button" id="editor-save-cancel">Cancel</button>
+          <button type="button" id="editor-save-confirm">Save</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderEditorSourceModal() {
+  const documents = Array.from(documentsMap.values());
+  const readyAiNotes = documents.filter((doc) => doc.aiNoteStatus === "READY");
+  const readyMarkdown = documents.filter((doc) => doc.status === "READY");
+  const row = (doc) => `
+    <button type="button" class="source-row source-row-button" data-editor-source-doc="${escapeHtml(doc.id)}">
+      <span class="source-row-title">${escapeHtml(doc.title)}</span>
+      <span class="source-row-meta">${doc.pageCount ? `${doc.pageCount} pages` : escapeHtml(doc.documentType || "")}</span>
+    </button>
+  `;
+  return `
+    <div id="editor-source-modal" class="modal-overlay" hidden>
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="editor-source-title">Choose source</h3>
+          <button type="button" class="icon-button" id="editor-source-close" title="Close">✕</button>
+        </div>
+        <p class="modal-sub" id="editor-source-sub"></p>
+        <div class="modal-body">
+          <div id="editor-source-ai" hidden>
+            ${readyAiNotes.map(row).join("") || `<div class="side-empty">No READY AI notes.</div>`}
+          </div>
+          <div id="editor-source-raw" hidden>
+            ${readyMarkdown.map(row).join("") || `<div class="side-empty">No READY PDF Markdown files.</div>`}
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="ghost-button" id="editor-source-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function wireEditorHomeEvents() {
+  let sourceKind = null;
+  const modal = viewRoot.querySelector("#editor-source-modal");
+  const openSourceModal = (kind) => {
+    sourceKind = kind;
+    modal.hidden = false;
+    viewRoot.querySelector("#editor-source-title").textContent = kind === "AI_NOTE" ? "Choose AI Note" : "Choose PDF Markdown";
+    viewRoot.querySelector("#editor-source-sub").textContent = kind === "AI_NOTE"
+      ? "Pick a READY AI note to initialize an editable note."
+      : "Pick a parsed PDF Markdown file to initialize an editable note.";
+    viewRoot.querySelector("#editor-source-ai").hidden = kind !== "AI_NOTE";
+    viewRoot.querySelector("#editor-source-raw").hidden = kind !== "RAW";
+  };
+  const closeSourceModal = () => {
+    modal.hidden = true;
+    sourceKind = null;
+  };
+  viewRoot.querySelector(".editor-home-page").addEventListener("click", async (event) => {
+    const picker = event.target.closest("[data-editor-source-picker]");
+    if (picker) {
+      openSourceModal(picker.dataset.editorSourcePicker);
+      return;
+    }
+    const blank = event.target.closest("[data-editor-blank]");
+    if (blank) {
+      await startBlankEditorDraft();
+      return;
+    }
+  });
+  modal.addEventListener("click", async (event) => {
+    if (event.target === modal || event.target.closest("#editor-source-close") || event.target.closest("#editor-source-cancel")) {
+      closeSourceModal();
+      return;
+    }
+    const sourceDocButton = event.target.closest("[data-editor-source-doc]");
+    if (!sourceDocButton || !sourceKind) return;
+    const doc = documentsMap.get(sourceDocButton.dataset.editorSourceDoc);
+    if (!doc) return;
+    sourceDocButton.disabled = true;
+    try {
+      await initEditorNote(doc, sourceKind);
+    } finally {
+      sourceDocButton.disabled = false;
+    }
+  });
+  wireEditorSaveModal();
+}
+
+function wireEditorFolderBrowserEvents() {
+  const browser = viewRoot.querySelector(".editor-folder-browser");
+  if (!browser) return;
+  browser.addEventListener("click", async (event) => {
+    const folderButton = event.target.closest("[data-editor-folder]");
+    if (folderButton) {
+      editorSidebarFolderId = folderButton.dataset.editorFolder;
+      editorDraftFolderId = editorSidebarFolderId;
+      localStorage.setItem("noteflowEditorSidebarFolder", editorSidebarFolderId);
+      viewRoot.querySelector(".editor-folder-browser").outerHTML =
+        renderEditorFolderBrowser(Array.from(documentsMap.values()), editorSidebarFolderId);
+      wireEditorFolderBrowserEvents();
+      return;
+    }
+    const folderSource = event.target.closest("[data-editor-folder-source]");
+    if (!folderSource) return;
+    if (folderSource.dataset.editorFolderSource === "LOCAL_NOTE") {
+      const folder = editorLocalFolders.find((candidate) => candidate.id === folderSource.dataset.editorFolderDoc);
+      const note = folder?.notes?.find((candidate) => candidate.id === folderSource.dataset.editorLocalNote);
+      if (folder && note) await openLocalEditorNote(folder, note);
+      return;
+    }
+    const doc = documentsMap.get(folderSource.dataset.editorFolderDoc);
+    if (!doc) return;
+    folderSource.disabled = true;
+    try {
+      await initEditorNote(doc, folderSource.dataset.editorFolderSource);
+    } finally {
+      folderSource.disabled = false;
+    }
+  });
+}
+
+async function openLocalEditorNote(folder, note) {
+  currentView = "editor";
+  localStorage.setItem("noteflowView", "editor");
+  document.querySelectorAll("[data-nav]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.nav === "editor");
+  });
+  viewRoot.classList.add("editor-mode");
+  viewRoot.classList.remove("agent-mode");
+  editorHomeMode = false;
+  editorUnsavedDraft = true;
+  editorSidebarFolderId = null;
+  editorDraftFolderId = folder.id;
+  editorDraftTitle = note.title;
+  editorLocalNoteRef = { folderId: folder.id, noteId: note.id };
+  editorDocumentId = null;
+  editorFullMarkdown = note.markdown || "";
+  localStorage.setItem("noteflowEditorHome", "0");
+  localStorage.removeItem("noteflowEditorSidebarFolder");
+  viewRoot.innerHTML = `
+    <div class="view-header editor-header">
+      <div>
+        <div class="eyebrow">Editor · ${escapeHtml(folder.name)}</div>
+        <h1>${escapeHtml(note.title)}</h1>
+      </div>
+      <div class="editor-actions">
+        <span id="editor-save-status" class="editor-save-status">Local</span>
+        <button type="button" class="ghost-button" data-editor-action="save">Save</button>
+      </div>
+    </div>
+    ${renderEditorTabs(Array.from(documentsMap.values()))}
+    ${renderEditorEditingShell(false)}
+    ${renderEditorSaveModal(Array.from(documentsMap.values()))}
+  `;
+  wireEditorEvents(null, null);
+  wireEditorSaveModal();
+  await loadEditorMarkdownSections({ id: null, title: note.title }, note.markdown || "");
+}
+
+function renderEditorEditingShell(withOutline = editorOutlineVisible) {
+  return `
+    <div class="editor-columns ${withOutline ? "with-outline" : ""}">
+      <section class="editor-pane">
+        <div id="editor-toolbar" class="editor-toolbar">
+          <button type="button" class="ed-btn ed-icon" data-ed-tool="undo" title="Undo (⌘Z)">${ICON_UNDO}</button>
+          <button type="button" class="ed-btn ed-icon" data-ed-tool="redo" title="Redo (⇧⌘Z)">${ICON_REDO}</button>
+          <span class="ed-sep"></span>
+          <div class="ed-dropdown">
+            <button type="button" class="ed-btn" data-ed-menu>Turn into ▾</button>
+            <div class="ed-menu" hidden>
+              ${[["text", "Text"], ["h1", "Heading 1"], ["h2", "Heading 2"], ["h3", "Heading 3"], ["h4", "Heading 4"], ["bullet", "Bulleted list"], ["ordered", "Numbered list"], ["quote", "Quote"], ["code", "Code block"]]
+                .map(([kind, label]) => `<button type="button" class="ed-menu-item" data-ed-turninto="${kind}">${escapeHtml(label)}</button>`)
+                .join("")}
+            </div>
+          </div>
+          <span class="ed-flex"></span>
+          ${withOutline ? `<button type="button" class="ed-btn active" data-ed-tool="outline" title="Toggle heading outline">☰ Outline</button>` : ""}
+        </div>
+        <div id="editor-note-shell" class="editor-note-shell"><div class="study-loading">Preparing editor…</div></div>
+      </section>
+      ${withOutline ? `<aside id="editor-outline" class="editor-outline"><div class="outline-title">Outline</div><div id="editor-outline-body" class="outline-body"></div></aside>` : ""}
+    </div>
+  `;
+}
+
+function wireEditorSaveModal() {
+  const modal = viewRoot.querySelector("#editor-save-modal");
+  if (!modal) return;
+  const close = () => { modal.hidden = true; };
+  const open = () => {
+    const title = modal.querySelector("#editor-save-title");
+    if (title) title.value = editorDraftTitle;
+    modal.hidden = false;
+  };
+  viewRoot.querySelectorAll("[data-editor-open-save]").forEach((button) => {
+    button.addEventListener("click", open);
+  });
+  modal.addEventListener("click", async (event) => {
+    if (event.target === modal || event.target.closest("#editor-save-close") || event.target.closest("#editor-save-cancel")) {
+      close();
+      return;
+    }
+    const folder = event.target.closest("[data-save-folder]");
+    if (folder) {
+      editorDraftFolderId = folder.dataset.saveFolder;
+      modal.querySelectorAll(".save-folder-row").forEach((row) => row.classList.toggle("active", row === folder));
+      return;
+    }
+    if (event.target.closest("#editor-save-confirm")) {
+      await saveEditorToChosenFolder(modal);
+    }
+  });
+}
+
+async function startBlankEditorDraft() {
+  editorHomeMode = false;
+  editorUnsavedDraft = true;
+  editorSidebarFolderId = null;
+  editorDraftTitle = "Untitled note";
+  editorLocalNoteRef = null;
+  editorDocumentId = null;
+  editorFullMarkdown = "";
+  editorSections = splitMarkdownSections("");
+  editorLoadedSectionStart = 0;
+  editorLoadedSectionEnd = editorSections.length;
+  localStorage.setItem("noteflowEditorHome", "0");
+  localStorage.removeItem("noteflowEditorSidebarFolder");
+  viewRoot.innerHTML = `
+    <div class="view-header editor-header">
+      <div>
+        <div class="eyebrow">Editor · Unsaved</div>
+        <h1>${escapeHtml(editorDraftTitle)}</h1>
+      </div>
+      <div class="editor-actions">
+        <span id="editor-save-status" class="editor-save-status warn">Unsaved</span>
+        <button type="button" class="ghost-button" data-editor-action="save">Save</button>
+      </div>
+    </div>
+    ${renderEditorTabs(Array.from(documentsMap.values()))}
+    ${renderEditorEditingShell(false)}
+    ${renderEditorSaveModal(Array.from(documentsMap.values()))}
+  `;
+  wireEditorEvents(null, null);
+  wireEditorSaveModal();
+  await bootEditor({ id: null, title: editorDraftTitle }, "");
+}
+
+function wireEditorEvents(doc, startDoc = doc) {
   const toolbar = viewRoot.querySelector("#editor-toolbar");
   // Keep the editor's selection alive while clicking toolbar controls.
   toolbar.addEventListener("mousedown", (event) => event.preventDefault());
@@ -1323,28 +1846,34 @@ function wireEditorEvents(doc) {
       toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
     }
   });
-  viewRoot.querySelector("#editor-outline-body").addEventListener("click", (event) => {
-    const item = event.target.closest("[data-outline-index]");
-    if (!item) return;
-    const headings = editorHeadings();
-    const heading = headings[Number(item.dataset.outlineIndex)];
-    if (heading) heading.scrollIntoView({ block: "start" });
-  });
+  const outlineBody = viewRoot.querySelector("#editor-outline-body");
+  if (outlineBody) {
+    outlineBody.addEventListener("click", (event) => {
+      const item = event.target.closest("[data-editor-section-index]");
+      if (!item) return;
+      jumpToEditorSection(Number(item.dataset.editorSectionIndex));
+    });
+  }
   viewRoot.querySelector(".editor-header").addEventListener("click", (event) => {
     const action = event.target.closest("[data-editor-action]");
     if (!action) return;
-    if (action.dataset.editorAction === "export") exportEditorMarkdown(doc);
-    if (action.dataset.editorAction === "reinit") renderEditorStart(doc, true);
-  });
-  viewRoot.querySelector("#editor-note-shell").addEventListener("click", async (event) => {
-    const init = event.target.closest("[data-editor-init]");
-    if (!init) return;
-    init.disabled = true;
-    try {
-      await initEditorNote(doc, init.dataset.editorInit);
-    } finally {
-      const button = viewRoot.querySelector(`[data-editor-init="${init.dataset.editorInit}"]`);
-      if (button) button.disabled = false;
+    if (action.dataset.editorAction === "save") {
+      const modal = viewRoot.querySelector("#editor-save-modal");
+      if (modal) {
+        const title = modal.querySelector("#editor-save-title");
+        if (title) title.value = editorDraftTitle || editorNoteTitle || activeDocument()?.title || "Untitled note";
+        modal.hidden = false;
+      }
+    }
+    if (action.dataset.editorAction === "export") exportEditorMarkdown(activeDocument() || startDoc);
+    if (action.dataset.editorAction === "reinit") {
+      editorHomeMode = true;
+      editorSidebarFolderId = null;
+      editorStartDocumentId = startDoc?.id || activeDocumentId || editorStartDocumentId;
+      localStorage.setItem("noteflowEditorHome", "1");
+      localStorage.removeItem("noteflowEditorSidebarFolder");
+      localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId || "");
+      navigate("editor");
     }
   });
 }
@@ -1352,17 +1881,25 @@ function wireEditorEvents(doc) {
 async function loadEditorNote(doc) {
   const shell = viewRoot.querySelector("#editor-note-shell");
   if (!shell) return;
+  if (!doc) return;
+  editorLocalNoteRef = null;
   try {
     const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/editable-note`);
     if (response.status === 404) {
-      renderEditorStart(doc);
+      editorHomeMode = true;
+      editorStartDocumentId = doc.id;
+      localStorage.setItem("noteflowEditorHome", "1");
+      localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
+      navigate("editor");
       return;
     }
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || "Could not load the note");
     editorOfflineMode = false;
     editorNoteTitle = payload.title || `${doc.title} - My Notes`;
-    await bootEditor(doc, payload.markdown || "");
+    editorDraftTitle = editorNoteTitle;
+    editorDraftFolderId = doc.id;
+    await loadEditorMarkdownSections(doc, payload.markdown || "");
     setEditorStatus("Saved");
   } catch (error) {
     if (error instanceof TypeError) {
@@ -1370,50 +1907,14 @@ async function loadEditorNote(doc) {
       editorOfflineMode = true;
       const local = parseJsonSafe(localStorage.getItem(editorLocalKey(doc.id)));
       editorNoteTitle = local?.title || `${doc.title} - My Notes`;
-      await bootEditor(doc, local?.markdown || "");
+      editorDraftTitle = editorNoteTitle;
+      editorDraftFolderId = doc.id;
+      await loadEditorMarkdownSections(doc, local?.markdown || "");
       setEditorStatus("Offline · stored in this browser", true);
       return;
     }
     shell.innerHTML = `<div class="status-card study-error">${escapeHtml(error.message || "Could not load the note")}</div>`;
   }
-}
-
-function renderEditorStart(doc, isReset = false) {
-  const shell = viewRoot.querySelector("#editor-note-shell");
-  if (!shell) return;
-  if (editorInstance) {
-    try {
-      editorInstance.destroy();
-    } catch {
-      /* ignore */
-    }
-    editorInstance = null;
-    editorDocumentId = null;
-  }
-  const aiNoteReady = doc.aiNoteStatus === "READY";
-  shell.innerHTML = `
-    <div class="editor-start">
-      <h2>${isReset ? "Start over" : "Create your note"}</h2>
-      <p class="editor-start-sub">${isReset
-        ? "Re-initializing replaces the current note content. The PDF Markdown and AI note sources stay untouched."
-        : "Pick a starting point. You can edit freely afterwards; the original sources stay untouched."}</p>
-      <div class="editor-start-options">
-        <button type="button" class="editor-start-card" data-editor-init="AI_NOTE" ${aiNoteReady ? "" : "disabled"}>
-          <span class="start-card-title">From AI Note</span>
-          <span class="start-card-sub">${aiNoteReady ? "Copy the latest READY AI note into your editable note." : "No READY AI note for this document yet."}</span>
-        </button>
-        <button type="button" class="editor-start-card" data-editor-init="RAW">
-          <span class="start-card-title">From PDF Markdown</span>
-          <span class="start-card-sub">Copy the full parsed Markdown of the PDF.</span>
-        </button>
-        <button type="button" class="editor-start-card" data-editor-init="BLANK">
-          <span class="start-card-title">Blank note</span>
-          <span class="start-card-sub">Start from an empty page and insert blocks from the left.</span>
-        </button>
-      </div>
-      <div id="editor-start-error"></div>
-    </div>
-  `;
 }
 
 async function initEditorNote(doc, source) {
@@ -1426,15 +1927,250 @@ async function initEditorNote(doc, source) {
     });
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || "Could not initialize the note");
-    editorOfflineMode = false;
-    editorNoteTitle = payload.title || `${doc.title} - My Notes`;
-    await bootEditor(doc, payload.markdown || "");
-    setEditorStatus("Saved");
+    if (!editorTabs.includes(doc.id)) {
+      editorTabs.push(doc.id);
+      persistEditorTabs();
+    }
+    activeDocumentId = doc.id;
+    editorStartDocumentId = doc.id;
+    editorHomeMode = false;
+    editorUnsavedDraft = false;
+    editorLocalNoteRef = null;
+    editorSidebarFolderId = null;
+    editorDraftFolderId = doc.id;
+    localStorage.setItem("noteflowActiveDocument", activeDocumentId);
+    localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
+    localStorage.setItem("noteflowEditorHome", "0");
+    localStorage.removeItem("noteflowEditorSidebarFolder");
+    navigate("editor");
+    return;
   } catch (error) {
     if (errorBox) {
       errorBox.innerHTML = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
     }
   }
+}
+
+function splitMarkdownSections(markdown) {
+  if (!markdown) {
+    return [{ title: "Blank note", level: 1, start: 0, end: 0, heading: false }];
+  }
+  const headings = [];
+  const lines = markdown.split("\n");
+  let offset = 0;
+  let inFence = false;
+  let fenceMarker = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const rawLine = line + (index < lines.length - 1 ? "\n" : "");
+    const fence = line.match(/^ {0,3}(```|~~~)/);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = fence[1];
+      } else if (fence[1] === fenceMarker) {
+        inFence = false;
+        fenceMarker = null;
+      }
+      offset += rawLine.length;
+      continue;
+    }
+    if (!inFence) {
+      const heading = line.match(/^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        headings.push({
+          level: heading[1].length,
+          title: heading[2].replace(/\s+#+\s*$/, "").trim() || "Untitled section",
+          start: offset,
+        });
+      }
+    }
+    offset += rawLine.length;
+  }
+  if (!headings.length) {
+    return [{ title: "Note", level: 1, start: 0, end: markdown.length, heading: false }];
+  }
+  const sections = [];
+  if (headings[0].start > 0 && markdown.slice(0, headings[0].start).trim()) {
+    sections.push({ title: "Introduction", level: 1, start: 0, end: headings[0].start, heading: false });
+  }
+  headings.forEach((heading, index) => {
+    sections.push({
+      ...heading,
+      end: index + 1 < headings.length ? headings[index + 1].start : markdown.length,
+      heading: true,
+    });
+  });
+  return sections;
+}
+
+function editorMarkdownRange(start, end) {
+  if (!editorSections.length) return editorFullMarkdown;
+  return editorFullMarkdown.slice(editorSections[start].start, editorSections[end - 1].end);
+}
+
+async function loadEditorMarkdownSections(doc, markdown) {
+  editorFullMarkdown = markdown;
+  editorSections = splitMarkdownSections(markdown);
+  editorLoadedSectionStart = 0;
+  editorLoadedSectionEnd = nextEditorSectionEnd(0);
+  await bootEditor(doc, editorMarkdownRange(editorLoadedSectionStart, editorLoadedSectionEnd));
+}
+
+// Advances from `from` by at most EDITOR_SECTION_BATCH sections or the byte
+// budget, whichever is hit first (always at least one section).
+function nextEditorSectionEnd(from) {
+  let end = from;
+  let size = 0;
+  while (
+    end < editorSections.length &&
+    (end === from || (end - from < EDITOR_SECTION_BATCH && size < EDITOR_SECTION_BYTE_BUDGET))
+  ) {
+    size += editorSections[end].end - editorSections[end].start;
+    end += 1;
+  }
+  return end;
+}
+
+function composeEditorFullMarkdown(sectionMarkdown) {
+  if (!editorSections.length || editorLoadedSectionEnd <= editorLoadedSectionStart) {
+    return sectionMarkdown;
+  }
+  const start = editorSections[editorLoadedSectionStart].start;
+  const end = editorSections[editorLoadedSectionEnd - 1].end;
+  return editorFullMarkdown.slice(0, start) + sectionMarkdown + editorFullMarkdown.slice(end);
+}
+
+function applyEditorSectionMarkdown(sectionMarkdown) {
+  const oldStart = editorLoadedSectionStart;
+  const editedSectionCount = splitMarkdownSections(sectionMarkdown).length;
+  editorFullMarkdown = composeEditorFullMarkdown(sectionMarkdown);
+  editorSections = splitMarkdownSections(editorFullMarkdown);
+  editorLoadedSectionStart = Math.min(oldStart, Math.max(0, editorSections.length - 1));
+  editorLoadedSectionEnd = Math.min(editorSections.length, editorLoadedSectionStart + Math.max(1, editedSectionCount));
+}
+
+// Appends the next batch of sections to the end of the editor document.
+// editorLoadedSectionEnd advances BEFORE the append so a concurrent autosave
+// composes the full markdown without duplicating the batch.
+function appendNextEditorSections() {
+  if (!editorInstance || editorAppendBusy) return false;
+  if (editorLoadedSectionEnd >= editorSections.length) return false;
+  editorAppendBusy = true;
+  const from = editorLoadedSectionEnd;
+  const to = nextEditorSectionEnd(from);
+  const batchMarkdown = editorFullMarkdown.slice(editorSections[from].start, editorSections[to - 1].end);
+  editorLoadedSectionEnd = to;
+  try {
+    editorInstance.appendMarkdown(batchMarkdown);
+  } catch (error) {
+    editorLoadedSectionEnd = from;
+    console.error("Could not append note sections:", error);
+    editorAppendBusy = false;
+    return false;
+  }
+  updateEditorSentinel();
+  rebuildEditorOutline();
+  editorAppendBusy = false;
+  return true;
+}
+
+function removeEditorSentinel() {
+  if (editorLoadObserver) {
+    editorLoadObserver.disconnect();
+    editorLoadObserver = null;
+  }
+  if (editorScrollPump) {
+    window.removeEventListener("scroll", editorScrollPump, true);
+    editorScrollPump = null;
+  }
+  if (editorPumpTimer) {
+    clearInterval(editorPumpTimer);
+    editorPumpTimer = null;
+  }
+  viewRoot.querySelector("#editor-load-sentinel")?.remove();
+}
+
+function updateEditorSentinel() {
+  if (editorLoadedSectionEnd >= editorSections.length) {
+    removeEditorSentinel();
+    return;
+  }
+  const sentinel = viewRoot.querySelector("#editor-load-sentinel");
+  if (sentinel) {
+    sentinel.textContent = `Loaded ${editorLoadedSectionEnd} / ${editorSections.length} sections — keep scrolling to load more`;
+  }
+}
+
+// Keeps appending while the sentinel sits inside the preload margin, so one
+// trigger drains as many batches as the viewport needs. The limit uses the
+// window viewport as well as the shell so it works both when the shell is the
+// scroll container and when a narrow layout degrades to page-level scrolling.
+function pumpEditorSections() {
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  const sentinel = viewRoot.querySelector("#editor-load-sentinel");
+  if (!shell || !sentinel || !editorInstance) return;
+  const viewportBottom = window.innerHeight || document.documentElement.clientHeight || shell.clientHeight;
+  const bottomLimit = Math.min(shell.getBoundingClientRect().bottom, viewportBottom) + 800;
+  if (sentinel.getBoundingClientRect().top < bottomLimit) {
+    // setTimeout rather than rAF: keeps draining even in hidden tabs where
+    // rAF (and IntersectionObserver) are throttled to a halt.
+    if (appendNextEditorSections()) setTimeout(pumpEditorSections, 50);
+  }
+}
+
+function setupEditorLazyLoad() {
+  removeEditorSentinel();
+  const shell = viewRoot.querySelector("#editor-note-shell");
+  if (!shell || editorLoadedSectionEnd >= editorSections.length) return;
+  const sentinel = document.createElement("div");
+  sentinel.id = "editor-load-sentinel";
+  sentinel.className = "editor-load-sentinel";
+  shell.appendChild(sentinel);
+  updateEditorSentinel();
+  // Viewport-rooted observer: fires when the sentinel nears the visible area
+  // no matter which ancestor actually scrolls (shell, page, or a degraded
+  // narrow layout).
+  editorLoadObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) pumpEditorSections();
+    },
+    { rootMargin: "800px 0px" }
+  );
+  editorLoadObserver.observe(sentinel);
+  // Scroll fallback (capture phase sees every scroll container).
+  let pumpQueued = false;
+  editorScrollPump = () => {
+    if (pumpQueued) return;
+    pumpQueued = true;
+    setTimeout(() => {
+      pumpQueued = false;
+      pumpEditorSections();
+    }, 120);
+  };
+  window.addEventListener("scroll", editorScrollPump, true);
+  // Slow safety net: one geometry check per interval guarantees progress even
+  // where both observers and scroll events are throttled away.
+  editorPumpTimer = setInterval(pumpEditorSections, 1200);
+  pumpEditorSections();
+}
+
+// Outline click: sections already in the editor scroll directly; unloaded ones
+// are appended first, then scrolled to.
+function jumpToEditorSection(sectionIndex) {
+  if (!Number.isInteger(sectionIndex) || sectionIndex < 0 || sectionIndex >= editorSections.length) return;
+  let guard = 0;
+  while (editorLoadedSectionEnd <= sectionIndex && guard < 500) {
+    if (!appendNextEditorSections()) break;
+    guard += 1;
+  }
+  const headingOrdinal = editorSections.slice(0, sectionIndex + 1).filter((section) => section.heading).length - 1;
+  const editorRoot = viewRoot.querySelector("#editor-note-shell .ProseMirror");
+  if (!editorRoot) return;
+  const target = headingOrdinal >= 0
+    ? editorRoot.querySelectorAll("h1, h2, h3, h4, h5, h6")[headingOrdinal]
+    : editorRoot.firstElementChild;
+  target?.scrollIntoView({ block: "start" });
 }
 
 async function bootEditor(doc, markdown) {
@@ -1457,31 +2193,36 @@ async function bootEditor(doc, markdown) {
     editorInstance = null;
   }
   shell.innerHTML = "";
-  editorDocumentId = doc.id;
+  // Keep a skeleton visible while ProseMirror builds the first sections —
+  // Crepe appends its own container, so the skeleton can sit alongside it.
+  const skeleton = document.createElement("div");
+  skeleton.className = "study-loading";
+  skeleton.textContent = editorFullMarkdown.length > 100000
+    ? `Rendering large note (${Math.round(editorFullMarkdown.length / 1024)} KB) — the first sections open now, the rest loads as you scroll…`
+    : "Preparing editor…";
+  shell.appendChild(skeleton);
+  editorDocumentId = doc.id || null;
   editorInstance = await editorModule.createNoteFlowEditor({
     root: shell,
     defaultValue: markdown,
     onMarkdownChange: (updatedMarkdown) => scheduleEditorSave(updatedMarkdown),
   });
+  skeleton.remove();
+  setupEditorLazyLoad();
   rebuildEditorOutline();
-}
-
-function editorHeadings() {
-  return Array.from(viewRoot.querySelectorAll("#editor-note-shell .ProseMirror h1, #editor-note-shell .ProseMirror h2, #editor-note-shell .ProseMirror h3, #editor-note-shell .ProseMirror h4"));
 }
 
 function rebuildEditorOutline() {
   const body = viewRoot.querySelector("#editor-outline-body");
   if (!body || body.closest("#editor-outline").hidden) return;
-  const headings = editorHeadings();
-  if (!headings.length) {
+  if (!editorSections.length) {
     body.innerHTML = `<div class="side-empty">No headings yet.</div>`;
     return;
   }
-  body.innerHTML = headings
-    .map((heading, index) => `
-      <button type="button" class="outline-item outline-l${heading.tagName.slice(1)}" data-outline-index="${index}">
-        ${escapeHtml(heading.textContent.trim() || "(empty heading)")}
+  body.innerHTML = editorSections
+    .map((section, index) => `
+      <button type="button" class="outline-item outline-l${Math.min(section.level || 1, 4)} ${index >= editorLoadedSectionEnd ? "tail" : ""}" data-editor-section-index="${index}" ${index >= editorLoadedSectionEnd ? 'title="Not loaded yet — click to load and jump"' : ""}>
+        ${escapeHtml(section.title || "Untitled section")}
       </button>
     `)
     .join("");
@@ -1500,7 +2241,6 @@ function toggleEditorOutline(button) {
 function scheduleEditorSave(markdown) {
   editorDirty = true;
   setEditorStatus("Unsaved changes…");
-  rebuildEditorOutline();
   if (editorSaveTimer) clearTimeout(editorSaveTimer);
   editorSaveTimer = setTimeout(() => {
     editorSaveTimer = null;
@@ -1510,14 +2250,34 @@ function scheduleEditorSave(markdown) {
 
 async function persistEditorMarkdown(markdown) {
   const documentId = editorDocumentId;
-  if (!documentId) return;
+  applyEditorSectionMarkdown(markdown);
+  const fullMarkdown = editorFullMarkdown;
   editorDirty = false;
+  rebuildEditorOutline();
+  updateEditorSentinel();
+  if (!documentId) {
+    if (editorLocalNoteRef) {
+      const folder = editorLocalFolders.find((candidate) => candidate.id === editorLocalNoteRef.folderId);
+      const note = folder?.notes?.find((candidate) => candidate.id === editorLocalNoteRef.noteId);
+      if (folder && note) {
+        note.title = editorDraftTitle || note.title || "Untitled note";
+        note.markdown = fullMarkdown;
+        note.updatedAt = new Date().toISOString();
+        persistEditorLocalFolders();
+        setEditorStatus(`Saved to ${folder.name}`);
+        return;
+      }
+      editorLocalNoteRef = null;
+    }
+    setEditorStatus("Unsaved draft", true);
+    return;
+  }
   if (!editorOfflineMode) {
     try {
       const response = await fetch(`${API_BASE_URL}/documents/${documentId}/editable-note`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: editorNoteTitle, markdown }),
+        body: JSON.stringify({ title: editorNoteTitle, markdown: fullMarkdown }),
       });
       if (!response.ok) throw new Error("Save failed");
       setEditorStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
@@ -1527,10 +2287,53 @@ async function persistEditorMarkdown(markdown) {
     }
   }
   try {
-    localStorage.setItem(editorLocalKey(documentId), JSON.stringify({ title: editorNoteTitle, markdown }));
+    localStorage.setItem(editorLocalKey(documentId), JSON.stringify({ title: editorNoteTitle, markdown: fullMarkdown }));
     setEditorStatus("Offline · stored in this browser", true);
   } catch {
     setEditorStatus("Could not save (storage full)", true);
+  }
+}
+
+async function saveEditorToChosenFolder(modal) {
+  const newFolderName = modal.querySelector("#editor-new-folder")?.value.trim();
+  if (newFolderName) {
+    const folder = {
+      id: `local-${Date.now()}`,
+      name: newFolderName,
+      notes: [],
+    };
+    editorLocalFolders.push(folder);
+    editorDraftFolderId = folder.id;
+  }
+  const selectedFolderId = editorDraftFolderId || activeDocumentId || Array.from(documentsMap.keys())[0];
+  const selectedDoc = selectedFolderId ? documentsMap.get(selectedFolderId) : null;
+  const localFolder = selectedFolderId
+    ? ensureEditorLocalFolder(selectedFolderId, selectedDoc ? folderNameForDocument(selectedDoc) : "Untitled folder")
+    : null;
+  const markdown = editorInstance ? composeEditorFullMarkdown(editorInstance.getMarkdown()) : editorFullMarkdown;
+  editorDraftTitle = modal.querySelector("#editor-save-title")?.value.trim() || "Untitled note";
+  if (localFolder) {
+    const existingNote = editorLocalNoteRef?.folderId === localFolder.id
+      ? localFolder.notes.find((note) => note.id === editorLocalNoteRef.noteId)
+      : localFolder.notes.find((note) => note.title === editorDraftTitle);
+    const note = existingNote || { id: `note-${Date.now()}`, title: editorDraftTitle, markdown: "" };
+    note.title = editorDraftTitle;
+    note.markdown = markdown;
+    note.updatedAt = new Date().toISOString();
+    if (!existingNote) localFolder.notes.push(note);
+    persistEditorLocalFolders();
+    editorUnsavedDraft = false;
+    editorLocalNoteRef = { folderId: localFolder.id, noteId: note.id };
+    editorDocumentId = null;
+    editorNoteTitle = editorDraftTitle;
+    editorFullMarkdown = markdown;
+    modal.hidden = true;
+    setEditorStatus(`Saved to ${localFolder.name}`);
+    return;
+  }
+  if (!selectedFolderId) {
+    setEditorStatus("Create or upload a folder first", true);
+    return;
   }
 }
 
@@ -1542,7 +2345,8 @@ function setEditorStatus(text, warn = false) {
 }
 
 function exportEditorMarkdown(doc) {
-  const markdown = editorInstance ? editorInstance.getMarkdown() : "";
+  if (!doc) return;
+  const markdown = editorInstance ? composeEditorFullMarkdown(editorInstance.getMarkdown()) : editorFullMarkdown;
   if (!markdown.trim()) {
     setEditorStatus("Nothing to export yet", true);
     return;
@@ -1557,33 +2361,6 @@ function exportEditorMarkdown(doc) {
   link.remove();
   URL.revokeObjectURL(link.href);
   setEditorStatus("Exported .md");
-}
-
-// ---------------------------------------------------------------------------
-// View helpers
-// ---------------------------------------------------------------------------
-function viewNeedsDocument(title, message) {
-  return `
-    <div class="view-header"><div><div class="eyebrow">${escapeHtml(title)}</div><h1>${escapeHtml(title)}</h1></div></div>
-    <div class="empty-view">
-      <div class="chat-empty-mark">▤</div>
-      <p>${escapeHtml(message)}</p>
-    </div>
-  `;
-}
-
-function viewLoading(title, docTitle) {
-  return `
-    <div class="view-header"><div><div class="eyebrow">${escapeHtml(title)} · ${escapeHtml(docTitle)}</div><h1>${escapeHtml(title)}</h1></div></div>
-    <div class="study-loading">Loading…</div>
-  `;
-}
-
-function viewError(title, error) {
-  return `
-    <div class="view-header"><div><div class="eyebrow">${escapeHtml(title)}</div><h1>${escapeHtml(title)}</h1></div></div>
-    <div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>
-  `;
 }
 
 function studyProgress(item) {
@@ -1611,15 +2388,42 @@ document.addEventListener("click", async (event) => {
     return;
   }
   const docSelect = event.target.closest("[data-doc-select]");
-  if (docSelect) {
+  if (docSelect && !event.target.closest("[data-study-action]")) {
     selectDocument(docSelect.dataset.docSelect);
     if (currentView === "general") {
       renderGeneralDocuments(viewRoot.querySelector("#general-documents"), Array.from(documentsMap.values()));
     }
     return;
   }
-  if (event.target.closest("#sidebar-refresh")) {
-    await refreshDocumentsOnce();
+  const editorTabClose = event.target.closest("[data-editor-tab-close]");
+  if (editorTabClose) {
+    closeEditorTab(editorTabClose.dataset.editorTabClose);
+    return;
+  }
+  const editorTabCreate = event.target.closest("[data-editor-tab-create]");
+  if (editorTabCreate) {
+    const startDoc = activeDocument() || (editorStartDocumentId ? documentsMap.get(editorStartDocumentId) : null) || Array.from(documentsMap.values())[0] || null;
+    if (startDoc) {
+      editorStartDocumentId = startDoc.id;
+      localStorage.setItem("noteflowEditorStartDocument", editorStartDocumentId);
+    }
+    editorHomeMode = true;
+    editorSidebarFolderId = null;
+    localStorage.setItem("noteflowEditorHome", "1");
+    localStorage.removeItem("noteflowEditorSidebarFolder");
+    navigate("editor");
+    return;
+  }
+  const editorTab = event.target.closest("[data-editor-tab]");
+  if (editorTab) {
+    activeDocumentId = editorTab.dataset.editorTab;
+    editorHomeMode = false;
+    editorUnsavedDraft = false;
+    editorSidebarFolderId = null;
+    localStorage.setItem("noteflowActiveDocument", activeDocumentId);
+    localStorage.setItem("noteflowEditorHome", "0");
+    localStorage.removeItem("noteflowEditorSidebarFolder");
+    navigate("editor");
     return;
   }
   const refreshView = event.target.closest("[data-refresh-view]");
@@ -1695,21 +2499,36 @@ async function handleStudyAction(action) {
   const kind = action.dataset.studyAction;
   try {
     action.disabled = true;
+    // Per-file generate buttons on the right panel carry data-doc-id; the main
+    // module's generate button falls back to the currently selected document.
     if (kind === "generate-cards") {
-      await studyPost(`/documents/${activeDocumentId}/flashcard-decks`);
+      const docId = action.dataset.docId || activeDocumentId;
+      if (!docId) throw new Error("Pick a file first.");
+      activeDocumentId = docId;
+      localStorage.setItem("noteflowActiveDocument", docId);
+      await studyPost(`/documents/${docId}/flashcard-decks`);
       navigate("flashcards");
     }
     if (kind === "generate-quiz") {
-      const readCount = (id) => Math.max(0, Number(viewRoot.querySelector(id)?.value || 0));
+      const docId = action.dataset.docId || activeDocumentId;
+      if (!docId) throw new Error("Pick a file first.");
+      // Difficulty inputs only exist when the main module shows this document;
+      // panel-button generation for another file uses the 3/5/2 defaults.
+      const readCount = (id, fallback) => {
+        const input = viewRoot.querySelector(id);
+        return input ? Math.max(0, Number(input.value || 0)) : fallback;
+      };
       const body = {
-        easy: readCount("#quiz-easy"),
-        medium: readCount("#quiz-medium"),
-        hard: readCount("#quiz-hard"),
+        easy: readCount("#quiz-easy", 3),
+        medium: readCount("#quiz-medium", 5),
+        hard: readCount("#quiz-hard", 2),
       };
       if (body.easy + body.medium + body.hard < 1) {
         throw new Error("Choose at least one question across the difficulty levels.");
       }
-      await studyPost(`/documents/${activeDocumentId}/quiz-sets`, body);
+      activeDocumentId = docId;
+      localStorage.setItem("noteflowActiveDocument", docId);
+      await studyPost(`/documents/${docId}/quiz-sets`, body);
       navigate("quiz");
     }
     if (kind === "review") await renderReview(action.dataset.deckId);
@@ -1737,9 +2556,8 @@ async function refreshDocumentsOnce() {
     const documents = await readJson(response);
     if (!response.ok) throw new Error(documents.message || "Could not load documents");
     documentsMap = new Map(documents.map((d) => [d.id, d]));
-    renderSidebarDocuments();
   } catch (error) {
-    sidebarDocuments.innerHTML = `<div class="side-empty">${escapeHtml(formatFetchError(error))}</div>`;
+    console.error("Could not load documents:", error);
   }
 }
 
@@ -1764,10 +2582,6 @@ async function studyRequest(path, method, body) {
   const payload = await readJson(response);
   if (!response.ok) throw new Error(payload.message || "Study request failed");
   return payload;
-}
-
-function checkedValues(formEl, name) {
-  return Array.from(formEl.querySelectorAll(`input[name="${name}"]:checked`)).map((input) => input.value);
 }
 
 async function readJson(response) {

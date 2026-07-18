@@ -6,7 +6,7 @@
     <title>NoteFlow</title>
     <link rel="stylesheet" href="./vendor/katex/katex.min.css" />
     <script defer src="./vendor/katex/katex.min.js"></script>
-    <link rel="stylesheet" href="./styles.css?v=editor-2" />
+    <link rel="stylesheet" href="./styles.css?v=editor-9" />
   </head>
   <body>
     <div class="app">
@@ -23,6 +23,9 @@
           <button type="button" data-nav="editor">
             <span class="nav-icon">✎</span> Editor
           </button>
+          <button type="button" data-nav="folders">
+            <span class="nav-icon">▣</span> Folders
+          </button>
           <button type="button" data-nav="flashcards">
             <span class="nav-icon">▣</span> Flashcards
           </button>
@@ -34,16 +37,6 @@
           </button>
         </nav>
 
-        <div class="side-section">
-          <div class="side-label">
-            Documents
-            <button id="sidebar-refresh" class="icon-button" type="button" title="Refresh documents">↻</button>
-          </div>
-          <div id="sidebar-documents" class="side-documents">
-            <div class="side-empty">Loading…</div>
-          </div>
-        </div>
-
         <div class="side-footer">
           <div id="sidebar-tasks" class="side-tasks"></div>
         </div>
@@ -54,6 +47,6 @@
       </main>
     </div>
 
-    <script src="./app.js?v=editor-2"></script>
+    <script src="./app.js?v=editor-9"></script>
   </body>
 </html>

@@ -1,4 +1,5 @@
 import { Crepe } from "@milkdown/crepe";
+import { editorViewCtx, parserCtx } from "@milkdown/kit/core";
 import { $command, $markSchema, $remark, callCommand, insert, replaceAll } from "@milkdown/kit/utils";
 import { undoCommand, redoCommand } from "@milkdown/kit/plugin/history";
 import {
@@ -232,6 +233,21 @@ export async function createNoteFlowEditor({ root, defaultValue = "", placeholde
     getMarkdown: () => crepe.getMarkdown(),
     insertMarkdown: (markdown) => {
       crepe.editor.action(insert(normalizeMathDelimiters(markdown)));
+    },
+    // Appends parsed markdown at the end of the document without touching the
+    // selection and without polluting undo history — used by the chunked
+    // loader for large notes.
+    appendMarkdown: (markdown) => {
+      crepe.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const parser = ctx.get(parserCtx);
+        const parsed = parser(normalizeMathDelimiters(markdown));
+        if (!parsed) return;
+        const tr = view.state.tr
+          .insert(view.state.doc.content.size, parsed.content)
+          .setMeta("addToHistory", false);
+        view.dispatch(tr);
+      });
     },
     setMarkdown: (markdown) => {
       crepe.editor.action(replaceAll(normalizeMathDelimiters(markdown)));

@@ -7,18 +7,16 @@ committed under `vendor/editor/`).
 
 ## Layout
 
-A persistent left sidebar with five modules and a shared document selector:
+A persistent left sidebar with five modules; each module picks its documents
+in place (there is no shared sidebar document list):
 
 | Module | Purpose |
 |---|---|
-| **AI Agent** | Chat-style, retrieval-grounded Q&A over your documents. Scope per message: all documents, the selected document, or a custom PDF/AI-note selection. Every answer is a set of cited evidence snippets with document, page, and similarity score. |
-| **Editor** | Notion-style Markdown editor (Milkdown Crepe: slash commands, KaTeX math, CodeMirror code blocks, tables). Single editable note per document with a toolbar for undo/redo, block type conversion, and text/background colors, plus a toggleable heading outline. Persisted via `/documents/{id}/editable-note` with debounce autosave (localStorage fallback while the API is offline) and one-click `.md` export. |
-| **Flashcards** | Per-document flashcard decks: generate, browse all cards, and review due cards with SM-2 grades (AGAIN / HARD / GOOD / EASY). |
-| **Quiz** | Per-document quiz sets: generate, take an attempt (MCQ/True-False radios, free-text answers), submit for auto + rubric-LLM grading, and review scores, feedback, and weak-topic suggestions. Grading results poll automatically. |
+| **AI Agent** | Chat-style, retrieval-grounded Q&A over your documents. A "+ Sources" button under the composer opens a centered modal, grouped Markdown / AI Notes, where any mix of files can be checked as the retrieval scope (nothing checked = all sources). Every answer is a set of cited evidence snippets with document, page, and similarity score. |
+| **Editor** | Notion-style Markdown editor (Milkdown Crepe: slash commands, KaTeX math, CodeMirror code blocks, tables). Open documents appear as top tabs (click to switch, ✕ to close, ＋ to open); each document has a single editable note with a toolbar for undo/redo, block type conversion, and text/background colors, plus a toggleable heading outline. Persisted via `/documents/{id}/editable-note` with debounce autosave (localStorage fallback while the API is offline) and one-click `.md` export. |
+| **Flashcards** | Right-side file panel grouped Markdown / AI Notes with a per-file generate button; clicking a file shows its decks: generate, browse all cards, and review due cards with SM-2 grades (AGAIN / HARD / GOOD / EASY). |
+| **Quiz** | Same right-side file panel; per-document quiz sets: generate (per-file button uses 3/5/2 difficulty defaults), take an attempt (MCQ/True-False radios, free-text answers), submit for auto + rubric-LLM grading, and review scores, feedback, and weak-topic suggestions. Grading results poll automatically. |
 | **General** | Upload PDFs, watch processing tasks, and inspect documents: chunks, parsed output, markdown pages, visual regions, AI notes, and embeddings. |
-
-The sidebar document list is shared state: selecting a document there scopes
-the Flashcards and Quiz modules and the "Selected document" chat scope.
 
 ## Run
 
