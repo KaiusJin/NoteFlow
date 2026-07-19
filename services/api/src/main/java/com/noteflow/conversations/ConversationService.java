@@ -48,7 +48,7 @@ public class ConversationService {
         requireOwnedConversation(conversationId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> row : jdbc.queryForList("""
-            SELECT id,role,status,content_markdown,model_provider,model_name,error_message,created_at,completed_at
+            SELECT id,role,status,content_markdown,model_provider,model_name,structured_response_json,error_message,created_at,completed_at
               FROM rag_messages
              WHERE conversation_id=?
              ORDER BY created_at,
@@ -62,12 +62,32 @@ public class ConversationService {
 
     public Map<String, Object> message(UUID messageId) {
         Map<String, Object> row = jdbc.queryForMap("""
-            SELECT m.id,m.conversation_id,m.role,m.status,m.content_markdown,m.model_provider,m.model_name,
+            SELECT m.id,m.conversation_id,m.role,m.status,m.content_markdown,m.model_provider,m.model_name,m.structured_response_json,
                    m.error_message,m.created_at,m.completed_at
               FROM rag_messages m JOIN rag_conversations c ON c.id=m.conversation_id
              WHERE m.id=? AND c.user_id=?
             """, messageId, users.currentUserId());
         return withCitations(row);
+    }
+
+    public Map<String, Object> messageTrace(UUID conversationId, UUID messageId) {
+        Map<String, Object> message = message(messageId);
+        if (!conversationId.equals(message.get("conversation_id"))) {
+            throw new IllegalArgumentException("Message not found in conversation");
+        }
+        Object structured = message.get("structuredResponse");
+        if (structured instanceof Map<?, ?> structuredMap) {
+            Object agent = structuredMap.get("agent");
+            if (agent instanceof Map<?, ?> agentMap) {
+                Object trace = agentMap.containsKey("trace") ? agentMap.get("trace") : List.of();
+                return Map.of(
+                    "messageId", messageId,
+                    "agent", agentMap,
+                    "trace", trace
+                );
+            }
+        }
+        return Map.of("messageId", messageId, "agent", Map.of("enabled", false), "trace", List.of());
     }
 
     @Transactional
@@ -114,12 +134,23 @@ public class ConversationService {
 
     private Map<String, Object> withCitations(Map<String, Object> row) {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>(row);
+        Object rawStructured = result.remove("structured_response_json");
+        result.put("structuredResponse", parseStructuredResponse(rawStructured));
         result.put("citations", jdbc.queryForList("""
             SELECT citation_index,document_id,source_title AS document_title,page_start,page_end,
                    evidence_snapshot AS quote_text,retrieval_score AS similarity_score
               FROM rag_message_citations WHERE message_id=? ORDER BY citation_index
             """, row.get("id")));
         return result;
+    }
+
+    private Object parseStructuredResponse(Object raw) {
+        if (raw == null) return null;
+        try {
+            return json.readValue(String.valueOf(raw), Map.class);
+        } catch (JsonProcessingException error) {
+            return Map.of("parseError", true);
+        }
     }
 
     private void requireOwnedConversation(UUID id) {

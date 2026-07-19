@@ -179,5 +179,14 @@ class Settings(BaseSettings):
     answer_evidence_item_max_tokens: int = 700
     answer_stale_task_after_minutes: int = 5
 
+    # Tool-calling conversation agent: bounded ReAct loop over the same
+    # structured-output LLM and retrieval contracts as normal answering.
+    agent_max_steps: int = 5
+    agent_wall_timeout_seconds: int = 60
+    agent_token_budget: int = 12000
+    agent_trace_observation_max_chars: int = 1400
+    agent_document_section_max_tokens: int = 1400
+    agent_compare_sources_per_document: int = 4
+
 
 settings = Settings()

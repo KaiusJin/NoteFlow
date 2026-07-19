@@ -38,6 +38,11 @@ public class ConversationController {
     @GetMapping("/messages/{messageId}")
     public Map<String, Object> message(@PathVariable UUID messageId) { return conversations.message(messageId); }
 
+    @GetMapping("/{conversationId}/messages/{messageId}/trace")
+    public Map<String, Object> messageTrace(@PathVariable UUID conversationId, @PathVariable UUID messageId) {
+        return conversations.messageTrace(conversationId, messageId);
+    }
+
     public record CreateRequest(String title) {}
     public record SendRequest(String content, List<UUID> pdfDocumentIds, List<UUID> aiNoteDocumentIds) {}
 }

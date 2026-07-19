@@ -6,3 +6,4 @@ PyMuPDF>=1.24,<2
 pypdf>=5,<7
 pytesseract>=0.3,<1
 redis>=5,<7
+langgraph>=0.2,<1

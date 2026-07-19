@@ -90,10 +90,44 @@ public class ConversationSchemaManager {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """);
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS agent_run_steps (
+                id UUID PRIMARY KEY,
+                message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
+                step_index INTEGER NOT NULL,
+                thought TEXT,
+                action_type VARCHAR(32) NOT NULL,
+                tool VARCHAR(128),
+                args_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                observation TEXT NOT NULL,
+                ok BOOLEAN NOT NULL DEFAULT TRUE,
+                tokens INTEGER NOT NULL DEFAULT 0,
+                latency_ms INTEGER NOT NULL DEFAULT 0,
+                handle_json JSONB,
+                error_message TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(message_id, step_index)
+            )
+            """);
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rag_conversations_user_updated ON rag_conversations(user_id, updated_at DESC)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rag_messages_conversation_created ON rag_messages(conversation_id, created_at)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rag_citations_message ON rag_message_citations(message_id, citation_index)");
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_agent_run_steps_message ON agent_run_steps(message_id, step_index)");
         jdbc.execute("ALTER TABLE tasks ALTER COLUMN document_id DROP NOT NULL");
+        // Study generation channels (SECTION vs AGENT). The worker owns the
+        // study tables; guard so the API can still boot on a fresh database.
+        jdbc.execute("""
+            DO $$ BEGIN
+              IF to_regclass('flashcard_decks') IS NOT NULL THEN
+                ALTER TABLE flashcard_decks ADD COLUMN IF NOT EXISTS origin VARCHAR(16) NOT NULL DEFAULT 'SECTION';
+                ALTER TABLE flashcard_decks ADD COLUMN IF NOT EXISTS source_scope_json TEXT NOT NULL DEFAULT '{}';
+              END IF;
+              IF to_regclass('quiz_sets') IS NOT NULL THEN
+                ALTER TABLE quiz_sets ADD COLUMN IF NOT EXISTS origin VARCHAR(16) NOT NULL DEFAULT 'SECTION';
+                ALTER TABLE quiz_sets ADD COLUMN IF NOT EXISTS source_scope_json TEXT NOT NULL DEFAULT '{}';
+              END IF;
+            END $$
+            """);
         ensureTaskConstraint(
             "tasks_task_type_check",
             "MAINTAIN_CONVERSATION_MEMORY",
@@ -101,8 +135,8 @@ public class ConversationSchemaManager {
         );
         ensureTaskConstraint(
             "tasks_current_step_check",
-            "MAINTAINING_MEMORY",
-            "current_step IN ('UPLOADED','PARSING_PDF','EXTRACTING_TEXT','ANALYZING_VISUAL_CONTENT','CROPPING_VISUAL_REGIONS','VLM_ANALYSIS','LAYOUT_CHUNKING','CHUNKING','GENERATING_EMBEDDINGS','GENERATING_NOTES','GENERATING_FLASHCARDS','GENERATING_QUIZ','GRADING_QUIZ','ANSWERING','MAINTAINING_MEMORY','COMPLETED','FAILED')"
+            "AGENT_FALLBACK",
+            "current_step IN ('UPLOADED','PARSING_PDF','EXTRACTING_TEXT','ANALYZING_VISUAL_CONTENT','CROPPING_VISUAL_REGIONS','VLM_ANALYSIS','LAYOUT_CHUNKING','CHUNKING','GENERATING_EMBEDDINGS','GENERATING_NOTES','GENERATING_FLASHCARDS','GENERATING_QUIZ','GRADING_QUIZ','ANSWERING','AGENT_PLANNING','AGENT_TOOL','AGENT_FINALIZING','AGENT_FALLBACK','MAINTAINING_MEMORY','COMPLETED','FAILED')"
         );
     }
 

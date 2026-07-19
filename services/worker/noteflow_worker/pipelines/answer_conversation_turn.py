@@ -4,8 +4,9 @@ import json
 from uuid import uuid4
 
 from noteflow_worker.config import settings
-from noteflow_worker.conversation.answering import generate_answer, make_answer_llm, structured_response_json
-from noteflow_worker.conversation.retrieval import Evidence, search_evidence
+from noteflow_worker.conversation.agent import ToolCallingAgent, agent_structured_response_json
+from noteflow_worker.conversation.answering import make_answer_llm
+from noteflow_worker.conversation.retrieval import Evidence
 from noteflow_worker.conversation.store import Citation, ConversationStore
 from noteflow_worker.embeddings.providers import make_embedding_provider
 from noteflow_worker.memory.manager import ConversationMemoryManager
@@ -64,15 +65,22 @@ class AnswerConversationTurnPipeline:
             )
             self.store.mark_task_processing(payload.task_id, "ANSWERING", 40)
 
-            evidence: list[Evidence] = []
-            if query_embedding:
-                evidence = search_evidence(
-                    self.store, payload.user_id, query_embedding,
-                    provider.provider_name, provider.model, context.source_scope,
-                )
-
             llm = self.llm_factory()
-            answer = generate_answer(llm, context, evidence, question)
+            agent = ToolCallingAgent(self.store, self.queue(), llm, provider)
+            state = agent.run(
+                payload.conversation_id,
+                payload.user_id,
+                question,
+                context,
+                progress_callback=lambda step, progress: self.store.mark_task_processing(payload.task_id, step, progress),
+                checkpoint_callback=lambda agent_state: self.store.checkpoint_agent_run(
+                    message_id, agent_structured_response_json(agent_state), agent_state.scratchpad
+                ),
+            )
+            answer = state.final
+            if answer is None:
+                raise RuntimeError("Agent did not produce a final answer.")
+            evidence: list[Evidence] = state.evidence
             self.store.mark_task_processing(payload.task_id, "ANSWERING", 70)
 
             cited = [evidence[index] for index in answer.cited_evidence_indexes]
@@ -82,7 +90,7 @@ class AnswerConversationTurnPipeline:
                 estimate_tokens(answer.answer_markdown),
                 llm.provider,
                 llm.model,
-                structured_response_json(answer, evidence),
+                agent_structured_response_json(state),
                 [citation_from_evidence(position, item) for position, item in enumerate(cited)],
             )
 

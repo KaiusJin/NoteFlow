@@ -1808,6 +1808,10 @@ ALL_TASK_STEPS = (
     "GENERATING_QUIZ",
     "GRADING_QUIZ",
     "ANSWERING",
+    "AGENT_PLANNING",
+    "AGENT_TOOL",
+    "AGENT_FINALIZING",
+    "AGENT_FALLBACK",
     "MAINTAINING_MEMORY",
     "COMPLETED",
     "FAILED",
@@ -1830,7 +1834,7 @@ def ensure_task_constraints(conn) -> None:
         values = ",".join(f"'{item}'" for item in ALL_TASK_TYPES)
         conn.execute(f"ALTER TABLE tasks ADD CONSTRAINT tasks_task_type_check CHECK (task_type IN ({values}))")
 
-    sentinel_step = "MAINTAINING_MEMORY"
+    sentinel_step = "AGENT_FALLBACK"
     step_check = conn.execute(
         """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
            WHERE conrelid='tasks'::regclass AND conname='tasks_current_step_check'"""

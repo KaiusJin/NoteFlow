@@ -86,6 +86,17 @@ class StudyRepository(Repository):
             for statement in statements:
                 conn.execute(statement)
             conn.execute("ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS grading_usage_json TEXT NOT NULL DEFAULT '{}'")
+            # Two generation channels: SECTION (whole-document, from the study
+            # views) and AGENT (conversation agent, arbitrary document/chunk/
+            # section scope). Scope details live in source_scope_json.
+            for table in ("flashcard_decks", "quiz_sets"):
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS origin VARCHAR(16) NOT NULL DEFAULT 'SECTION'")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source_scope_json TEXT NOT NULL DEFAULT '{{}}'")
+            # Agent-created generations bind their task to a specific deck/set so
+            # concurrent SECTION and AGENT generations for one document cannot
+            # steal each other's rows. attempt_id keeps its original grading use.
+            conn.execute("ALTER TABLE study_task_targets ALTER COLUMN attempt_id DROP NOT NULL")
+            conn.execute("ALTER TABLE study_task_targets ADD COLUMN IF NOT EXISTS target_id UUID")
             foreign_keys = (
                 ("fk_flashcard_decks_document", "flashcard_decks", "document_id", "documents", "id"),
                 ("fk_flashcard_decks_user", "flashcard_decks", "user_id", "users", "id"),
@@ -118,6 +129,79 @@ class StudyRepository(Repository):
 
     def latest_generating_quiz_set_id(self, document_id: str, user_id: str) -> str:
         return self._latest_id("quiz_sets", document_id, user_id)
+
+    def resolve_generating_deck_id(self, payload) -> str:
+        """Task-bound deck first (agent generations), latest GENERATING as the
+        legacy fallback for SECTION generations created by the API."""
+        return self.task_generation_target(payload.task_id) or self.latest_generating_deck_id(
+            payload.document_id, payload.user_id
+        )
+
+    def resolve_generating_quiz_set_id(self, payload) -> str:
+        return self.task_generation_target(payload.task_id) or self.latest_generating_quiz_set_id(
+            payload.document_id, payload.user_id
+        )
+
+    def task_generation_target(self, task_id: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT target_id FROM study_task_targets WHERE task_id=%s", (task_id,)
+            ).fetchone()
+        return str(row["target_id"]) if row and row.get("target_id") else None
+
+    def load_generation_scope(self, table: str, target_id: str) -> dict:
+        """Parsed source_scope_json for a deck/set ({} for SECTION rows)."""
+        if table not in ("flashcard_decks", "quiz_sets"):
+            raise ValueError(f"Unsupported study table: {table}")
+        with self.connect() as conn:
+            row = conn.execute(
+                f"SELECT source_scope_json FROM {table} WHERE id=%s", (target_id,)
+            ).fetchone()
+        if not row or not row["source_scope_json"]:
+            return {}
+        try:
+            parsed = json.loads(row["source_scope_json"])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def load_scoped_chunks(self, primary_document_id: str, scope: dict) -> list:
+        """Chunks for a generation scope.
+
+        Empty scope keeps the SECTION behaviour (all chunks of the primary
+        document). documentIds widens to multiple documents; chunkIds and
+        sectionQuery narrow the selection. Order is stable: documents in scope
+        order, chunks in chunk_index order.
+        """
+        document_ids = [str(item) for item in scope.get("documentIds") or [] if str(item).strip()]
+        if not document_ids:
+            document_ids = [primary_document_id]
+        chunk_ids = {str(item) for item in scope.get("chunkIds") or [] if str(item).strip()}
+        section_query = str(scope.get("sectionQuery") or "").strip().lower()
+        chunks = []
+        for document_id in document_ids:
+            for chunk in self.load_chunks(document_id):
+                if chunk_ids and chunk.id not in chunk_ids:
+                    continue
+                if section_query and section_query not in (chunk.section_title or "").lower():
+                    continue
+                chunks.append(chunk)
+        return chunks
+
+    def scope_title(self, primary_document_id: str, scope: dict) -> str:
+        """Prompt-facing title covering every document in the scope."""
+        document_ids = [str(item) for item in scope.get("documentIds") or [] if str(item).strip()]
+        if not document_ids:
+            document_ids = [primary_document_id]
+        titles = []
+        for document_id in document_ids[:4]:
+            try:
+                titles.append(self.load_document(document_id).title or "Document")
+            except ValueError:
+                continue
+        if len(document_ids) > 4:
+            titles.append(f"+{len(document_ids) - 4} more")
+        return " + ".join(titles) if titles else "Document"
 
     def load_quiz_generation_options(self, set_id: str) -> dict:
         """Return the user's quiz generation options (empty dict if unset)."""
@@ -333,6 +417,12 @@ class StudyRepository(Repository):
         with self.connect() as conn:
             conn.execute("""INSERT INTO study_task_targets(task_id,attempt_id) VALUES (%s,%s)
               ON CONFLICT (task_id) DO UPDATE SET attempt_id=EXCLUDED.attempt_id""", (task_id, attempt_id))
+
+    def bind_task_generation_target(self, conn, task_id: str, target_id: str) -> None:
+        """Bind on an existing connection so the mapping commits atomically with
+        the deck/set row and the task row."""
+        conn.execute("""INSERT INTO study_task_targets(task_id,target_id) VALUES (%s,%s)
+          ON CONFLICT (task_id) DO UPDATE SET target_id=EXCLUDED.target_id""", (task_id, target_id))
 
     def load_review_state(self, user_id: str, flashcard_id: str, initial_ease: float) -> ReviewState:
         with self.connect() as conn:

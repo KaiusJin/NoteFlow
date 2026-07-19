@@ -427,10 +427,78 @@ async function pollConversationMessage(messageId) {
 function renderConversationAnswer(message) {
   const content = renderRich(message.content_markdown || "No answer was generated.");
   const citations = message.citations || [];
+  const agent = message.structuredResponse?.agent || null;
   return `
     <div class="chat-answer-text rich">${content}</div>
     ${citations.length ? `<div class="chat-evidence">${citations.map(renderConversationCitation).join("")}</div>` : ""}
+    ${renderAgentSteps(agent)}
   `;
+}
+
+function renderAgentSteps(agent) {
+  if (!agent?.enabled) return "";
+  const trace = Array.isArray(agent.trace) ? agent.trace : [];
+  const handles = Array.isArray(agent.handles) ? agent.handles.filter(Boolean) : [];
+  if (!trace.length && !handles.length) return "";
+  return `
+    <details class="agent-steps">
+      <summary>
+        <span>Agent steps</span>
+        <span>${trace.length} step${trace.length === 1 ? "" : "s"}${agent.fallbackUsed ? " · fallback" : ""}</span>
+      </summary>
+      <div class="agent-step-list">
+        ${trace.map(renderAgentStep).join("")}
+      </div>
+      ${handles.length ? `<div class="agent-handles">${handles.map(renderAgentHandle).join("")}</div>` : ""}
+    </details>
+  `;
+}
+
+function renderAgentStep(step) {
+  const tool = step.tool || step.actionType || "step";
+  const ok = step.ok === false ? "Failed" : "Done";
+  const args = step.args && Object.keys(step.args).length ? `<code>${escapeHtml(JSON.stringify(step.args))}</code>` : "";
+  return `
+    <article class="agent-step">
+      <div class="agent-step-head">
+        <strong>${escapeHtml(toolLabel(tool))}</strong>
+        <span>${escapeHtml(ok)} · ${Number(step.latencyMs || 0)}ms</span>
+      </div>
+      ${step.summary ? `<p>${escapeHtml(step.summary)}</p>` : ""}
+      ${args ? `<div class="agent-step-args">${args}</div>` : ""}
+      ${step.observation ? `<pre>${escapeHtml(compactObservation(step.observation))}</pre>` : ""}
+    </article>
+  `;
+}
+
+function renderAgentHandle(handle) {
+  if (!handle?.kind) return "";
+  const label = handle.kind === "quiz" ? "Open Quiz" : "Open Flashcards";
+  const view = handle.kind === "quiz" ? "quiz" : "flashcards";
+  const id = handle.documentId || "";
+  return `
+    <button type="button" class="secondary agent-handle" data-agent-open="${view}" data-doc-id="${escapeHtml(id)}">
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function toolLabel(tool) {
+  return {
+    search_notes: "Search notes",
+    get_document_section: "Get document section",
+    list_documents: "List documents",
+    compare_sources: "Compare sources",
+    generate_quiz: "Generate quiz",
+    create_flashcards: "Create flashcards",
+    final_answer: "Final answer",
+    fallback: "Fallback",
+  }[tool] || tool;
+}
+
+function compactObservation(value) {
+  const text = String(value || "");
+  return text.length <= 700 ? text : `${text.slice(0, 700).trim()}\n...`;
 }
 
 function renderConversationCitation(citation) {
@@ -541,6 +609,58 @@ function studyEmptyMain(icon, hint) {
   `;
 }
 
+function agentScopeSummary(item) {
+  let scope = {};
+  try {
+    scope = JSON.parse(item.source_scope_json || "{}");
+  } catch {
+    scope = {};
+  }
+  const parts = [];
+  const docCount = Array.isArray(scope.documentIds) ? scope.documentIds.length : 0;
+  if (docCount > 1) parts.push(`${docCount} documents`);
+  if (scope.sectionQuery) parts.push(`Section: ${scope.sectionQuery}`);
+  if (Array.isArray(scope.chunkIds) && scope.chunkIds.length) parts.push(`${scope.chunkIds.length} passages`);
+  if (scope.focus) parts.push(`Focus: ${scope.focus}`);
+  return parts.join(" · ");
+}
+
+function renderAgentStudyGroup(items, kind) {
+  if (!items?.length) return "";
+  const label = kind === "quiz" ? "Agent-designed quizzes" : "Agent-designed decks";
+  return `
+    <section class="agent-study-group">
+      <div class="agent-study-head">
+        <span class="agent-badge">✦ AGENT</span>
+        <h4>${label}</h4>
+        <span class="agent-study-count">${items.length}</span>
+      </div>
+      ${items.map((item) => renderAgentStudyItem(item, kind)).join("")}
+    </section>
+  `;
+}
+
+function renderAgentStudyItem(item, kind) {
+  const summary = agentScopeSummary(item);
+  const ready = item.status === "READY";
+  const actions = !ready ? "" : kind === "quiz"
+    ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${item.id}">Start quiz</button>`
+    : `<button class="secondary" data-study-action="review" data-deck-id="${item.id}">Review</button>
+       <button class="secondary" data-study-action="browse-cards" data-deck-id="${item.id}">Browse</button>`;
+  return `
+    <article class="agent-study-item">
+      <div class="agent-study-item-main">
+        <strong>${escapeHtml(item.title || "Agent generation")}</strong>
+        ${summary ? `<span class="agent-study-scope">${escapeHtml(summary)}</span>` : ""}
+      </div>
+      <div class="agent-study-item-side">
+        <span class="badge ${statusClass(item.status)}">${escapeHtml(item.status || "")}</span>
+        ${actions}
+      </div>
+    </article>
+  `;
+}
+
 async function renderFlashcardsView() {
   const doc = activeDocument();
   let mainHtml;
@@ -549,8 +669,10 @@ async function renderFlashcardsView() {
   } else {
     try {
       const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/flashcard-decks`);
-      const decks = await readJson(response);
-      if (!response.ok) throw new Error(decks.message || "Could not load flashcard decks");
+      const allDecks = await readJson(response);
+      if (!response.ok) throw new Error(allDecks.message || "Could not load flashcard decks");
+      const decks = allDecks.filter((d) => (d.origin || "SECTION") !== "AGENT");
+      const agentDecks = allDecks.filter((d) => d.origin === "AGENT");
       const deck = decks[0];
       mainHtml = `
         <article class="study-module flashcard-module">
@@ -569,6 +691,7 @@ async function renderFlashcardsView() {
             ` : ""}
           </div>
         </article>
+        ${renderAgentStudyGroup(agentDecks, "cards")}
       `;
     } catch (error) {
       mainHtml = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
@@ -664,8 +787,10 @@ async function renderQuizView() {
   } else {
     try {
       const response = await fetch(`${API_BASE_URL}/documents/${doc.id}/quiz-sets`);
-      const quizzes = await readJson(response);
-      if (!response.ok) throw new Error(quizzes.message || "Could not load quizzes");
+      const allQuizzes = await readJson(response);
+      if (!response.ok) throw new Error(allQuizzes.message || "Could not load quizzes");
+      const quizzes = allQuizzes.filter((q) => (q.origin || "SECTION") !== "AGENT");
+      const agentQuizzes = allQuizzes.filter((q) => q.origin === "AGENT");
       const quiz = quizzes[0];
       mainHtml = `
         <article class="study-module quiz-module">
@@ -688,6 +813,7 @@ async function renderQuizView() {
             ${quiz?.status === "READY" ? `<button class="secondary" data-study-action="start-quiz" data-quiz-id="${quiz.id}">Start quiz</button>` : ""}
           </div>
         </article>
+        ${renderAgentStudyGroup(agentQuizzes, "quiz")}
       `;
     } catch (error) {
       mainHtml = `<div class="status-card study-error">${escapeHtml(formatFetchError(error))}</div>`;
@@ -2831,6 +2957,12 @@ document.addEventListener("click", async (event) => {
   const refreshView = event.target.closest("[data-refresh-view]");
   if (refreshView) {
     navigate(refreshView.dataset.refreshView);
+    return;
+  }
+  const agentOpen = event.target.closest("[data-agent-open]");
+  if (agentOpen) {
+    if (agentOpen.dataset.docId) selectDocument(agentOpen.dataset.docId);
+    navigate(agentOpen.dataset.agentOpen);
     return;
   }
   const parseButton = event.target.closest("[data-view-parse]");

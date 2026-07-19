@@ -13,6 +13,11 @@ MESSAGE_STATUS_COMPLETED = "COMPLETED"
 MESSAGE_STATUS_FAILED = "FAILED"
 
 
+def scrub_nul(value: str | None) -> str | None:
+    """executemany bypasses CleanConnection.execute's NUL scrubbing."""
+    return value.replace("\x00", "") if isinstance(value, str) else value
+
+
 @dataclass(frozen=True)
 class Citation:
     citation_index: int
@@ -78,6 +83,28 @@ class ConversationStore(MemoryStore):
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_run_steps (
+                  id UUID PRIMARY KEY,
+                  message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
+                  step_index INTEGER NOT NULL,
+                  thought TEXT,
+                  action_type VARCHAR(32) NOT NULL,
+                  tool VARCHAR(128),
+                  args_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                  observation TEXT NOT NULL,
+                  ok BOOLEAN NOT NULL DEFAULT TRUE,
+                  tokens INTEGER NOT NULL DEFAULT 0,
+                  latency_ms INTEGER NOT NULL DEFAULT 0,
+                  handle_json JSONB,
+                  error_message TEXT,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                  UNIQUE(message_id, step_index)
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_run_steps_message ON agent_run_steps(message_id, step_index)")
             ensure_task_constraints(conn)
 
     def load_message(self, message_id: str) -> dict:
@@ -155,6 +182,75 @@ class ConversationStore(MemoryStore):
                    WHERE id = %s AND status = %s""",
                 (MESSAGE_STATUS_FAILED, error[:2000], message_id, MESSAGE_STATUS_GENERATING),
             )
+
+    def checkpoint_assistant_message(self, message_id: str, structured_response_json: str) -> None:
+        """Persist an in-flight agent trace without completing the message."""
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE rag_messages
+                   SET structured_response_json = %s
+                   WHERE id = %s AND status = %s""",
+                (structured_response_json, message_id, MESSAGE_STATUS_GENERATING),
+            )
+
+    def checkpoint_agent_run(self, message_id: str, structured_response_json: str, steps: list[object]) -> None:
+        """Persist the compact message trace plus step rows for eval/observability.
+
+        Steps are append-only within a run, so this upserts by (message_id,
+        step_index) in one executemany round trip instead of deleting and
+        re-inserting every row on each checkpoint. The targeted DELETE only
+        clears stale higher-index rows left by a previous retried attempt.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE rag_messages
+                   SET structured_response_json = %s
+                   WHERE id = %s AND status = %s""",
+                (structured_response_json, message_id, MESSAGE_STATUS_GENERATING),
+            )
+            conn.execute(
+                "DELETE FROM agent_run_steps WHERE message_id = %s AND step_index >= %s",
+                (message_id, len(steps)),
+            )
+            if not steps:
+                return
+            rows = [
+                (
+                    str(uuid4()),
+                    message_id,
+                    step.step_index,
+                    scrub_nul(step.thought),
+                    step.action_type,
+                    step.tool,
+                    scrub_nul(json.dumps(step.args or {}, separators=(",", ":"))),
+                    scrub_nul(step.observation),
+                    step.ok,
+                    step.tokens,
+                    step.latency_ms,
+                    scrub_nul(json.dumps(step.handle, separators=(",", ":"))) if step.handle else None,
+                    scrub_nul(step.error),
+                )
+                for step in steps
+            ]
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    """INSERT INTO agent_run_steps (
+                         id, message_id, step_index, thought, action_type, tool, args_json,
+                         observation, ok, tokens, latency_ms, handle_json, error_message)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s::jsonb,%s)
+                       ON CONFLICT (message_id, step_index) DO UPDATE SET
+                         thought = EXCLUDED.thought,
+                         action_type = EXCLUDED.action_type,
+                         tool = EXCLUDED.tool,
+                         args_json = EXCLUDED.args_json,
+                         observation = EXCLUDED.observation,
+                         ok = EXCLUDED.ok,
+                         tokens = EXCLUDED.tokens,
+                         latency_ms = EXCLUDED.latency_ms,
+                         handle_json = EXCLUDED.handle_json,
+                         error_message = EXCLUDED.error_message""",
+                    rows,
+                )
 
     def bind_task_target(self, task_id: str, conversation_id: str, message_id: str) -> None:
         with self.connect() as conn:
