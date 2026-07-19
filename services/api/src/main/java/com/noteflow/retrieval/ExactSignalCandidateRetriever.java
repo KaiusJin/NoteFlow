@@ -1,6 +1,5 @@
 package com.noteflow.retrieval;
 
-import com.noteflow.search.EmbeddingClient;
 import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
@@ -10,16 +9,10 @@ import org.springframework.stereotype.Component;
 @Component
 class ExactSignalCandidateRetriever {
     private final JdbcTemplate jdbc;
-    private final EmbeddingClient embeddingClient;
     private final RetrievalSchemaManager schema;
 
-    ExactSignalCandidateRetriever(
-        JdbcTemplate jdbc,
-        EmbeddingClient embeddingClient,
-        RetrievalSchemaManager schema
-    ) {
+    ExactSignalCandidateRetriever(JdbcTemplate jdbc, RetrievalSchemaManager schema) {
         this.jdbc = jdbc;
-        this.embeddingClient = embeddingClient;
         this.schema = schema;
     }
 
@@ -71,12 +64,12 @@ class ExactSignalCandidateRetriever {
         double maximumPoints = analysis.exactSignals().size() * 2.0;
         String scoreExpression = "LEAST(1.0, ((" + String.join(" + ", scoreParts)
             + ")::double precision / " + maximumPoints + "))";
-        StringBuilder sql = new StringBuilder(
-            RetrievalCandidateMapper.selectAndJoins().formatted(scoreExpression)
+        StringBuilder inner = new StringBuilder(
+            RetrievalCandidateMapper.dedupedSelectAndJoins().formatted(scoreExpression)
         );
-        sql.append(" WHERE (");
-        sql.append(String.join(" OR ", matchParts));
-        sql.append(") AND embeddings.embedding_provider = ? AND embeddings.embedding_model = ? AND ");
+        inner.append(" WHERE (");
+        inner.append(String.join(" OR ", matchParts));
+        inner.append(") AND ");
 
         for (String signal : analysis.exactSignals()) {
             String escaped = "%" + escapeLike(signal.toLowerCase()) + "%";
@@ -85,13 +78,12 @@ class ExactSignalCandidateRetriever {
             params.add(normalized);
             params.add(escaped);
         }
-        params.add(embeddingClient.providerName());
-        params.add(embeddingClient.model());
-        sql.append(RetrievalScopeSql.clause(scope, params));
-        sql.append(" ORDER BY channel_score DESC LIMIT ?");
+        inner.append(RetrievalScopeSql.clause(scope, params));
+        inner.append(" ORDER BY embeddings.source_object_type, embeddings.source_object_id, channel_score DESC");
+        String sql = "SELECT * FROM (" + inner + ") deduped ORDER BY channel_score DESC LIMIT ?";
         params.add(limit);
         return jdbc.query(
-            sql.toString(),
+            sql,
             (row, rowNum) -> RetrievalCandidateMapper.map(
                 row,
                 RetrievalChannel.EXACT,

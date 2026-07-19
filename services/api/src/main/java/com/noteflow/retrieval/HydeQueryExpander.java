@@ -2,6 +2,7 @@ package com.noteflow.retrieval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.noteflow.settings.AiSettingsService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -22,37 +23,50 @@ class HydeQueryExpander {
 
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
-    private final String provider;
-    private final String geminiApiKey;
-    private final String geminiModel;
-    private final String openAiApiKey;
-    private final String openAiModel;
+    private final AiSettingsService aiSettings;
+    private final String configuredProvider;
+    private final String defaultGeminiModel;
+    private final String defaultOpenAiModel;
     private final int timeoutSeconds;
     private final int maximumQueryTokens;
 
     HydeQueryExpander(
         ObjectMapper objectMapper,
+        HttpClient externalHttpClient,
+        AiSettingsService aiSettings,
         @Value("${noteflow.retrieval.hyde-provider:${HYDE_PROVIDER:auto}}") String provider,
-        @Value("${noteflow.retrieval.gemini-api-key:${GEMINI_API_KEY:}}") String geminiApiKey,
         @Value("${noteflow.retrieval.hyde-gemini-model:${HYDE_GEMINI_MODEL:gemini-2.5-flash}}") String geminiModel,
-        @Value("${noteflow.retrieval.openai-api-key:${OPENAI_API_KEY:}}") String openAiApiKey,
         @Value("${noteflow.retrieval.hyde-openai-model:${HYDE_OPENAI_MODEL:gpt-4o-mini}}") String openAiModel,
         @Value("${noteflow.retrieval.hyde-timeout-seconds:20}") int timeoutSeconds,
         @Value("${noteflow.retrieval.hyde-max-query-tokens:8}") int maximumQueryTokens
     ) {
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
-        this.geminiApiKey = safe(geminiApiKey);
-        this.geminiModel = safeModel(geminiModel, "gemini-2.5-flash");
-        this.openAiApiKey = safe(openAiApiKey);
-        this.openAiModel = safeModel(openAiModel, "gpt-4o-mini");
-        this.provider = resolveProvider(provider);
+        this.httpClient = externalHttpClient;
+        this.aiSettings = aiSettings;
+        this.configuredProvider = provider == null
+            ? "auto"
+            : provider.trim().toLowerCase(Locale.ROOT);
+        this.defaultGeminiModel = safeModel(geminiModel, "gemini-2.5-flash");
+        this.defaultOpenAiModel = safeModel(openAiModel, "gpt-4o-mini");
         this.timeoutSeconds = timeoutSeconds;
         this.maximumQueryTokens = maximumQueryTokens;
     }
 
+    /**
+     * Provider is resolved per call so user-saved settings (keys, provider,
+     * model choice) apply without restarting. An explicit non-auto env value
+     * still pins the provider.
+     */
+    private String resolveProvider() {
+        if (!"auto".equals(configuredProvider)) {
+            return configuredProvider;
+        }
+        return aiSettings.llmProvider();
+    }
+
     HydeExpansionResult expand(String query) {
         long startedAt = System.nanoTime();
+        String provider = resolveProvider();
         if (!shouldExpand(query)) {
             return new HydeExpansionResult(false, false, provider, null, null, elapsedMs(startedAt));
         }
@@ -78,9 +92,9 @@ class HydeQueryExpander {
             );
         } catch (InterruptedException error) {
             Thread.currentThread().interrupt();
-            return fallback("interrupted", startedAt);
+            return fallback(provider, "interrupted", startedAt);
         } catch (Exception error) {
-            return fallback(conciseError(error), startedAt);
+            return fallback(provider, conciseError(error), startedAt);
         }
     }
 
@@ -100,6 +114,8 @@ class HydeQueryExpander {
     }
 
     private String generateGemini(String query) throws Exception {
+        String geminiApiKey = aiSettings.geminiApiKey();
+        String geminiModel = aiSettings.geminiLlmModel(defaultGeminiModel);
         if (geminiApiKey.isBlank()) {
             throw new IllegalStateException("GEMINI_API_KEY is not configured for HyDE.");
         }
@@ -127,6 +143,8 @@ class HydeQueryExpander {
     }
 
     private String generateOpenAi(String query) throws Exception {
+        String openAiApiKey = aiSettings.openaiApiKey();
+        String openAiModel = aiSettings.openaiLlmModel(defaultOpenAiModel);
         if (openAiApiKey.isBlank()) {
             throw new IllegalStateException("OPENAI_API_KEY is not configured for HyDE.");
         }
@@ -166,7 +184,7 @@ class HydeQueryExpander {
         }
     }
 
-    private HydeExpansionResult fallback(String error, long startedAt) {
+    private HydeExpansionResult fallback(String provider, String error, long startedAt) {
         return new HydeExpansionResult(true, false, provider, null, error, elapsedMs(startedAt));
     }
 
@@ -181,22 +199,6 @@ class HydeQueryExpander {
 
     private String safeModel(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.trim();
-    }
-
-    private String resolveProvider(String configuredProvider) {
-        String normalized = configuredProvider == null
-            ? "auto"
-            : configuredProvider.trim().toLowerCase(Locale.ROOT);
-        if (!"auto".equals(normalized)) {
-            return normalized;
-        }
-        if (!geminiApiKey.isBlank()) {
-            return "gemini";
-        }
-        if (!openAiApiKey.isBlank()) {
-            return "openai";
-        }
-        return "disabled";
     }
 
     private long elapsedMs(long startedAt) {

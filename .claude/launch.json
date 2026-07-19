@@ -6,6 +6,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["-m", "http.server", "4173", "--directory", "apps/web"],
       "port": 4173
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "gradle",
+      "runtimeArgs": ["-p", "services/api", "bootRun", "-q", "--args=--server.port=8081"],
+      "port": 8081
     }
   ]
 }

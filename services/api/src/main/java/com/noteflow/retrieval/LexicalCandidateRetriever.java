@@ -1,6 +1,5 @@
 package com.noteflow.retrieval;
 
-import com.noteflow.search.EmbeddingClient;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -9,16 +8,10 @@ import org.springframework.stereotype.Component;
 @Component
 class LexicalCandidateRetriever {
     private final JdbcTemplate jdbc;
-    private final EmbeddingClient embeddingClient;
     private final RetrievalSchemaManager schema;
 
-    LexicalCandidateRetriever(
-        JdbcTemplate jdbc,
-        EmbeddingClient embeddingClient,
-        RetrievalSchemaManager schema
-    ) {
+    LexicalCandidateRetriever(JdbcTemplate jdbc, RetrievalSchemaManager schema) {
         this.jdbc = jdbc;
-        this.embeddingClient = embeddingClient;
         this.schema = schema;
     }
 
@@ -48,25 +41,22 @@ class LexicalCandidateRetriever {
             """.trim();
         params.add(lexicalQuery);
         params.add(lexicalQuery);
-        StringBuilder sql = new StringBuilder(
-            RetrievalCandidateMapper.selectAndJoins().formatted(rankExpression)
+        StringBuilder inner = new StringBuilder(
+            RetrievalCandidateMapper.dedupedSelectAndJoins().formatted(rankExpression)
         );
-        sql.append(
+        inner.append(
             """
             WHERE embeddings.search_vector @@ websearch_to_tsquery('simple'::regconfig, ?)
-              AND embeddings.embedding_provider = ?
-              AND embeddings.embedding_model = ?
               AND
             """
         );
         params.add(lexicalQuery);
-        params.add(embeddingClient.providerName());
-        params.add(embeddingClient.model());
-        sql.append(RetrievalScopeSql.clause(scope, params));
-        sql.append(" ORDER BY channel_score DESC LIMIT ?");
+        inner.append(RetrievalScopeSql.clause(scope, params));
+        inner.append(" ORDER BY embeddings.source_object_type, embeddings.source_object_id, channel_score DESC");
+        String sql = "SELECT * FROM (" + inner + ") deduped ORDER BY channel_score DESC LIMIT ?";
         params.add(limit);
         return jdbc.query(
-            sql.toString(),
+            sql,
             (row, rowNum) -> RetrievalCandidateMapper.map(
                 row,
                 RetrievalChannel.LEXICAL,

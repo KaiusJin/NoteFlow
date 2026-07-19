@@ -17,8 +17,8 @@ class ExternalSemanticRerankerTest {
         ExternalSemanticReranker reranker = new ExternalSemanticReranker(
             objectMapper,
             HttpClient.newHttpClient(),
+            null,
             "disabled",
-            "",
             "gemini-2.5-flash",
             20,
             12
@@ -37,8 +37,8 @@ class ExternalSemanticRerankerTest {
         ExternalSemanticReranker reranker = new ExternalSemanticReranker(
             objectMapper,
             HttpClient.newHttpClient(),
+            null,
             "disabled",
-            "",
             "gemini-2.5-flash",
             20,
             12
@@ -66,8 +66,8 @@ class ExternalSemanticRerankerTest {
         ExternalSemanticReranker reranker = new ExternalSemanticReranker(
             objectMapper,
             HttpClient.newHttpClient(),
+            null,
             "disabled",
-            "",
             "gemini-2.5-flash",
             20,
             12

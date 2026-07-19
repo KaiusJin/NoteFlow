@@ -2,62 +2,48 @@ package com.noteflow.search;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.noteflow.settings.AiSettingsService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+/**
+ * Provider, model, and API key are resolved per call through
+ * {@link AiSettingsService}, so user-saved settings take effect without a
+ * restart.
+ */
 @Component
 public class GeminiEmbeddingClient implements EmbeddingClient {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
-    private final String provider;
-    private final String geminiApiKey;
-    private final String geminiModel;
-    private final String openAiApiKey;
-    private final String openAiModel;
+    private final AiSettingsService aiSettings;
 
     public GeminiEmbeddingClient(
             ObjectMapper objectMapper,
-            @Value("${noteflow.embedding.provider:${EMBEDDING_PROVIDER:disabled}}") String provider,
-            @Value("${noteflow.embedding.gemini-api-key:${GEMINI_API_KEY:}}") String geminiApiKey,
-            @Value("${noteflow.embedding.gemini-model:${GEMINI_EMBEDDING_MODEL:gemini-embedding-001}}") String geminiModel,
-            @Value("${noteflow.embedding.openai-api-key:${OPENAI_API_KEY:}}") String openAiApiKey,
-            @Value("${noteflow.embedding.openai-model:${OPENAI_EMBEDDING_MODEL:text-embedding-3-small}}") String openAiModel) {
+            HttpClient externalHttpClient,
+            AiSettingsService aiSettings) {
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(20))
-            .build();
-        this.provider = provider == null ? "disabled" : provider.trim().toLowerCase();
-        this.geminiApiKey = geminiApiKey == null ? "" : geminiApiKey.trim();
-        this.geminiModel = geminiModel == null || geminiModel.isBlank()
-            ? "gemini-embedding-001" : geminiModel.trim();
-        this.openAiApiKey = openAiApiKey == null ? "" : openAiApiKey.trim();
-        this.openAiModel = openAiModel == null || openAiModel.isBlank()
-            ? "text-embedding-3-small" : openAiModel.trim();
+        this.httpClient = externalHttpClient;
+        this.aiSettings = aiSettings;
     }
 
     @Override
     public String providerName() {
-        return provider;
+        return aiSettings.embeddingProvider();
     }
 
     @Override
     public String model() {
-        return switch (provider) {
-            case "gemini" -> geminiModel;
-            case "openai" -> openAiModel;
-            default -> "none";
-        };
+        return aiSettings.embeddingModel();
     }
 
     @Override
     public float[] embed(String text) {
-        return switch (provider) {
+        return switch (providerName()) {
             case "gemini" -> embedGemini(text);
             case "openai" -> embedOpenAi(text);
             case "local" -> throw new IllegalStateException(
@@ -68,6 +54,8 @@ public class GeminiEmbeddingClient implements EmbeddingClient {
     }
 
     private float[] embedGemini(String text) {
+        String geminiApiKey = aiSettings.geminiApiKey();
+        String geminiModel = aiSettings.embeddingModel();
         if (geminiApiKey.isBlank()) {
             throw new IllegalStateException("GEMINI_API_KEY is not configured for search embeddings.");
         }
@@ -105,6 +93,8 @@ public class GeminiEmbeddingClient implements EmbeddingClient {
     }
 
     private float[] embedOpenAi(String text) {
+        String openAiApiKey = aiSettings.openaiApiKey();
+        String openAiModel = aiSettings.embeddingModel();
         if (openAiApiKey.isBlank()) {
             throw new IllegalStateException("OPENAI_API_KEY is not configured for search embeddings.");
         }
@@ -142,13 +132,13 @@ public class GeminiEmbeddingClient implements EmbeddingClient {
 
     private record GeminiEmbeddingRequest(String model, Content content) {
         GeminiEmbeddingRequest(String model, String text) {
-            this(model, new Content(new Part[] {new Part(text)}));
+            this(model, new Content(java.util.List.of(new Part(text))));
         }
-    }
 
-    private record Content(Part[] parts) {
-    }
+        record Content(java.util.List<Part> parts) {
+        }
 
-    private record Part(String text) {
+        record Part(String text) {
+        }
     }
 }

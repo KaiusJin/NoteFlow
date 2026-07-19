@@ -39,6 +39,7 @@ const VIEWS = {
   flashcards: renderFlashcardsView,
   quiz: renderQuizView,
   general: renderGeneralView,
+  settings: renderSettingsView,
 };
 
 function navigate(view) {
@@ -838,6 +839,166 @@ function stopAttemptPolling() {
 // ---------------------------------------------------------------------------
 // View: General (upload, documents, chunks, AI notes)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Settings view
+// ---------------------------------------------------------------------------
+const GEMINI_LLM_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"];
+const OPENAI_LLM_MODELS = ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "gpt-4.1"];
+const GEMINI_EMBEDDING_MODELS = ["gemini-embedding-001"];
+const OPENAI_EMBEDDING_MODELS = ["text-embedding-3-small", "text-embedding-3-large"];
+
+function modelOptions(models) {
+  return models.map((model) => `<option value="${model}"></option>`).join("");
+}
+
+function providerOptions(selected) {
+  return ["auto", "gemini", "openai", "disabled"]
+    .map((provider) => `<option value="${provider}" ${provider === selected ? "selected" : ""}>${provider}</option>`)
+    .join("");
+}
+
+async function renderSettingsView() {
+  viewRoot.innerHTML = `
+    <div class="view-header">
+      <div>
+        <div class="eyebrow">Settings</div>
+        <h1>AI providers & models</h1>
+      </div>
+    </div>
+    <div class="general-grid">
+      <section class="panel">
+        <div class="eyebrow">Loading</div>
+        <p>Loading current settings…</p>
+      </section>
+    </div>
+  `;
+  let current;
+  try {
+    const response = await fetch(`${API_BASE_URL}/settings/ai`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    current = await response.json();
+  } catch (error) {
+    viewRoot.querySelector(".panel").innerHTML = `
+      <div class="eyebrow">Error</div>
+      <p>Could not load settings: ${error.message}</p>
+    `;
+    return;
+  }
+  const grid = viewRoot.querySelector(".general-grid");
+  grid.innerHTML = `
+    <section class="panel">
+      <div class="eyebrow">API keys</div>
+      <h2>Provider credentials</h2>
+      <p class="hint">Keys are stored on your own NoteFlow server and never shown back in full.</p>
+      <form id="settings-form" class="form">
+        <label>Gemini API key
+          <input id="settings-gemini-key" type="password" autocomplete="off"
+            placeholder="${current.geminiKeySet ? `Saved (${current.geminiKeyHint}) — leave blank to keep` : "Not set"}" />
+        </label>
+        <label>OpenAI API key
+          <input id="settings-openai-key" type="password" autocomplete="off"
+            placeholder="${current.openaiKeySet ? `Saved (${current.openaiKeyHint}) — leave blank to keep` : "Not set"}" />
+        </label>
+
+        <div class="eyebrow">Chat & notes model</div>
+        <label>LLM provider
+          <select id="settings-llm-provider">${providerOptions(current.llmProvider)}</select>
+        </label>
+        <label>Gemini model
+          <input id="settings-gemini-llm-model" list="gemini-llm-models"
+            value="${current.geminiLlmModel || ""}" placeholder="gemini-2.5-flash (default)" />
+          <datalist id="gemini-llm-models">${modelOptions(GEMINI_LLM_MODELS)}</datalist>
+        </label>
+        <label>OpenAI model
+          <input id="settings-openai-llm-model" list="openai-llm-models"
+            value="${current.openaiLlmModel || ""}" placeholder="gpt-4o-mini (default)" />
+          <datalist id="openai-llm-models">${modelOptions(OPENAI_LLM_MODELS)}</datalist>
+        </label>
+
+        <div class="eyebrow">Embeddings (semantic search)</div>
+        <label>Embedding provider
+          <select id="settings-embedding-provider">${providerOptions(current.embeddingProvider)}</select>
+        </label>
+        <label>Gemini embedding model
+          <input id="settings-gemini-embedding-model" list="gemini-embedding-models"
+            value="${current.geminiEmbeddingModel || ""}" placeholder="gemini-embedding-001 (default)" />
+          <datalist id="gemini-embedding-models">${modelOptions(GEMINI_EMBEDDING_MODELS)}</datalist>
+        </label>
+        <label>OpenAI embedding model
+          <input id="settings-openai-embedding-model" list="openai-embedding-models"
+            value="${current.openaiEmbeddingModel || ""}" placeholder="text-embedding-3-small (default)" />
+          <datalist id="openai-embedding-models">${modelOptions(OPENAI_EMBEDDING_MODELS)}</datalist>
+        </label>
+        <p class="hint">Changing the embedding provider or model only affects new embeddings —
+          regenerate document embeddings afterwards so semantic search matches.</p>
+
+        <button type="submit" class="primary">Save settings</button>
+        <div id="settings-status" class="status"></div>
+      </form>
+    </section>
+    <section class="panel">
+      <div class="eyebrow">Effective configuration</div>
+      <h2>What is active right now</h2>
+      <div id="settings-effective">${renderEffectiveSettings(current.effective)}</div>
+      <p class="hint">"auto" resolves to whichever provider has an API key
+        (Gemini first). Environment variables remain the fallback when a field
+        is left empty.</p>
+    </section>
+  `;
+  grid.querySelector("#settings-form").addEventListener("submit", saveSettings);
+}
+
+function renderEffectiveSettings(effective) {
+  if (!effective) return "";
+  return `
+    <ul class="meta-list">
+      <li><strong>LLM provider:</strong> ${effective.llmProvider}</li>
+      <li><strong>Embedding provider:</strong> ${effective.embeddingProvider}</li>
+      <li><strong>Embedding model:</strong> ${effective.embeddingModel}</li>
+    </ul>
+  `;
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const status = viewRoot.querySelector("#settings-status");
+  status.textContent = "Saving…";
+  const geminiKey = viewRoot.querySelector("#settings-gemini-key").value.trim();
+  const openaiKey = viewRoot.querySelector("#settings-openai-key").value.trim();
+  const payload = {
+    // Keys: only send when the user typed one, so an untouched field keeps
+    // the saved value instead of clearing it.
+    ...(geminiKey ? { geminiApiKey: geminiKey } : {}),
+    ...(openaiKey ? { openaiApiKey: openaiKey } : {}),
+    llmProvider: viewRoot.querySelector("#settings-llm-provider").value,
+    geminiLlmModel: viewRoot.querySelector("#settings-gemini-llm-model").value.trim(),
+    openaiLlmModel: viewRoot.querySelector("#settings-openai-llm-model").value.trim(),
+    embeddingProvider: viewRoot.querySelector("#settings-embedding-provider").value,
+    geminiEmbeddingModel: viewRoot.querySelector("#settings-gemini-embedding-model").value.trim(),
+    openaiEmbeddingModel: viewRoot.querySelector("#settings-openai-embedding-model").value.trim(),
+  };
+  try {
+    const response = await fetch(`${API_BASE_URL}/settings/ai`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const saved = await response.json();
+    status.textContent = "Saved.";
+    const effectiveContainer = viewRoot.querySelector("#settings-effective");
+    if (effectiveContainer) effectiveContainer.innerHTML = renderEffectiveSettings(saved.effective);
+    viewRoot.querySelector("#settings-gemini-key").value = "";
+    viewRoot.querySelector("#settings-openai-key").value = "";
+    viewRoot.querySelector("#settings-gemini-key").placeholder =
+      saved.geminiKeySet ? `Saved (${saved.geminiKeyHint}) — leave blank to keep` : "Not set";
+    viewRoot.querySelector("#settings-openai-key").placeholder =
+      saved.openaiKeySet ? `Saved (${saved.openaiKeyHint}) — leave blank to keep` : "Not set";
+  } catch (error) {
+    status.textContent = `Save failed: ${error.message}`;
+  }
+}
+
 function renderGeneralView() {
   viewRoot.innerHTML = `
     <div class="view-header">

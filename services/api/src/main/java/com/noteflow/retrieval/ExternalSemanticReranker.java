@@ -2,6 +2,7 @@ package com.noteflow.retrieval;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.noteflow.settings.AiSettingsService;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -22,46 +23,27 @@ import org.springframework.stereotype.Component;
 class ExternalSemanticReranker {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final AiSettingsService aiSettings;
     private final String provider;
-    private final String apiKey;
-    private final String model;
+    private final String defaultModel;
     private final int timeoutSeconds;
     private final int candidateLimit;
 
     @Autowired
     ExternalSemanticReranker(
         ObjectMapper objectMapper,
+        HttpClient httpClient,
+        AiSettingsService aiSettings,
         @Value("${noteflow.retrieval.reranker-provider:${RETRIEVAL_RERANKER_PROVIDER:disabled}}") String provider,
-        @Value("${noteflow.retrieval.gemini-api-key:${GEMINI_API_KEY:}}") String apiKey,
         @Value("${noteflow.retrieval.gemini-reranker-model:${GEMINI_RERANK_MODEL:gemini-2.5-flash}}") String model,
         @Value("${noteflow.retrieval.external-reranker-timeout-seconds:20}") int timeoutSeconds,
         @Value("${noteflow.retrieval.external-reranker-candidate-limit:12}") int candidateLimit
     ) {
-        this(
-            objectMapper,
-            HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(),
-            provider,
-            apiKey,
-            model,
-            timeoutSeconds,
-            candidateLimit
-        );
-    }
-
-    ExternalSemanticReranker(
-        ObjectMapper objectMapper,
-        HttpClient httpClient,
-        String provider,
-        String apiKey,
-        String model,
-        int timeoutSeconds,
-        int candidateLimit
-    ) {
         this.objectMapper = objectMapper;
         this.httpClient = httpClient;
+        this.aiSettings = aiSettings;
         this.provider = provider == null ? "disabled" : provider.trim().toLowerCase();
-        this.apiKey = apiKey == null ? "" : apiKey.trim();
-        this.model = model == null || model.isBlank() ? "gemini-2.5-flash" : model.trim();
+        this.defaultModel = model == null || model.isBlank() ? "gemini-2.5-flash" : model.trim();
         this.timeoutSeconds = timeoutSeconds;
         this.candidateLimit = candidateLimit;
     }
@@ -77,6 +59,8 @@ class ExternalSemanticReranker {
                 elapsedMs(startedAt)
             );
         }
+        String apiKey = aiSettings.geminiApiKey();
+        String model = aiSettings.geminiLlmModel(defaultModel);
         if (apiKey.isBlank()) {
             return fallback(candidates, "GEMINI_API_KEY is not configured.", startedAt);
         }

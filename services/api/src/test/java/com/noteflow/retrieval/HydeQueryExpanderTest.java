@@ -1,17 +1,20 @@
 package com.noteflow.retrieval;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.noteflow.settings.AiSettingsService;
 import org.junit.jupiter.api.Test;
 
 class HydeQueryExpanderTest {
     private final HydeQueryExpander expander = new HydeQueryExpander(
         new ObjectMapper(),
+        java.net.http.HttpClient.newHttpClient(),
+        null,
         "disabled",
-        "",
         "gemini-2.5-flash",
-        "",
         "gpt-4o-mini",
         20,
         8
@@ -45,12 +48,14 @@ class HydeQueryExpanderTest {
 
     @Test
     void autoProviderWithoutKeysFallsBackToDisabled() {
+        AiSettingsService aiSettings = mock(AiSettingsService.class);
+        when(aiSettings.llmProvider()).thenReturn("disabled");
         HydeQueryExpander automatic = new HydeQueryExpander(
             new ObjectMapper(),
+            java.net.http.HttpClient.newHttpClient(),
+            aiSettings,
             "auto",
-            "",
             "gemini-2.5-flash",
-            "",
             "gpt-4o-mini",
             20,
             8

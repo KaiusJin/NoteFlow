@@ -33,6 +33,22 @@ final class RetrievalCandidateMapper {
         );
     }
 
+    /**
+     * Variant for channels that read provider-independent columns
+     * (search_vector, exact_search_text). Multiple embedding providers may
+     * store one row each per source object, so those channels deduplicate by
+     * source instead of filtering on the active embedding provider — the old
+     * provider filter silently emptied lexical/exact recall whenever the
+     * configured provider did not match the rows (e.g. provider disabled).
+     * Requires ORDER BY to lead with source_object_type, source_object_id.
+     */
+    static String dedupedSelectAndJoins() {
+        return selectAndJoins().replaceFirst(
+            "SELECT",
+            "SELECT DISTINCT ON (embeddings.source_object_type, embeddings.source_object_id)"
+        );
+    }
+
     static String selectAndJoins() {
         return """
             SELECT
