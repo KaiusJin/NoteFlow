@@ -95,16 +95,32 @@ public class RetrievalService {
         }
 
         QueryAnalysis analysis = queryAnalyzer.analyze(query);
-        HydeExpansionResult hyde = hydeQueryExpander.expand(query);
         long recallStartedAt = System.nanoTime();
+        // HyDE is an LLM round-trip; run it concurrently with lexical/exact recall
+        // instead of serially blocking the whole fan-out. Only vector recall waits
+        // for it. expand() never throws, but guard the future so an unexpected
+        // failure degrades to "no expansion" instead of failing retrieval.
+        CompletableFuture<HydeExpansionResult> hydeFuture = CompletableFuture
+            .supplyAsync(() -> hydeQueryExpander.expand(query), retrievalExecutor)
+            .exceptionally(error -> new HydeExpansionResult(
+                true,
+                false,
+                "unavailable",
+                null,
+                error.getMessage(),
+                0
+            ));
         CompletableFuture<ChannelRecallResult> vectorFuture = recall(
             RetrievalChannel.VECTOR,
-            () -> vectorRetriever.retrieve(
-                query,
-                hyde.generated() ? hyde.hypotheticalDocument() : null,
-                scope,
-                vectorCandidateLimit
-            )
+            () -> {
+                HydeExpansionResult expansion = hydeFuture.join();
+                return vectorRetriever.retrieve(
+                    query,
+                    expansion.generated() ? expansion.hypotheticalDocument() : null,
+                    scope,
+                    vectorCandidateLimit
+                );
+            }
         );
         CompletableFuture<ChannelRecallResult> lexicalFuture = recall(
             RetrievalChannel.LEXICAL,
@@ -120,6 +136,7 @@ public class RetrievalService {
             exactFuture.join()
         );
         long recallFinishedAt = System.nanoTime();
+        HydeExpansionResult hyde = hydeFuture.join();
         if (channelResults.stream().noneMatch(ChannelRecallResult::available)) {
             String errors = channelResults.stream()
                 .map(result -> result.channel().name() + ": " + result.error())

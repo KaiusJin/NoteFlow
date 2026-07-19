@@ -1,11 +1,14 @@
+import atexit
 import json
 import re
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterable, Optional
 from uuid import uuid4
 
-import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from noteflow_worker.config import settings
 
@@ -200,10 +203,39 @@ class CleanConnection:
         return getattr(self._conn, name)
 
 
+# Process-wide connection pool. Created lazily (never at import time) so that
+# spawned child processes build their own pool instead of inheriting sockets,
+# and so scripts that never touch the DB pay nothing.
+_pool: Optional[ConnectionPool] = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = ConnectionPool(
+                    settings.database_url,
+                    min_size=settings.db_pool_min_size,
+                    max_size=settings.db_pool_max_size,
+                    kwargs={"row_factory": dict_row},
+                    name="noteflow-worker",
+                    open=True,
+                )
+                atexit.register(_pool.close)
+    return _pool
+
+
 class Repository:
+    @contextmanager
     def connect(self):
-        conn = psycopg.connect(settings.database_url, row_factory=dict_row)
-        return CleanConnection(conn)
+        # pool.connection() handles commit/rollback and returns the connection
+        # to the pool on exit, replacing the old connect-per-call behaviour.
+        with _get_pool().connection(
+            timeout=settings.db_pool_acquire_timeout_seconds
+        ) as conn:
+            yield CleanConnection(conn)
 
     def load_document(self, document_id: str) -> DocumentRecord:
         with self.connect() as conn:

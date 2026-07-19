@@ -1,4 +1,12 @@
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import multiprocessing
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Executor,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 
 from noteflow_worker.config import settings
 from noteflow_worker.db.repository import Repository
@@ -19,9 +27,11 @@ from noteflow_worker.queue.redis_queue import (
 )
 from noteflow_worker.study.repository import StudyRepository
 from noteflow_worker.conversation.store import ConversationStore
+from noteflow_worker.user_settings import apply_user_ai_settings
 
 
 def process_payload(payload: TaskPayload) -> None:
+    apply_user_ai_settings(payload.user_id)
     repository = Repository()
     parse_pipeline = ParseDocumentPipeline(repository)
     embeddings_pipeline = GenerateEmbeddingsPipeline(repository)
@@ -68,37 +78,57 @@ def main() -> None:
         max(1, settings.worker_max_background_tasks),
         max_tasks if max_tasks == 1 else max_tasks - 1,
     )
+    parse_workers = max(0, settings.worker_parse_process_workers)
     active: dict[Future, TaskPayload] = {}
     print(
         "NoteFlow worker started. Waiting for document tasks... "
-        f"max_concurrent_tasks={max_tasks} max_background_tasks={background_limit}"
+        f"max_concurrent_tasks={max_tasks} max_background_tasks={background_limit} "
+        f"parse_process_workers={parse_workers}"
     )
     recover_stale_notes_tasks(queue)
     recover_stale_study_tasks(queue)
     recover_stale_answer_tasks(queue)
     recover_stale_parse_tasks(queue)
 
-    with ThreadPoolExecutor(max_workers=max_tasks) as executor:
-        while True:
-            reclaimed = queue.reclaim_expired_leases()
-            if reclaimed:
-                print(f"Reclaimed {reclaimed} expired Redis task lease(s).")
-            refresh_active_leases(queue, active)
-            active = reap_completed(queue, active)
-            if len(active) >= max_tasks:
-                done, _ = wait(set(active), timeout=lease_wait_timeout_seconds(), return_when=FIRST_COMPLETED)
-                finish_completed(queue, done, active)
-                active = {future: payload for future, payload in active.items() if future not in done}
-                continue
+    # CPU-bound parsing runs in spawned processes so it cannot starve the GIL
+    # for the I/O-bound pipelines in the thread pool. spawn (never fork) keeps
+    # the child from inheriting DB pool sockets and Redis connections; each
+    # child lazily builds its own connection pool.
+    parse_executor: ProcessPoolExecutor | None = None
+    if parse_workers > 0:
+        parse_executor = ProcessPoolExecutor(
+            max_workers=parse_workers,
+            mp_context=multiprocessing.get_context("spawn"),
+        )
+    total_capacity = max_tasks + (parse_workers if parse_executor else 0)
+    try:
+        with ThreadPoolExecutor(max_workers=max_tasks) as executor:
+            while True:
+                reclaimed = queue.reclaim_expired_leases()
+                if reclaimed:
+                    print(f"Reclaimed {reclaimed} expired Redis task lease(s).")
+                refresh_active_leases(queue, active)
+                active = reap_completed(queue, active)
+                if len(active) >= total_capacity:
+                    done, _ = wait(set(active), timeout=lease_wait_timeout_seconds(), return_when=FIRST_COMPLETED)
+                    finish_completed(queue, done, active)
+                    active = {future: payload for future, payload in active.items() if future not in done}
+                    continue
 
-            background_active = sum(payload.resolved_priority == PRIORITY_BACKGROUND for payload in active.values())
-            allowed_priorities = (PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE)
-            if background_active < background_limit:
-                allowed_priorities = (*allowed_priorities, PRIORITY_BACKGROUND)
-            payload = queue.pop(allowed_priorities)
-            if payload is None:
-                continue
-            active[executor.submit(process_payload, payload)] = payload
+                background_active = sum(payload.resolved_priority == PRIORITY_BACKGROUND for payload in active.values())
+                allowed_priorities = (PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE)
+                if background_active < background_limit:
+                    allowed_priorities = (*allowed_priorities, PRIORITY_BACKGROUND)
+                payload = queue.pop(allowed_priorities)
+                if payload is None:
+                    continue
+                target: Executor = executor
+                if parse_executor is not None and payload.task_type == "PARSE_DOCUMENT":
+                    target = parse_executor
+                active[target.submit(process_payload, payload)] = payload
+    finally:
+        if parse_executor is not None:
+            parse_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def lease_wait_timeout_seconds() -> float:

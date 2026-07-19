@@ -5,6 +5,14 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/noteflow}
     username: ${SPRING_DATASOURCE_USERNAME:noteflow}
     password: ${SPRING_DATASOURCE_PASSWORD:noteflow}
+    hikari:
+      maximum-pool-size: ${NOTEFLOW_DB_MAX_POOL_SIZE:20}
+      minimum-idle: ${NOTEFLOW_DB_MIN_IDLE:5}
+      connection-timeout: ${NOTEFLOW_DB_CONNECTION_TIMEOUT_MS:3000}
+      max-lifetime: ${NOTEFLOW_DB_MAX_LIFETIME_MS:1800000}
+  threads:
+    virtual:
+      enabled: true
   jpa:
     hibernate:
       ddl-auto: update
@@ -38,7 +46,6 @@ noteflow:
     vector-candidate-limit: ${RETRIEVAL_VECTOR_CANDIDATE_LIMIT:30}
     lexical-candidate-limit: ${RETRIEVAL_LEXICAL_CANDIDATE_LIMIT:30}
     exact-candidate-limit: ${RETRIEVAL_EXACT_CANDIDATE_LIMIT:15}
-    channel-concurrency: ${RETRIEVAL_CHANNEL_CONCURRENCY:12}
     channel-timeout-seconds: ${RETRIEVAL_CHANNEL_TIMEOUT_SECONDS:20}
     default-context-tokens: ${RETRIEVAL_DEFAULT_CONTEXT_TOKENS:6000}
     max-tokens-per-item: ${RETRIEVAL_MAX_TOKENS_PER_ITEM:1400}

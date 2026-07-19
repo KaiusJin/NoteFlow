@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     )
 
     database_url: str = "postgresql://noteflow:noteflow@localhost:5432/noteflow"
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 16
+    db_pool_acquire_timeout_seconds: float = 30.0
     redis_url: str = "redis://localhost:6379/0"
     document_queue: str = "queue:document-analysis"
     block_timeout_seconds: int = 5
@@ -16,6 +19,10 @@ class Settings(BaseSettings):
     queue_reclaim_batch_size: int = 100
     worker_max_concurrent_tasks: int = 4
     worker_max_background_tasks: int = 2
+    # PARSE_DOCUMENT is CPU-bound (MuPDF/OCR/layout) and starves the GIL when it
+    # shares the thread pool with I/O-bound pipelines. Route it to a spawn-based
+    # process pool instead. 0 keeps the old single-pool thread behaviour.
+    worker_parse_process_workers: int = 2
     pdf_cpu_workers: int = 0
     pdf_io_workers: int = 0
     pdf_gpu_workers: int = 0
