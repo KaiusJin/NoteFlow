@@ -80,6 +80,8 @@ class StudyRepository(Repository):
             "CREATE INDEX IF NOT EXISTS idx_flashcards_deck ON flashcards(deck_id, source_group_index, item_index)",
             "CREATE INDEX IF NOT EXISTS idx_quiz_questions_set ON quiz_questions(quiz_set_id, source_group_index, item_index)",
             "CREATE INDEX IF NOT EXISTS idx_quiz_answers_attempt ON quiz_answers(attempt_id, graded_by)",
+            "ALTER TABLE quiz_answers ADD COLUMN IF NOT EXISTS response_time_ms INTEGER",
+            "ALTER TABLE quiz_answers ADD COLUMN IF NOT EXISTS hint_used BOOLEAN NOT NULL DEFAULT FALSE",
         ]
         with self.connect() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtext('noteflow-study-schema-v1'))")
@@ -99,11 +101,7 @@ class StudyRepository(Repository):
             conn.execute("ALTER TABLE study_task_targets ADD COLUMN IF NOT EXISTS target_id UUID")
             foreign_keys = (
                 ("fk_flashcard_decks_document", "flashcard_decks", "document_id", "documents", "id"),
-                ("fk_flashcard_decks_user", "flashcard_decks", "user_id", "users", "id"),
                 ("fk_quiz_sets_document", "quiz_sets", "document_id", "documents", "id"),
-                ("fk_quiz_sets_user", "quiz_sets", "user_id", "users", "id"),
-                ("fk_flashcard_reviews_user", "flashcard_review_states", "user_id", "users", "id"),
-                ("fk_quiz_attempts_user", "quiz_attempts", "user_id", "users", "id"),
             )
             for name, table, column, parent, parent_column in foreign_keys:
                 exists = conn.execute("SELECT 1 FROM pg_constraint WHERE conname=%s", (name,)).fetchone()
@@ -208,6 +206,19 @@ class StudyRepository(Repository):
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT generation_options_json FROM quiz_sets WHERE id=%s", (set_id,)
+            ).fetchone()
+        if not row or not row["generation_options_json"]:
+            return {}
+        try:
+            parsed = json.loads(row["generation_options_json"])
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def load_flashcard_generation_options(self, deck_id: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT generation_options_json FROM flashcard_decks WHERE id=%s", (deck_id,)
             ).fetchone()
         if not row or not row["generation_options_json"]:
             return {}

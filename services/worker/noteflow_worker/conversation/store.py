@@ -105,6 +105,19 @@ class ConversationStore(MemoryStore):
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_run_steps_message ON agent_run_steps(message_id, step_index)")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS agent_run_snapshots (
+                  message_id UUID PRIMARY KEY REFERENCES rag_messages(id) ON DELETE CASCADE,
+                  conversation_id UUID NOT NULL,user_id UUID NOT NULL,question TEXT NOT NULL,
+                  status VARCHAR(24) NOT NULL,state_json JSONB NOT NULL,waiting_task_id UUID,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS agent_task_waits (
+                  task_id UUID NOT NULL,message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
+                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(task_id,message_id))"""
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_task_waits_task ON agent_task_waits(task_id)")
             ensure_task_constraints(conn)
 
     def load_message(self, message_id: str) -> dict:
@@ -262,6 +275,62 @@ class ConversationStore(MemoryStore):
                 (task_id, conversation_id, message_id),
             )
 
+    def pause_agent_run(self, message_id: str, conversation_id: str, user_id: str, question: str,
+                        state_json: str, waiting_task_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute("""INSERT INTO agent_run_snapshots(
+              message_id,conversation_id,user_id,question,status,state_json,waiting_task_id)
+              VALUES (%s,%s,%s,%s,'WAITING',%s::jsonb,%s)
+              ON CONFLICT(message_id) DO UPDATE SET status='WAITING',state_json=EXCLUDED.state_json,
+                waiting_task_id=EXCLUDED.waiting_task_id,updated_at=NOW()""",
+                (message_id, conversation_id, user_id, question, state_json, waiting_task_id))
+            conn.execute("DELETE FROM agent_task_waits WHERE message_id=%s", (message_id,))
+            conn.execute("INSERT INTO agent_task_waits(task_id,message_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                         (waiting_task_id, message_id))
+
+    def load_agent_snapshot(self, message_id: str) -> dict:
+        with self.connect() as conn:
+            row = conn.execute("""SELECT message_id,conversation_id,user_id,question,status,state_json,waiting_task_id
+              FROM agent_run_snapshots WHERE message_id=%s""", (message_id,)).fetchone()
+        if not row:
+            raise ValueError("Agent continuation snapshot not found")
+        value = dict(row)
+        if isinstance(value.get("state_json"), str):
+            value["state_json"] = json.loads(value["state_json"])
+        return value
+
+    def create_resume_tasks(self, completed_task_id: str) -> list[dict]:
+        """Atomically turn artifact-completion subscriptions into resume tasks."""
+        created = []
+        with self.connect() as conn:
+            rows = conn.execute("""SELECT w.message_id,s.conversation_id,s.user_id
+              FROM agent_task_waits w JOIN tasks t ON t.id=w.task_id AND t.status IN ('COMPLETED','FAILED')
+              JOIN agent_run_snapshots s ON s.message_id=w.message_id
+              JOIN rag_messages m ON m.id=s.message_id
+              WHERE w.task_id=%s AND s.status='WAITING' AND m.status='GENERATING'
+              FOR UPDATE OF s""", (completed_task_id,)).fetchall()
+            for row in rows:
+                task_id = str(uuid4())
+                conn.execute("""INSERT INTO tasks(id,document_id,user_id,task_type,status,current_step,
+                  progress,retry_count,priority,created_at,updated_at)
+                  VALUES (%s,NULL,%s,'RESUME_AGENT_RUN','PENDING','UPLOADED',0,0,0,NOW(),NOW())""",
+                  (task_id, row["user_id"]))
+                conn.execute("""INSERT INTO conversation_task_targets(task_id,conversation_id,message_id)
+                  VALUES (%s,%s,%s)""", (task_id, row["conversation_id"], row["message_id"]))
+                conn.execute("UPDATE agent_run_snapshots SET status='QUEUED',updated_at=NOW() WHERE message_id=%s",
+                             (row["message_id"],))
+                conn.execute("DELETE FROM agent_task_waits WHERE task_id=%s AND message_id=%s",
+                             (completed_task_id, row["message_id"]))
+                created.append({"task_id": task_id, "user_id": str(row["user_id"]),
+                                "conversation_id": str(row["conversation_id"]), "message_id": str(row["message_id"])})
+        return created
+
+    def complete_agent_run(self, message_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE agent_run_snapshots SET status='COMPLETED',waiting_task_id=NULL,updated_at=NOW() WHERE message_id=%s",
+                         (message_id,))
+            conn.execute("DELETE FROM agent_task_waits WHERE message_id=%s", (message_id,))
+
     def create_maintenance_task(self, task_id: str, user_id: str) -> None:
         """Persist background work before publishing it to Redis."""
         with self.connect() as conn:
@@ -280,7 +349,7 @@ class ConversationStore(MemoryStore):
             rows = conn.execute(
                 """WITH stale AS (
                      SELECT id FROM tasks
-                     WHERE task_type = 'ANSWER_CONVERSATION_TURN' AND status = 'PROCESSING'
+                     WHERE task_type IN ('ANSWER_CONVERSATION_TURN','RESUME_AGENT_RUN') AND status = 'PROCESSING'
                        AND updated_at < NOW() - (%s::text||' minutes')::interval
                      FOR UPDATE SKIP LOCKED)
                    UPDATE tasks t SET status = 'RETRYING', retry_count = retry_count + 1,

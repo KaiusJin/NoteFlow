@@ -1,5 +1,14 @@
 # NoteFlow Database Schema
 
+## Agent orchestration persistence
+
+`agent_run_steps` is the durable execution/evaluation trace for one assistant
+message. `agent_run_snapshots` stores resumable orchestration state while an
+async learning artifact is running. `agent_task_waits` maps the artifact task to
+the waiting message. At terminal task state, `RESUME_AGENT_RUN` restores the
+snapshot, evaluates postconditions, and either continues planning or performs a
+bounded retry.
+
 This document defines the first database schema for PDF upload, document management, async parsing tasks, and PDF parse results.
 
 ## 1. Scope
@@ -95,19 +104,13 @@ FAILED
 
 ## 3. Tables
 
-### users
+### Local workspace (no users table)
 
-For MVP, this can be stubbed or mapped to a third-party auth provider later.
-
-```sql
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  display_name VARCHAR(255),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
+The current product is a single local workspace. It has no login/account
+domain and no `users` table. A stable installation UUID namespaces legacy rows
+during migration, but it is not an authenticated identity. See
+`LOCAL_AGENTIC_STUDY_ARCHITECTURE.md` for the compatibility and packaging
+boundary.
 
 ### documents
 
@@ -128,8 +131,7 @@ CREATE TABLE documents (
   content_source_type VARCHAR(64) NOT NULL DEFAULT 'UNKNOWN',
   status VARCHAR(64) NOT NULL DEFAULT 'UPLOADED',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT fk_documents_user FOREIGN KEY (user_id) REFERENCES users(id)
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 ```
 
@@ -219,8 +221,7 @@ CREATE TABLE tasks (
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT fk_tasks_document FOREIGN KEY (document_id) REFERENCES documents(id),
-  CONSTRAINT fk_tasks_user FOREIGN KEY (user_id) REFERENCES users(id)
+  CONSTRAINT fk_tasks_document FOREIGN KEY (document_id) REFERENCES documents(id)
 );
 ```
 

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -18,10 +18,10 @@ import org.springframework.transaction.annotation.Transactional;
 public class ConversationService {
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final TaskDispatchService tasks;
 
-    public ConversationService(JdbcTemplate jdbc, ObjectMapper json, DevUserService users, TaskDispatchService tasks) {
+    public ConversationService(JdbcTemplate jdbc, ObjectMapper json, LocalWorkspaceService users, TaskDispatchService tasks) {
         this.jdbc = jdbc;
         this.json = json;
         this.users = users;

@@ -1,6 +1,6 @@
 package com.noteflow.settings;
 
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -18,7 +18,7 @@ public class AiSettingsService {
     private static final long CACHE_TTL_MILLIS = 15_000;
 
     private final AiSettingsRepository repository;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final String envGeminiApiKey;
     private final String envOpenaiApiKey;
     private final String envEmbeddingProvider;
@@ -29,7 +29,7 @@ public class AiSettingsService {
 
     public AiSettingsService(
         AiSettingsRepository repository,
-        DevUserService users,
+        LocalWorkspaceService users,
         @Value("${noteflow.embedding.gemini-api-key:${GEMINI_API_KEY:}}") String envGeminiApiKey,
         @Value("${noteflow.retrieval.openai-api-key:${OPENAI_API_KEY:}}") String envOpenaiApiKey,
         @Value("${noteflow.embedding.provider:${EMBEDDING_PROVIDER:disabled}}") String envEmbeddingProvider,

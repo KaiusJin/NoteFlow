@@ -113,6 +113,19 @@ public class ConversationSchemaManager {
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rag_messages_conversation_created ON rag_messages(conversation_id, created_at)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_rag_citations_message ON rag_message_citations(message_id, citation_index)");
         jdbc.execute("CREATE INDEX IF NOT EXISTS idx_agent_run_steps_message ON agent_run_steps(message_id, step_index)");
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS agent_run_snapshots (
+              message_id UUID PRIMARY KEY REFERENCES rag_messages(id) ON DELETE CASCADE,
+              conversation_id UUID NOT NULL,user_id UUID NOT NULL,question TEXT NOT NULL,
+              status VARCHAR(24) NOT NULL,state_json JSONB NOT NULL,waiting_task_id UUID,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
+            """);
+        jdbc.execute("""
+            CREATE TABLE IF NOT EXISTS agent_task_waits (
+              task_id UUID NOT NULL,message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(task_id,message_id))
+            """);
+        jdbc.execute("CREATE INDEX IF NOT EXISTS idx_agent_task_waits_task ON agent_task_waits(task_id)");
         jdbc.execute("ALTER TABLE tasks ALTER COLUMN document_id DROP NOT NULL");
         // Study generation channels (SECTION vs AGENT). The worker owns the
         // study tables; guard so the API can still boot on a fresh database.
@@ -130,8 +143,8 @@ public class ConversationSchemaManager {
             """);
         ensureTaskConstraint(
             "tasks_task_type_check",
-            "MAINTAIN_CONVERSATION_MEMORY",
-            "task_type IN ('PARSE_DOCUMENT','GENERATE_EMBEDDINGS','GENERATE_NOTES','GENERATE_FLASHCARDS','GENERATE_QUIZ','GRADE_QUIZ_ATTEMPT','ANSWER_CONVERSATION_TURN','MAINTAIN_CONVERSATION_MEMORY','ASK_DOCUMENT','EXPORT_MARKDOWN')"
+            "RESUME_AGENT_RUN",
+            "task_type IN ('PARSE_DOCUMENT','GENERATE_EMBEDDINGS','GENERATE_NOTES','GENERATE_FLASHCARDS','GENERATE_QUIZ','GRADE_QUIZ_ATTEMPT','ANSWER_CONVERSATION_TURN','RESUME_AGENT_RUN','MAINTAIN_CONVERSATION_MEMORY','ASK_DOCUMENT','EXPORT_MARKDOWN')"
         );
         ensureTaskConstraint(
             "tasks_current_step_check",

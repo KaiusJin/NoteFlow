@@ -6,7 +6,7 @@ import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
 import com.noteflow.tasks.TaskStatus;
 import com.noteflow.tasks.TaskType;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import com.noteflow.notes.DocumentAiNote;
 import com.noteflow.notes.DocumentAiNoteRepository;
 import com.noteflow.tasks.TaskRepository;
@@ -23,7 +23,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class DocumentService {
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final DocumentRepository documents;
     private final TaskDispatchService taskDispatcher;
     private final LocalFileStorageService storage;
@@ -31,7 +31,7 @@ public class DocumentService {
     private final TaskRepository taskRepository;
     private final JdbcTemplate jdbc;
 
-    public DocumentService(DevUserService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
+    public DocumentService(LocalWorkspaceService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
             LocalFileStorageService storage, DocumentAiNoteRepository notes, TaskRepository taskRepository, JdbcTemplate jdbc) {
         this.users = users;
         this.documents = documents;

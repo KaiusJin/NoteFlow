@@ -1,6 +1,6 @@
 package com.noteflow.tasks;
 
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -13,9 +13,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class TaskController {
     private final TaskRepository tasks;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
 
-    public TaskController(TaskRepository tasks, DevUserService users) {
+    public TaskController(TaskRepository tasks, LocalWorkspaceService users) {
         this.tasks = tasks;
         this.users = users;
     }

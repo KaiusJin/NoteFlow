@@ -10,7 +10,7 @@ import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
 import com.noteflow.documents.DocumentStatus;
 import com.noteflow.search.SearchMode;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -21,7 +21,7 @@ class RetrievalScopeResolverTest {
 
     @Test
     void customScopeDeduplicatesAndExcludesNonReadyDocuments() {
-        DevUserService users = mock(DevUserService.class);
+        LocalWorkspaceService users = mock(LocalWorkspaceService.class);
         DocumentRepository documents = mock(DocumentRepository.class);
         UUID readyId = UUID.randomUUID();
         UUID processingId = UUID.randomUUID();
@@ -44,7 +44,7 @@ class RetrievalScopeResolverTest {
 
     @Test
     void customScopeRejectsForeignDocument() {
-        DevUserService users = mock(DevUserService.class);
+        LocalWorkspaceService users = mock(LocalWorkspaceService.class);
         DocumentRepository documents = mock(DocumentRepository.class);
         UUID foreignId = UUID.randomUUID();
         Document foreign = document(foreignId, UUID.randomUUID(), DocumentStatus.READY);

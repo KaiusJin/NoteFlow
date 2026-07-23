@@ -6,7 +6,7 @@ import com.noteflow.documents.DocumentStatus;
 import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
 import com.noteflow.tasks.TaskType;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -21,13 +21,13 @@ public class SearchService {
     private static final int DEFAULT_TOP_K = 8;
     private static final int MAX_TOP_K = 30;
 
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final DocumentRepository documents;
     private final TaskDispatchService taskDispatcher;
     private final EmbeddingClient embeddingClient;
     private final JdbcTemplate jdbc;
 
-    public SearchService(DevUserService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
+    public SearchService(LocalWorkspaceService users, DocumentRepository documents, TaskDispatchService taskDispatcher,
             EmbeddingClient embeddingClient, JdbcTemplate jdbc) {
         this.users = users;
         this.documents = documents;

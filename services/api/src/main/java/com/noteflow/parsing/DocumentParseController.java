@@ -4,7 +4,7 @@ import com.noteflow.chunks.DocumentChunkRepository;
 import com.noteflow.chunks.DocumentChunkResponse;
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
@@ -19,10 +19,10 @@ public class DocumentParseController {
     private final DocumentParseResultRepository parseResults;
     private final DocumentChunkRepository chunks;
     private final DocumentParseManifestRepository parseManifests;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
 
     public DocumentParseController(DocumentRepository documents, DocumentParseResultRepository parseResults,
-            DocumentChunkRepository chunks, DocumentParseManifestRepository parseManifests, DevUserService users) {
+            DocumentChunkRepository chunks, DocumentParseManifestRepository parseManifests, LocalWorkspaceService users) {
         this.documents = documents;
         this.parseResults = parseResults;
         this.chunks = chunks;

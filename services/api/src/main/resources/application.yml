@@ -40,8 +40,9 @@ noteflow:
     upload-dir: ${NOTEFLOW_UPLOAD_DIR:storage/uploads}
   queue:
     document-analysis: ${NOTEFLOW_DOCUMENT_QUEUE:queue:document-analysis}
-  dev:
-    user-id: ${NOTEFLOW_DEV_USER_ID:00000000-0000-0000-0000-000000000001}
+  local:
+    # Stable namespace for this installation, not an account identity.
+    workspace-id: ${NOTEFLOW_LOCAL_WORKSPACE_ID:${NOTEFLOW_DEV_USER_ID:00000000-0000-0000-0000-000000000001}}
   retrieval:
     vector-candidate-limit: ${RETRIEVAL_VECTOR_CANDIDATE_LIMIT:30}
     lexical-candidate-limit: ${RETRIEVAL_LEXICAL_CANDIDATE_LIMIT:30}

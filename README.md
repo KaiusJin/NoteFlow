@@ -20,10 +20,16 @@ See [docs/technical/WORKFLOW_AND_ARCHITECTURE.md](docs/technical/WORKFLOW_AND_AR
 end-to-end user workflow, service responsibilities, data flow, API links, and
 implementation phases.
 
+For the current shared Quiz/Flashcard generation boundary, Agent tool adapters,
+and local single-workspace persistence model, see
+[docs/technical/LOCAL_AGENTIC_STUDY_ARCHITECTURE.md](docs/technical/LOCAL_AGENTIC_STUDY_ARCHITECTURE.md).
+
 ## Database Schema
 
-See [docs/technical/DATABASE_SCHEMA.md](docs/technical/DATABASE_SCHEMA.md) for the first table design covering
-users, documents, async tasks, PDF parse results, and document chunks.
+See [docs/technical/DATABASE_SCHEMA.md](docs/technical/DATABASE_SCHEMA.md) for the table design covering
+documents, async tasks, PDF parse results, and document chunks. NoteFlow no
+longer has an account or `users` table; persisted content belongs to one local
+installation.
 
 ## PDF Markdown And Chunk Pipeline
 

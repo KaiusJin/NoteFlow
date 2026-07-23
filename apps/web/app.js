@@ -97,6 +97,8 @@ function taskTypeLabel(taskType) {
     GENERATE_QUIZ: "Quiz",
     GRADE_QUIZ_ATTEMPT: "Quiz Grading",
     GENERATE_EMBEDDINGS: "Embeddings",
+    ANSWER_CONVERSATION_TURN: "AI Agent",
+    RESUME_AGENT_RUN: "Agent Reflection",
   }[taskType] || taskType;
 }
 
@@ -402,7 +404,10 @@ async function handleChatSubmit(form) {
     });
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || "Unable to send message");
-    const answer = await pollConversationMessage(payload.assistantMessageId);
+    const answer = await pollConversationMessage(payload.assistantMessageId, (message) => {
+      chatMessages[pendingIndex] = { role: "assistant", html: renderAgentProgress(message) };
+      refreshChatMessages();
+    });
     chatMessages[pendingIndex] = { role: "assistant", html: renderConversationAnswer(answer) };
     loadConversationList();
   } catch (error) {
@@ -414,14 +419,28 @@ async function handleChatSubmit(form) {
   refreshChatMessages();
 }
 
-async function pollConversationMessage(messageId) {
-  for (let attempt = 0; attempt < 180; attempt += 1) {
+async function pollConversationMessage(messageId, onUpdate = null) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     const message = await requestJson(`/conversations/messages/${messageId}`);
     if (message.status === "COMPLETED") return message;
     if (message.status === "FAILED") throw new Error(message.error_message || "Answer generation failed");
+    if (onUpdate) onUpdate(message);
     await new Promise((resolve) => setTimeout(resolve, attempt < 20 ? 1000 : 3000));
   }
   throw new Error("Answer generation timed out. The conversation remains saved; try again shortly.");
+}
+
+function renderAgentProgress(message) {
+  const agent = message.structuredResponse?.agent || null;
+  const phase = {
+    PLANNING: "Planning the next action…",
+    EXECUTING: "Running a tool…",
+    WAITING: "Waiting for generated content…",
+    EVALUATING: "Evaluating output quality…",
+    REFLECTING: "Reflecting and preparing a retry…",
+  }[agent?.phase] || "Reading context and sources…";
+  const retry = agent?.reflectionCount ? ` · ${agent.reflectionCount} automatic retr${agent.reflectionCount === 1 ? "y" : "ies"}` : "";
+  return `<p class="chat-note">${escapeHtml(phase + retry)}</p>${renderAgentSteps(agent)}`;
 }
 
 function renderConversationAnswer(message) {
@@ -473,27 +492,62 @@ function renderAgentStep(step) {
 
 function renderAgentHandle(handle) {
   if (!handle?.kind) return "";
-  const label = handle.kind === "quiz" ? "Open Quiz" : "Open Flashcards";
-  const view = handle.kind === "quiz" ? "quiz" : "flashcards";
+  const destinations = {
+    quiz: { label: "Open Quiz", view: "quiz" },
+    flashcards: { label: "Open Flashcards", view: "flashcards" },
+    note: { label: "Open Notes", view: "folders" },
+  };
+  const destination = destinations[handle.kind];
+  if (!destination) return "";
   const id = handle.documentId || "";
   return `
-    <button type="button" class="secondary agent-handle" data-agent-open="${view}" data-doc-id="${escapeHtml(id)}">
-      ${escapeHtml(label)}
+    <button type="button" class="secondary agent-handle" data-agent-open="${destination.view}" data-doc-id="${escapeHtml(id)}">
+      ${escapeHtml(destination.label)}
     </button>
   `;
 }
 
 function toolLabel(tool) {
   return {
+    search_sources: "Search sources",
     search_notes: "Search notes",
-    get_document_section: "Get document section",
-    list_documents: "List documents",
-    compare_sources: "Compare sources",
+    search_quiz_history: "Search quiz history",
+    search_flashcards: "Search flashcards",
+    retrieve_related_chunks: "Retrieve related chunks",
+    retrieve_previous_conversation: "Retrieve previous conversation",
     generate_quiz: "Generate quiz",
-    create_flashcards: "Create flashcards",
+    generate_flashcards: "Generate flashcards",
+    generate_ai_notes: "Generate AI notes",
+    generate_summary: "Generate summary",
+    generate_study_guide: "Generate study guide",
+    generate_examples: "Generate examples",
+    generate_practice_questions: "Generate practice questions",
+    read_markdown: "Read Markdown",
+    edit_markdown: "Edit Markdown",
+    insert_section: "Insert section",
+    delete_section: "Delete section",
+    rewrite_paragraph: "Rewrite paragraph",
+    update_note: "Update note",
+    save_artifact: "Save artifact",
+    analyze_quiz_performance: "Analyze quiz performance",
+    find_weak_topics: "Find weak topics",
+    estimate_mastery: "Estimate mastery",
+    recommend_review_order: "Recommend review order",
+    detect_frequently_wrong_concepts: "Detect frequently wrong concepts",
+    create_study_plan: "Create study plan",
+    break_down_task: "Break down task",
+    prioritize_tasks: "Prioritize tasks",
+    decide_next_action: "Decide next action",
+    select_documents: "Select documents",
+    estimate_time: "Estimate time",
+    verify_citation: "Verify citation",
+    check_coverage: "Check coverage",
+    detect_hallucination: "Detect hallucination",
+    evaluate_generated_quiz: "Evaluate generated quiz",
+    retry_generation: "Retry generation",
     final_answer: "Final answer",
     fallback: "Fallback",
-  }[tool] || tool;
+  }[tool] || String(tool || "").replaceAll("_", " ");
 }
 
 function compactObservation(value) {
@@ -547,7 +601,10 @@ async function hydrateConversation(conversationId = activeConversationId) {
 async function resumePendingConversationMessages(conversationId, pendingMessages) {
   for (const pending of pendingMessages) {
     try {
-      const answer = await pollConversationMessage(pending.messageId);
+      const answer = await pollConversationMessage(pending.messageId, (message) => {
+        chatMessages[pending.index] = { role: "assistant", html: renderAgentProgress(message) };
+        refreshChatMessages();
+      });
       if (conversationId !== activeConversationId) return;
       chatMessages[pending.index] = { role: "assistant", html: renderConversationAnswer(answer) };
       refreshChatMessages();
@@ -683,6 +740,12 @@ async function renderFlashcardsView() {
           <p>Source-grounded cards with SM-2 scheduling and page citations.</p>
           ${deck ? studyProgress(deck) : `<div class="empty-study">No deck generated yet.</div>`}
           ${decks.length > 1 ? `<div class="study-history">History: ${decks.map((d) => `v${d.version} ${escapeHtml(d.status)}`).join(" · ")}</div>` : ""}
+          <fieldset class="quiz-options" ${doc.status === "READY" ? "" : "disabled"}>
+            <legend>New deck configuration</legend>
+            <label>Cards <input type="number" id="flashcard-count" min="1" max="500" placeholder="Auto" /></label>
+            <label>Section <input type="text" id="flashcard-section" maxlength="300" placeholder="Whole file" /></label>
+            <label><input type="checkbox" id="flashcard-group-sections" checked /> Group by section</label>
+          </fieldset>
           <div class="study-actions">
             <button data-study-action="generate-cards" ${doc.status === "READY" ? "" : "disabled"}>${deck ? "Generate new deck" : "Generate flashcards"}</button>
             ${deck?.status === "READY" ? `
@@ -806,6 +869,11 @@ async function renderQuizView() {
             <label>Easy <input type="number" id="quiz-easy" min="0" max="60" value="3" /></label>
             <label>Medium <input type="number" id="quiz-medium" min="0" max="60" value="5" /></label>
             <label>Hard <input type="number" id="quiz-hard" min="0" max="60" value="2" /></label>
+            <label>Section <input type="text" id="quiz-section" maxlength="300" placeholder="Whole file" /></label>
+            <label><input type="checkbox" name="quiz-type" value="MULTIPLE_CHOICE" checked /> Multiple choice</label>
+            <label><input type="checkbox" name="quiz-type" value="TRUE_FALSE" checked /> True / false</label>
+            <label><input type="checkbox" name="quiz-type" value="SHORT_ANSWER" checked /> Short answer</label>
+            <label><input type="checkbox" id="quiz-explanations" checked /> Include explanations</label>
             <span class="quiz-total" id="quiz-total">Total: 10</span>
           </fieldset>
           <div class="study-actions">
@@ -902,6 +970,8 @@ async function renderAttempt(attemptId, grading = false) {
   const result = await readJson(response);
   if (!response.ok) throw new Error(result.message || "Could not load attempt");
   const meta = result.attempt;
+  const generationOptions = parseJsonSafe(meta.generation_options_json) || {};
+  const showExplanations = generationOptions.includeExplanations !== false;
   const stillGrading = grading || meta.status === "GRADING";
   detail.innerHTML = `
     <div class="study-toolbar">
@@ -917,7 +987,7 @@ async function renderAttempt(attemptId, grading = false) {
           <h3 class="rich">${renderRich(answer.stem)}</h3>
           <p><strong>Your answer:</strong> ${escapeHtml(answer.user_response || "No answer")}</p>
           ${answer.feedback ? `<p><strong>Feedback:</strong> ${escapeHtml(answer.feedback)}</p>` : ""}
-          ${answer.explanation ? `<details><summary>Explanation</summary><p class="rich">${renderRich(answer.explanation)}</p></details>` : ""}
+          ${showExplanations && answer.explanation ? `<details><summary>Explanation</summary><p class="rich">${renderRich(answer.explanation)}</p></details>` : ""}
         </article>
       `).join("")}
     </div>
@@ -3038,9 +3108,18 @@ async function handleStudyAction(action) {
     if (kind === "generate-cards") {
       const docId = action.dataset.docId || activeDocumentId;
       if (!docId) throw new Error("Pick a file first.");
+      const useCurrentForm = !action.dataset.docId || action.dataset.docId === activeDocumentId;
       activeDocumentId = docId;
       localStorage.setItem("noteflowActiveDocument", docId);
-      await studyPost(`/documents/${docId}/flashcard-decks`);
+      const countInput = viewRoot.querySelector("#flashcard-count");
+      const sectionInput = viewRoot.querySelector("#flashcard-section");
+      const groupInput = viewRoot.querySelector("#flashcard-group-sections");
+      const requestedCount = useCurrentForm && countInput?.value ? Number(countInput.value) : null;
+      await studyPost(`/documents/${docId}/flashcard-decks`, {
+        count: requestedCount,
+        section: useCurrentForm ? sectionInput?.value?.trim() || null : null,
+        groupBySection: useCurrentForm && groupInput ? groupInput.checked : true,
+      });
       navigate("flashcards");
     }
     if (kind === "generate-quiz") {
@@ -3049,6 +3128,7 @@ async function handleStudyAction(action) {
       // Difficulty inputs only exist when the main module shows this document;
       // panel-button generation for another file uses the 3/5/2 defaults.
       const readCount = (id, fallback) => {
+        if (action.dataset.docId && action.dataset.docId !== activeDocumentId) return fallback;
         const input = viewRoot.querySelector(id);
         return input ? Math.max(0, Number(input.value || 0)) : fallback;
       };
@@ -3056,10 +3136,18 @@ async function handleStudyAction(action) {
         easy: readCount("#quiz-easy", 3),
         medium: readCount("#quiz-medium", 5),
         hard: readCount("#quiz-hard", 2),
+        section: (!action.dataset.docId || action.dataset.docId === activeDocumentId)
+          ? viewRoot.querySelector("#quiz-section")?.value?.trim() || null : null,
+        questionTypes: (!action.dataset.docId || action.dataset.docId === activeDocumentId)
+          ? Array.from(viewRoot.querySelectorAll('input[name="quiz-type"]:checked')).map((input) => input.value)
+          : ["MULTIPLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"],
+        includeExplanations: (!action.dataset.docId || action.dataset.docId === activeDocumentId)
+          ? viewRoot.querySelector("#quiz-explanations")?.checked ?? true : true,
       };
       if (body.easy + body.medium + body.hard < 1) {
         throw new Error("Choose at least one question across the difficulty levels.");
       }
+      if (!body.questionTypes.length) throw new Error("Choose at least one question type.");
       activeDocumentId = docId;
       localStorage.setItem("noteflowActiveDocument", docId);
       await studyPost(`/documents/${docId}/quiz-sets`, body);

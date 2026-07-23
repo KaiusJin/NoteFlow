@@ -230,6 +230,16 @@ class SourceGroupingAndGroundingTest(unittest.TestCase):
         self.assertEqual(flattened, list(range(5)))
         self.assertEqual([group.index for group in groups], list(range(len(groups))))
 
+    def test_flashcard_grouping_can_preserve_section_boundaries(self):
+        chunks = [
+            TextChunk(1, 0, "a", section_title="Chapter 1", token_count=20, id="a"),
+            TextChunk(2, 1, "b", section_title="Chapter 2", token_count=20, id="b"),
+        ]
+        grouped = build_source_groups(chunks, 100, 100, respect_sections=True)
+        combined = build_source_groups(chunks, 100, 100, respect_sections=False)
+        self.assertEqual(len(grouped), 2)
+        self.assertEqual(len(combined), 1)
+
     def test_oversized_chunk_is_not_dropped(self):
         groups = build_source_groups([TextChunk(1, 0, "x", token_count=999, id="id")], 100, 200)
         self.assertEqual(len(groups), 1)

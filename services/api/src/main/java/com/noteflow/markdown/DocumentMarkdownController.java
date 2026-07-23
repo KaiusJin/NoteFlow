@@ -2,7 +2,8 @@ package com.noteflow.markdown;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.learningmemory.LearningMemoryService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
@@ -16,14 +17,17 @@ public class DocumentMarkdownController {
     private final DocumentMarkdownPageRepository pages;
     private final DocumentMarkdownDocumentRepository markdownDocuments;
     private final DocumentRepository documents;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
+    private final LearningMemoryService learningMemory;
 
     public DocumentMarkdownController(DocumentMarkdownPageRepository pages,
-            DocumentMarkdownDocumentRepository markdownDocuments, DocumentRepository documents, DevUserService users) {
+            DocumentMarkdownDocumentRepository markdownDocuments, DocumentRepository documents, LocalWorkspaceService users,
+            LearningMemoryService learningMemory) {
         this.pages = pages;
         this.markdownDocuments = markdownDocuments;
         this.documents = documents;
         this.users = users;
+        this.learningMemory = learningMemory;
     }
 
     @GetMapping("/documents/{documentId}/markdown-pages")
@@ -44,6 +48,7 @@ public class DocumentMarkdownController {
             @PathVariable UUID documentId,
             @RequestParam(required = false) Integer previewChars) {
         ensureDocumentAccess(documentId);
+        learningMemory.recordDocumentActivity(documentId,"NOTE_OPENED","note-open:"+documentId+":"+(System.currentTimeMillis()/60_000));
         return markdownDocuments.findByDocumentId(documentId)
             .map(document -> DocumentMarkdownDocumentResponse.from(document, safePreviewChars(previewChars)))
             .orElseThrow(() -> new IllegalArgumentException("Markdown document not found"));

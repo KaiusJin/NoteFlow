@@ -1,6 +1,13 @@
 # 工具调用 Agent 设计方案（ReAct + LangGraph）
 
-> 状态：已实现（P0–P3 含 LangGraph 循环、6 工具、trace 落库、前端步骤 UI）。
+> 当前 36-tool 产品目录、运行时校验与持久化边界见
+> [AGENT_TOOL_PLATFORM.md](./AGENT_TOOL_PLATFORM.md)。本文保留早期 Agent
+> 方案背景；其中旧工具名称不再代表当前公开目录。
+
+> 状态：已实现（P0–P3 含 LangGraph 循环、36 工具、trace 落库、前端步骤 UI）。
+> 2026-07-22 架构更新：Quiz/Flashcard 工具已改为上下文驱动的
+> `generate_quiz` / `generate_flashcards`；工具适配器通过本机
+> API 调用与独立 Study Section 相同的领域服务，不再直接写生成表和任务表。
 > 2026-07-18 复审修正：决策 schema 扁平化 + enum + 全 required——嵌套可选 schema
 > 在 gemini-2.5-flash 上约束解码超 90s 且自由 type 字段校验失败；扁平化后单步
 > 规划 ~3s，同时天然满足 OpenAI strict json_schema 要求。
@@ -46,7 +53,7 @@ Worker:
 | `StructuredMemoryLlm` | `memory/llm.py` | Agent 的决策 LLM（JSON-mode，已含 gemini/openai + 重试） |
 | `search_evidence` | `conversation/retrieval.py` | `search_notes` 工具的实现 |
 | `ConversationMemoryManager.build_context` | `memory/manager.py` | 每轮仍注入记忆/偏好/scope |
-| `GenerateQuiz/FlashcardsPipeline` + 队列 | `pipelines/`, `queue/` | `generate_quiz`/`create_flashcards` 工具（异步子任务） |
+| `QuizGenerationService` / `FlashcardGenerationService` + worker pipeline | API `study/` + worker `pipelines/` | 两个入口共享的持久化生成能力 |
 | `ConversationStore` + `rag_messages` | `conversation/store.py` | 存最终答案、引用、**外加 Agent trace** |
 | 每用户 AI 设置 | `user_settings.py` | Agent 决策 LLM 也走用户选的 provider/模型 |
 
@@ -130,8 +137,8 @@ class ToolSpec:
 | `get_document_section(document_id, page_or_heading)` | sync | chunk/markdown repo | 精确取某文档某段全文，解决"检索片段不够全"的场景 |
 | `list_documents()` | sync | documents repo | 让 Agent 知道用户有哪些资料、选 scope |
 | `compare_sources(query, document_ids[])` | sync | 多次 `search_evidence` | 跨文档对比（招牌 demo：对比两门课/两篇论文的讲法） |
-| `generate_quiz(document_id, focus?)` | async | 入队 `GENERATE_QUIZ` | fire-and-forget，返回任务句柄，答里附"已开始出题"链接 |
-| `create_flashcards(document_id, focus?)` | async | 入队 `GENERATE_FLASHCARDS` | 同上 |
+| `create_targeted_quiz(document_ids, chunk_ids?, section?, focus?, config?)` | async | 调用共享 `QuizGenerationService` | 返回持久化 Quiz Set、任务句柄与跳转链接 |
+| `create_flashcards_from_context(document_ids, chunk_ids?, section?, focus?, config?)` | async | 调用共享 `FlashcardGenerationService` | 返回持久化 Deck、任务句柄与跳转链接 |
 
 > **sync vs async 是核心设计点**：只读、快的工具（检索/取段/对比）在**本轮内联执行**，
 > 结果回喂 LLM 继续推理；重的生成任务（出题/卡片）**入队后台跑**，Agent 立即拿到
@@ -242,7 +249,7 @@ Agent trace 落库后天然支持：
 |---|---|---|
 | P0 | 工具注册表 + `ToolSpec/ToolResult` + `search_notes`/`get_document_section`/`list_documents` 三个 sync 工具 | 能"多步检索再回答" |
 | P1 | LangGraph StateGraph（plan/act/observe/finalize/fallback）+ 终止护栏 + trace 落 `structured_response_json` | 完整 ReAct 循环 |
-| P2 | async 工具（`generate_quiz`/`create_flashcards`）+ `compare_sources` + 前端 Agent steps UI | 招牌 demo |
+| P2 | async 工具（`create_targeted_quiz`/`create_flashcards_from_context`）+ `compare_sources` + 前端 Agent steps UI | 招牌 demo |
 | P3 | `agent_run_steps` 表 + 可观测聚合 + 成本护栏 | 接 #2 eval / #4 观测 |
 
 一期（P0+P1）就足以让"tool-calling agent"这个说法成立；P2 提供最好讲的 demo。

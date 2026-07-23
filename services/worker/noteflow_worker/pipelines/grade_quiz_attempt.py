@@ -4,6 +4,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from noteflow_worker.config import settings
+from noteflow_worker.learning_memory import LearningMemoryRepository
 from noteflow_worker.queue.redis_queue import TaskPayload
 from noteflow_worker.study.providers import make_study_provider
 from noteflow_worker.study.repository import StudyRepository
@@ -13,8 +14,10 @@ PROMPT_VERSION = "quiz-grading-v1"
 
 
 class GradeQuizAttemptPipeline:
-    def __init__(self, repository: StudyRepository, provider_factory=make_study_provider) -> None:
+    def __init__(self, repository: StudyRepository, provider_factory=make_study_provider,
+                 memory_repository: LearningMemoryRepository | None = None) -> None:
         self.repo, self.provider_factory = repository, provider_factory
+        self.memory = memory_repository or LearningMemoryRepository()
 
     def run(self, payload: TaskPayload) -> None:
         attempt_id = payload.attempt_id
@@ -56,6 +59,8 @@ class GradeQuizAttemptPipeline:
             self.repo.save_attempt_grading_usage(attempt_id, usage)
             if errors or remaining:
                 raise RuntimeError(f"Quiz grading incomplete: {remaining} answer(s) remain; {'; '.join(errors[:3])}")
+            self.memory.ensure_schema()
+            self.memory.record_quiz_attempt(attempt_id, payload.user_id)
             self.repo.mark_task_completed(payload.task_id)
             self.repo.release_execution_lease(lease_key, payload.task_id)
         except Exception as exc:

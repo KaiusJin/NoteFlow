@@ -14,6 +14,11 @@ Redis, object storage, and LLM APIs connect.
 > `docs/technical/MULTI_TURN_CONVERSATIONAL_RAG_ARCHITECTURE.md` as the source
 > of truth for conversation APIs, streaming, memory, prompt strategy, LangGraph,
 > local SLM deployment, and context compression.
+>
+> 2026-07-22 local architecture update:
+> Cloud-mode, login, and separate Agent study generators below are historical.
+> Use `LOCAL_AGENTIC_STUDY_ARCHITECTURE.md` for the current single-local-workspace
+> persistence and shared Quiz/Flashcard generation design.
 
 ## 0. Currently Implemented Main Chain
 

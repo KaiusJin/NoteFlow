@@ -6,7 +6,7 @@ import com.noteflow.documents.DocumentStatus;
 import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
 import com.noteflow.tasks.TaskType;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -14,13 +14,13 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class DocumentAiNoteService {
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final DocumentRepository documents;
     private final DocumentAiNoteRepository notes;
     private final DocumentAiNoteSectionRepository sections;
     private final TaskDispatchService taskDispatcher;
 
-    public DocumentAiNoteService(DevUserService users, DocumentRepository documents, DocumentAiNoteRepository notes,
+    public DocumentAiNoteService(LocalWorkspaceService users, DocumentRepository documents, DocumentAiNoteRepository notes,
             DocumentAiNoteSectionRepository sections, TaskDispatchService taskDispatcher) {
         this.users = users;
         this.documents = documents;

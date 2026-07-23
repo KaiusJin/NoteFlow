@@ -2,7 +2,7 @@ package com.noteflow.assets;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -18,10 +18,10 @@ import org.springframework.web.bind.annotation.RestController;
 public class DocumentPageAssetController {
     private final DocumentPageAssetRepository assets;
     private final DocumentRepository documents;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
 
     public DocumentPageAssetController(DocumentPageAssetRepository assets, DocumentRepository documents,
-            DevUserService users) {
+            LocalWorkspaceService users) {
         this.assets = assets;
         this.documents = documents;
         this.users = users;

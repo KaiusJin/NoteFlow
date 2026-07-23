@@ -15,7 +15,7 @@ import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
 import com.noteflow.documents.DocumentStatus;
 import com.noteflow.tasks.TaskDispatchService;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.sql.ResultSet;
 import java.util.List;
 import java.util.Optional;
@@ -36,7 +36,7 @@ class SearchServiceTest {
     private static final UUID SECOND_DOCUMENT_ID = UUID.fromString("20000000-0000-0000-0000-000000000002");
 
     @Mock
-    private DevUserService users;
+    private LocalWorkspaceService users;
     @Mock
     private DocumentRepository documents;
     @Mock

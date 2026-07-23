@@ -1,6 +1,6 @@
 package com.noteflow.library;
 
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -10,11 +10,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LibraryService {
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final FolderRepository folders;
     private final NoteRepository notes;
 
-    public LibraryService(DevUserService users, FolderRepository folders, NoteRepository notes) {
+    public LibraryService(LocalWorkspaceService users, FolderRepository folders, NoteRepository notes) {
         this.users = users;
         this.folders = folders;
         this.notes = notes;

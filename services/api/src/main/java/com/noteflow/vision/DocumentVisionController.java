@@ -2,7 +2,7 @@ package com.noteflow.vision;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -21,10 +21,10 @@ public class DocumentVisionController {
     private final DocumentVisualRegionRepository regions;
     private final DocumentVlmResultRepository vlmResults;
     private final DocumentRepository documents;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
 
     public DocumentVisionController(DocumentVisualRegionRepository regions, DocumentVlmResultRepository vlmResults,
-            DocumentRepository documents, DevUserService users) {
+            DocumentRepository documents, LocalWorkspaceService users) {
         this.regions = regions;
         this.vlmResults = vlmResults;
         this.documents = documents;

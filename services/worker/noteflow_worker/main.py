@@ -60,7 +60,7 @@ def process_payload(payload: TaskPayload) -> None:
         print(f"Processing quiz grading task {payload.task_id} for attempt {payload.attempt_id}")
         GradeQuizAttemptPipeline(StudyRepository()).run(payload)
         return
-    if payload.task_type == "ANSWER_CONVERSATION_TURN":
+    if payload.task_type in {"ANSWER_CONVERSATION_TURN", "RESUME_AGENT_RUN"}:
         print(f"Answering conversation {payload.conversation_id}, message {payload.message_id}")
         AnswerConversationTurnPipeline().run(payload)
         return
@@ -157,7 +157,21 @@ def finish_completed(queue: RedisTaskQueue, done: set[Future], active: dict[Futu
             print(f"Task failed but worker will continue: {exc}")
         finally:
             if payload is not None:
+                schedule_agent_resumes(queue, payload.task_id)
                 queue.ack(payload)
+
+
+def schedule_agent_resumes(queue: RedisTaskQueue, completed_task_id: str) -> None:
+    try:
+        for row in ConversationStore().create_resume_tasks(completed_task_id):
+            queue.push(TaskPayload(
+                task_id=row["task_id"], document_id="", user_id=row["user_id"],
+                task_type="RESUME_AGENT_RUN", priority=PRIORITY_INTERACTIVE,
+                conversation_id=row["conversation_id"], message_id=row["message_id"],
+            ))
+            print(f"Resuming Agent message {row['message_id']} after task {completed_task_id}")
+    except Exception as exc:
+        print(f"Could not schedule Agent continuation for task {completed_task_id}: {exc}")
 
 
 def recover_stale_notes_tasks(queue: RedisTaskQueue) -> None:

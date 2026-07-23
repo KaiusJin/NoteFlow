@@ -31,14 +31,19 @@ class SourceGroup:
         return sum(chunk.token_count or estimate_tokens(chunk.content) for chunk in self.chunks)
 
 
-def build_source_groups(chunks: list[TextChunk], target_tokens: int, max_tokens: int) -> list[SourceGroup]:
+def build_source_groups(chunks: list[TextChunk], target_tokens: int, max_tokens: int,
+                        respect_sections: bool = False) -> list[SourceGroup]:
     """Pack ordered chunks without dropping an oversized chunk."""
     groups: list[SourceGroup] = []
     current: list[TextChunk] = []
     tokens = 0
     for chunk in chunks:
         chunk_tokens = chunk.token_count or estimate_tokens(chunk.content)
-        if current and tokens + chunk_tokens > max_tokens:
+        section_changed = bool(
+            respect_sections and current
+            and (current[-1].section_title or "").strip() != (chunk.section_title or "").strip()
+        )
+        if current and (section_changed or tokens + chunk_tokens > max_tokens):
             groups.append(SourceGroup(len(groups), current))
             current, tokens = [], 0
         current.append(chunk)

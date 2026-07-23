@@ -1788,6 +1788,7 @@ ALL_TASK_TYPES = (
     "GENERATE_QUIZ",
     "GRADE_QUIZ_ATTEMPT",
     "ANSWER_CONVERSATION_TURN",
+    "RESUME_AGENT_RUN",
     "MAINTAIN_CONVERSATION_MEMORY",
     "ASK_DOCUMENT",
     "EXPORT_MARKDOWN",
@@ -1824,7 +1825,7 @@ def ensure_task_constraints(conn) -> None:
     Idempotent: rewrites a constraint only when the newest member is missing
     from its current definition.
     """
-    sentinel_type = "MAINTAIN_CONVERSATION_MEMORY"
+    sentinel_type = "RESUME_AGENT_RUN"
     type_check = conn.execute(
         """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
            WHERE conrelid='tasks'::regclass AND conname='tasks_task_type_check'"""

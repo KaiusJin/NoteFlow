@@ -4,9 +4,10 @@ import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
 import com.noteflow.library.Note;
 import com.noteflow.library.NoteRepository;
+import com.noteflow.learningmemory.LearningMemoryService;
 import com.noteflow.markdown.DocumentMarkdownDocumentRepository;
 import com.noteflow.notes.DocumentAiNoteRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -19,25 +20,28 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 public class DocumentEditableNoteService {
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final DocumentRepository documents;
     private final NoteRepository notes;
     private final DocumentMarkdownDocumentRepository markdownDocuments;
     private final DocumentAiNoteRepository aiNotes;
+    private final LearningMemoryService learningMemory;
 
-    public DocumentEditableNoteService(DevUserService users, DocumentRepository documents,
+    public DocumentEditableNoteService(LocalWorkspaceService users, DocumentRepository documents,
             NoteRepository notes, DocumentMarkdownDocumentRepository markdownDocuments,
-            DocumentAiNoteRepository aiNotes) {
+            DocumentAiNoteRepository aiNotes,LearningMemoryService learningMemory) {
         this.users = users;
         this.documents = documents;
         this.notes = notes;
         this.markdownDocuments = markdownDocuments;
         this.aiNotes = aiNotes;
+        this.learningMemory = learningMemory;
     }
 
     public Optional<DocumentEditableNoteResponse> latest(UUID documentId) {
         UUID userId = users.currentUserId();
         loadCurrentUserDocument(documentId, userId);
+        learningMemory.recordDocumentActivity(documentId,"NOTE_OPENED","note-open:"+documentId+":"+(System.currentTimeMillis()/60_000));
         return notes.findFirstBySourceDocumentIdOrderByUpdatedAtDesc(documentId)
             .map(DocumentEditableNoteResponse::fromNote);
     }
@@ -56,7 +60,9 @@ public class DocumentEditableNoteService {
         } else {
             note.reset(title, markdown, kind);
         }
-        return DocumentEditableNoteResponse.fromNote(notes.save(note));
+        DocumentEditableNoteResponse response=DocumentEditableNoteResponse.fromNote(notes.save(note));
+        learningMemory.recordDocumentActivity(documentId,"NOTE_UPDATED","note-update:"+UUID.randomUUID());
+        return response;
     }
 
     @Transactional
@@ -70,7 +76,9 @@ public class DocumentEditableNoteService {
         } else {
             note.update(title, markdown);
         }
-        return DocumentEditableNoteResponse.fromNote(notes.save(note));
+        DocumentEditableNoteResponse response=DocumentEditableNoteResponse.fromNote(notes.save(note));
+        learningMemory.recordDocumentActivity(documentId,"NOTE_UPDATED","note-update:"+UUID.randomUUID());
+        return response;
     }
 
     private String sourceMarkdown(UUID documentId, String kind) {

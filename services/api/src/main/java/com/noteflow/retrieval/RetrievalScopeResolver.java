@@ -4,17 +4,17 @@ import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
 import com.noteflow.documents.DocumentStatus;
 import com.noteflow.search.SearchMode;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
 @Component
 class RetrievalScopeResolver {
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
     private final DocumentRepository documents;
 
-    RetrievalScopeResolver(DevUserService users, DocumentRepository documents) {
+    RetrievalScopeResolver(LocalWorkspaceService users, DocumentRepository documents) {
         this.users = users;
         this.documents = documents;
     }

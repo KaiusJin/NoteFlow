@@ -4,7 +4,7 @@ import json
 from uuid import uuid4
 
 from noteflow_worker.config import settings
-from noteflow_worker.conversation.agent import ToolCallingAgent, agent_structured_response_json
+from noteflow_worker.conversation.agent import ToolCallingAgent, agent_state_snapshot, agent_structured_response_json
 from noteflow_worker.conversation.answering import make_answer_llm
 from noteflow_worker.conversation.retrieval import Evidence
 from noteflow_worker.conversation.store import Citation, ConversationStore
@@ -55,7 +55,8 @@ class AnswerConversationTurnPipeline:
                 # Duplicate delivery or an already-recovered turn; nothing to do.
                 self.store.mark_task_completed(payload.task_id)
                 return
-            question = self.load_question(placeholder)
+            saved_run = self.store.load_agent_snapshot(message_id) if payload.task_type == "RESUME_AGENT_RUN" else None
+            question = str(saved_run["question"]) if saved_run else self.load_question(placeholder)
 
             provider = self.embedding_provider_factory()
             query_embedding = self.embed_query(provider, question)
@@ -76,7 +77,26 @@ class AnswerConversationTurnPipeline:
                 checkpoint_callback=lambda agent_state: self.store.checkpoint_agent_run(
                     message_id, agent_structured_response_json(agent_state), agent_state.scratchpad
                 ),
+                snapshot=saved_run.get("state_json") if saved_run else None,
             )
+            if state.paused:
+                if not state.waiting_task_id:
+                    raise RuntimeError("Paused Agent run has no waiting task id.")
+                self.store.pause_agent_run(
+                    message_id, payload.conversation_id, payload.user_id, question,
+                    json.dumps(agent_state_snapshot(state), separators=(",", ":")), state.waiting_task_id,
+                )
+                # Close the subscribe-after-completion race: this is a no-op
+                # while the artifact task is active, but immediately queues a
+                # continuation if it already reached a terminal state.
+                for row in self.store.create_resume_tasks(state.waiting_task_id):
+                    self.queue().push(TaskPayload(
+                        task_id=row["task_id"], document_id="", user_id=row["user_id"],
+                        task_type="RESUME_AGENT_RUN", conversation_id=row["conversation_id"],
+                        message_id=row["message_id"],
+                    ))
+                self.store.mark_task_completed(payload.task_id)
+                return
             answer = state.final
             if answer is None:
                 raise RuntimeError("Agent did not produce a final answer.")
@@ -93,6 +113,7 @@ class AnswerConversationTurnPipeline:
                 agent_structured_response_json(state),
                 [citation_from_evidence(position, item) for position, item in enumerate(cited)],
             )
+            self.store.complete_agent_run(message_id)
 
             self.schedule_maintenance_if_due(payload)
             self.store.mark_task_completed(payload.task_id)

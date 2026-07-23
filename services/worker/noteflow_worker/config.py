@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     db_pool_max_size: int = 16
     db_pool_acquire_timeout_seconds: float = 30.0
     redis_url: str = "redis://localhost:6379/0"
+    noteflow_api_url: str = "http://localhost:8080"
+    noteflow_api_timeout_seconds: float = 15.0
     document_queue: str = "queue:document-analysis"
     block_timeout_seconds: int = 5
     queue_lease_seconds: int = 1800
@@ -181,12 +183,11 @@ class Settings(BaseSettings):
 
     # Tool-calling conversation agent: bounded ReAct loop over the same
     # structured-output LLM and retrieval contracts as normal answering.
-    agent_max_steps: int = 5
-    agent_wall_timeout_seconds: int = 60
-    agent_token_budget: int = 12000
+    agent_max_steps: int = 12
+    agent_wall_timeout_seconds: int = 90
+    agent_token_budget: int = 60000
+    agent_max_reflections: int = 2
     agent_trace_observation_max_chars: int = 1400
-    agent_document_section_max_tokens: int = 1400
-    agent_compare_sources_per_document: int = 4
 
 
 settings = Settings()

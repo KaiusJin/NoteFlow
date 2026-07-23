@@ -29,7 +29,7 @@ PRIORITY_SCHEDULE = (
 
 
 def priority_for_task_type(task_type: str) -> int:
-    if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN", "ANSWER_CONVERSATION_TURN"}:
+    if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN", "ANSWER_CONVERSATION_TURN", "RESUME_AGENT_RUN"}:
         return PRIORITY_INTERACTIVE
     if task_type in {"GENERATE_EMBEDDINGS", "MAINTAIN_CONVERSATION_MEMORY"}:
         return PRIORITY_BACKGROUND

@@ -2,16 +2,24 @@
 import json
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from uuid import uuid4
 
 from noteflow_worker.study.models import Flashcard, GradeResult, QuizQuestion, ReviewState
 from noteflow_worker.study.models import FlashcardCandidate, QuizQuestionCandidate, RubricPoint
 from noteflow_worker.study.repository import StudyRepository
+from noteflow_worker.learning_memory import LearningMemoryRepository
 from noteflow_worker.pipelines.generate_flashcards import GenerateFlashcardsPipeline
 from noteflow_worker.pipelines.generate_quiz import GenerateQuizPipeline
 from noteflow_worker.pipelines.grade_quiz_attempt import GradeQuizAttemptPipeline
 from noteflow_worker.queue.redis_queue import TaskPayload
+
+
+def ensure_legacy_user(conn, user_id):
+    """Keep the suite runnable before or after the local-workspace migration."""
+    if conn.execute("SELECT to_regclass('users') present").fetchone()["present"]:
+        conn.execute("INSERT INTO users(id,display_name,email,created_at,updated_at) VALUES (%s,'Test','test@local',NOW(),NOW()) ON CONFLICT(id) DO NOTHING", (user_id,))
 
 
 @unittest.skipUnless(os.getenv("NOTEFLOW_RUN_DB_TESTS") == "1", "requires local PostgreSQL")
@@ -20,13 +28,14 @@ class StudyRepositoryIntegrationTest(unittest.TestCase):
     def setUpClass(cls):
         cls.repo = StudyRepository()
         cls.repo.ensure_study_schema()
+        cls.memory = LearningMemoryRepository()
+        cls.memory.ensure_schema()
 
     def setUp(self):
         self.document_id, self.user_id = str(uuid4()), str(uuid4())
         self.deck_id, self.quiz_set_id, self.attempt_id = str(uuid4()), str(uuid4()), str(uuid4())
         with self.repo.connect() as conn:
-            conn.execute("INSERT INTO users(id,display_name,email) VALUES (%s,'Repository Test',%s)",
-                         (self.user_id, f"{self.user_id}@test.invalid"))
+            ensure_legacy_user(conn, self.user_id)
             conn.execute("""INSERT INTO documents(id,user_id,title,storage_path,file_size,status,document_type,
               content_source_type) VALUES (%s,%s,'Repository Test','/tmp/none.pdf',1,'READY','COURSE_NOTES','TEXT_PDF')""",
               (self.document_id, self.user_id))
@@ -37,12 +46,19 @@ class StudyRepositoryIntegrationTest(unittest.TestCase):
 
     def tearDown(self):
         with self.repo.connect() as conn:
+            conn.execute("DELETE FROM learning_events WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM topic_learning_memory WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM mistake_memory WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_memory_history WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_artifact_links WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_topic_edges WHERE workspace_id=%s", (self.user_id,))
             conn.execute("DELETE FROM study_generation_checkpoints WHERE set_id IN (%s,%s)",
                          (self.deck_id, self.quiz_set_id))
             conn.execute("DELETE FROM flashcard_decks WHERE id=%s", (self.deck_id,))
             conn.execute("DELETE FROM quiz_sets WHERE id=%s", (self.quiz_set_id,))
             conn.execute("DELETE FROM documents WHERE id=%s", (self.document_id,))
-            conn.execute("DELETE FROM users WHERE id=%s", (self.user_id,))
+            if conn.execute("SELECT to_regclass('users') present").fetchone()["present"]:
+                conn.execute("DELETE FROM users WHERE id=%s", (self.user_id,))
 
     def test_zero_item_checkpoint_is_resumable(self):
         self.repo.save_checkpoint("FLASHCARDS", self.deck_id, 3, 0)
@@ -119,6 +135,31 @@ class StudyRepositoryIntegrationTest(unittest.TestCase):
         score, maximum, remaining = self.repo.complete_attempt_if_graded(self.attempt_id)
         self.assertEqual((score, maximum, remaining), (2.0, 2.0, 0))
 
+    def test_learning_memory_is_idempotent_under_concurrent_attempt_delivery(self):
+        question = QuizQuestion(str(uuid4()), self.quiz_set_id, self.document_id, 0, "SHORT_ANSWER", "HARD",
+            "Covariance", "Explain it", "[]", "Answer", "Detailed answer", "[]", "Explanation", "",
+            "Confused zero covariance with independence", "[]", 2.0, 0, 0, [], [2], "d" * 64, 0.9, "[]")
+        self.repo.save_quiz_question(question)
+        answer_id = str(uuid4())
+        with self.repo.connect() as conn:
+            conn.execute("INSERT INTO quiz_attempts(id,quiz_set_id,user_id,status) VALUES (%s,%s,%s,'COMPLETED')",
+                         (self.attempt_id, self.quiz_set_id, self.user_id))
+            conn.execute("""INSERT INTO quiz_answers(id,attempt_id,question_id,user_response,is_correct,
+              awarded_points,graded_by) VALUES (%s,%s,%s,'Wrong',FALSE,0,'LLM')""",
+              (answer_id, self.attempt_id, question.id))
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            accepted = list(pool.map(lambda _: self.memory.record_quiz_attempt(self.attempt_id, self.user_id), range(48)))
+        with self.repo.connect() as conn:
+            event_count = conn.execute("SELECT COUNT(*) count FROM learning_events WHERE workspace_id=%s",
+                                       (self.user_id,)).fetchone()["count"]
+            state = conn.execute("SELECT attempts,incorrect_count,version FROM topic_learning_memory WHERE workspace_id=%s",
+                                 (self.user_id,)).fetchone()
+            mistake = conn.execute("SELECT occurrences FROM mistake_memory WHERE workspace_id=%s",
+                                   (self.user_id,)).fetchone()
+        self.assertEqual(sum(accepted), 1)
+        self.assertEqual((event_count, state["attempts"], state["incorrect_count"], state["version"],
+                          mistake["occurrences"]), (1, 1, 1, 1, 1))
+
 
 @unittest.skipUnless(os.getenv("NOTEFLOW_RUN_DB_TESTS") == "1", "requires local PostgreSQL")
 class StudyPipelineIntegrationTest(unittest.TestCase):
@@ -126,13 +167,14 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
     def setUpClass(cls):
         cls.repo = StudyRepository()
         cls.repo.ensure_study_schema()
+        cls.memory = LearningMemoryRepository()
+        cls.memory.ensure_schema()
 
     def setUp(self):
         self.user_id, self.document_id, self.chunk_id = str(uuid4()), str(uuid4()), str(uuid4())
         self.created_tasks = []
         with self.repo.connect() as conn:
-            conn.execute("INSERT INTO users(id,display_name,email) VALUES (%s,'Study Test',%s)",
-                         (self.user_id, f"{self.user_id}@test.invalid"))
+            ensure_legacy_user(conn, self.user_id)
             conn.execute("""INSERT INTO documents(id,user_id,title,storage_path,file_size,status,document_type,
               content_source_type) VALUES (%s,%s,'Study Pipeline','/tmp/none.pdf',1,'READY','COURSE_NOTES','TEXT_PDF')""",
               (self.document_id, self.user_id))
@@ -142,6 +184,12 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
 
     def tearDown(self):
         with self.repo.connect() as conn:
+            conn.execute("DELETE FROM learning_events WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM topic_learning_memory WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM mistake_memory WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_memory_history WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_artifact_links WHERE workspace_id=%s", (self.user_id,))
+            conn.execute("DELETE FROM learning_topic_edges WHERE workspace_id=%s", (self.user_id,))
             conn.execute("DELETE FROM tasks WHERE document_id=%s", (self.document_id,))
             conn.execute("""DELETE FROM study_generation_checkpoints WHERE set_id IN
               (SELECT id FROM flashcard_decks WHERE document_id=%s UNION SELECT id FROM quiz_sets WHERE document_id=%s)""",
@@ -150,7 +198,8 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
             conn.execute("DELETE FROM quiz_sets WHERE document_id=%s", (self.document_id,))
             conn.execute("DELETE FROM document_chunks WHERE document_id=%s", (self.document_id,))
             conn.execute("DELETE FROM documents WHERE id=%s", (self.document_id,))
-            conn.execute("DELETE FROM users WHERE id=%s", (self.user_id,))
+            if conn.execute("SELECT to_regclass('users') present").fetchone()["present"]:
+                conn.execute("DELETE FROM users WHERE id=%s", (self.user_id,))
 
     def task(self, task_type, attempt_id=None):
         task_id = str(uuid4())
@@ -176,8 +225,10 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
         with self.repo.connect() as conn:
             deck = conn.execute("SELECT status,completed_source_groups FROM flashcard_decks WHERE id=%s", (deck_id,)).fetchone()
             card = conn.execute("SELECT source_chunk_ids_json FROM flashcards WHERE deck_id=%s", (deck_id,)).fetchone()
+            links = conn.execute("SELECT COUNT(*) count FROM learning_artifact_links WHERE artifact_id=%s", (deck_id,)).fetchone()["count"]
         self.assertEqual((deck["status"], deck["completed_source_groups"]), ("READY", 1))
         self.assertEqual(json.loads(card["source_chunk_ids_json"]), [self.chunk_id])
+        self.assertEqual(links, 1)
 
     def test_quiz_pipeline_reaches_ready_with_exact_distribution(self):
         set_id = str(uuid4())
@@ -197,7 +248,9 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
         with self.repo.connect() as conn:
             quiz = conn.execute("SELECT status,completed_source_groups FROM quiz_sets WHERE id=%s", (set_id,)).fetchone()
             count = conn.execute("SELECT COUNT(*) count FROM quiz_questions WHERE quiz_set_id=%s", (set_id,)).fetchone()
+            links = conn.execute("SELECT COUNT(*) count FROM learning_artifact_links WHERE artifact_id=%s", (set_id,)).fetchone()["count"]
         self.assertEqual((quiz["status"], quiz["completed_source_groups"], count["count"]), ("READY", 1, 1))
+        self.assertEqual(links, 1)
 
     def test_grading_pipeline_completes_attempt_and_persists_usage(self):
         set_id, question_id, attempt_id, answer_id = (str(uuid4()) for _ in range(4))
@@ -225,8 +278,11 @@ class StudyPipelineIntegrationTest(unittest.TestCase):
         with self.repo.connect() as conn:
             attempt = conn.execute("SELECT status,score,max_score,grading_usage_json FROM quiz_attempts WHERE id=%s",
                                    (attempt_id,)).fetchone()
+            history = conn.execute("SELECT COUNT(*) count FROM learning_memory_history WHERE workspace_id=%s",
+                                   (self.user_id,)).fetchone()["count"]
         self.assertEqual((attempt["status"], attempt["score"], attempt["max_score"]), ("COMPLETED", 2.0, 2.0))
         self.assertEqual(json.loads(attempt["grading_usage_json"])["totalTokens"], 92)
+        self.assertEqual(history, 1)
 
 
 if __name__ == "__main__":

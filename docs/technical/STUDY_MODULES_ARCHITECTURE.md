@@ -3,8 +3,10 @@
 ## 1. Scope and product boundary
 
 Flashcards and Quiz are durable study artifacts shown as independent sections
-beside AI Notes. They are not conversation skills, are not registered as agent
-tools, and never read or write conversation working context or long-term memory.
+beside AI Notes. They are also creatable through targeted Agent tools, but both
+entry points use the same Spring generation services and persistent models. The
+Agent contributes conversational scope and orchestration; it does not own a
+second artifact store.
 
 This implementation delivers the Python worker core:
 
@@ -49,7 +51,7 @@ Document detail Study section
   -> update progress, quality report and READY/PARTIAL/FAILED state
 ```
 
-The Java API remains the authority for user ownership, request validation,
+The Java API remains the authority for local-workspace scope, request validation,
 task creation and enqueue-after-commit. The worker assumes that a matching
 `GENERATING` deck/set already exists. It will not silently create user-facing
 artifacts when a task is malformed.
@@ -147,8 +149,9 @@ the task fails with the remaining count and preserves all successful grades.
 
 ## 7. SM-2 scheduling
 
-Review state is keyed by `(user_id, flashcard_id)`, separating shared generated
-content from per-user learning state. User grades map to classic SM-2 quality:
+Review state currently retains the compatibility key `(user_id, flashcard_id)`;
+in local mode the first value is the stable installation workspace namespace,
+not an account. Grades map to classic SM-2 quality:
 
 ```text
 AGAIN=1, HARD=3, GOOD=4, EASY=5

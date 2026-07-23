@@ -2,7 +2,7 @@ package com.noteflow.layout;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.users.DevUserService;
+import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
@@ -15,10 +15,10 @@ import org.springframework.web.bind.annotation.RestController;
 public class DocumentLayoutBlockController {
     private final DocumentLayoutBlockRepository blocks;
     private final DocumentRepository documents;
-    private final DevUserService users;
+    private final LocalWorkspaceService users;
 
     public DocumentLayoutBlockController(DocumentLayoutBlockRepository blocks, DocumentRepository documents,
-            DevUserService users) {
+            LocalWorkspaceService users) {
         this.blocks = blocks;
         this.documents = documents;
         this.users = users;
