@@ -7,7 +7,7 @@ Pillow==12.3.0
 PyMuPDF==1.27.2.3
 pypdf==6.14.2
 pytesseract==0.3.13
-redis==6.4.0
+redis==8.0.1
 langgraph==1.2.10
 langgraph-checkpoint==4.1.1
 opentelemetry-api==1.44.0
