@@ -91,18 +91,25 @@ def extended_tool_definitions() -> list[ToolkitDefinition]:
                           obj({"noteId": STRING, "documentId": STRING}), read_markdown),
         ToolkitDefinition("edit_markdown", "Replace exact text in a note with optimistic hash protection.",
                           obj({"noteId": STRING, "findText": STRING, "replacement": STRING,
-                               "expectedMarkdownHash": STRING, "replaceAll": BOOLEAN}, ["noteId", "findText", "replacement"]), edit_markdown),
+                               "expectedMarkdownHash": STRING, "expectedUpdatedAt": STRING, "replaceAll": BOOLEAN},
+                              ["noteId", "findText", "replacement", "expectedMarkdownHash", "expectedUpdatedAt"]), edit_markdown),
         ToolkitDefinition("insert_section", "Insert a Markdown section before/after a heading or at the end.",
                           obj({"noteId": STRING, "heading": STRING, "sectionMarkdown": STRING,
-                               "position": {"type": "STRING", "enum": ["BEFORE", "AFTER", "END"]}},
-                              ["noteId", "sectionMarkdown", "position"]), insert_section),
+                               "position": {"type": "STRING", "enum": ["BEFORE", "AFTER", "END"]},
+                               "expectedMarkdownHash": STRING, "expectedUpdatedAt": STRING},
+                              ["noteId", "sectionMarkdown", "position", "expectedMarkdownHash", "expectedUpdatedAt"]), insert_section),
         ToolkitDefinition("delete_section", "Delete one Markdown heading section; requires explicit confirmation.",
-                          obj({"noteId": STRING, "heading": STRING, "confirm": BOOLEAN}, ["noteId", "heading", "confirm"]), delete_section),
+                          obj({"noteId": STRING, "heading": STRING, "confirm": BOOLEAN,
+                               "expectedMarkdownHash": STRING, "expectedUpdatedAt": STRING},
+                              ["noteId", "heading", "confirm", "expectedMarkdownHash", "expectedUpdatedAt"]), delete_section),
         ToolkitDefinition("rewrite_paragraph", "Replace one exact Markdown paragraph with a rewritten paragraph.",
                           obj({"noteId": STRING, "originalParagraph": STRING, "rewrittenParagraph": STRING,
-                               "expectedMarkdownHash": STRING}, ["noteId", "originalParagraph", "rewrittenParagraph"]), rewrite_paragraph),
+                               "expectedMarkdownHash": STRING, "expectedUpdatedAt": STRING},
+                              ["noteId", "originalParagraph", "rewrittenParagraph", "expectedMarkdownHash", "expectedUpdatedAt"]), rewrite_paragraph),
         ToolkitDefinition("update_note", "Update a note title and/or complete Markdown body.",
-                          obj({"noteId": STRING, "title": STRING, "markdown": STRING}, ["noteId"]), update_note),
+                          obj({"noteId": STRING, "title": STRING, "markdown": STRING,
+                               "expectedMarkdownHash": STRING, "expectedUpdatedAt": STRING},
+                              ["noteId", "expectedMarkdownHash", "expectedUpdatedAt"]), update_note),
         ToolkitDefinition("save_artifact", "Save Markdown as a durable workspace artifact in the Notes section.",
                           obj({"title": STRING, "markdown": STRING, "artifactType": STRING, "folderId": STRING},
                               ["title", "markdown", "artifactType"]), save_artifact),
@@ -354,8 +361,13 @@ def read_markdown(args: dict, state) -> ToolkitResult:
     return ToolkitResult(True, _json_observation("read_markdown", row))
 
 
-def _save_note(note: dict, markdown: str, title: str | None = None) -> dict:
-    return _api(f"/notes/{note['id']}", "PUT", {"title": title or note["title"], "markdown": markdown, "move": False})
+def _save_note(note: dict, markdown: str, expected_updated_at: str, title: str | None = None) -> dict:
+    return _api(f"/notes/{note['id']}", "PUT", {
+        "title": title or note["title"],
+        "markdown": markdown,
+        "move": False,
+        "expectedUpdatedAt": expected_updated_at,
+    })
 
 
 def _check_hash(note: dict, expected: str | None) -> None:
@@ -365,12 +377,12 @@ def _check_hash(note: dict, expected: str | None) -> None:
 
 def edit_markdown(args: dict, state) -> ToolkitResult:
     note = _load_note(state, str(args["noteId"]))
-    _check_hash(note, args.get("expectedMarkdownHash"))
+    _check_hash(note, args["expectedMarkdownHash"])
     markdown, needle = note.get("markdown") or "", str(args["findText"])
     if needle not in markdown:
         raise ValueError("findText was not found exactly")
     updated = markdown.replace(needle, str(args["replacement"]), -1 if args.get("replaceAll") else 1)
-    saved = _save_note(note, updated)
+    saved = _save_note(note, updated, str(args["expectedUpdatedAt"]))
     return ToolkitResult(True, _json_observation("edit_markdown", {"noteId": saved.get("id"), "markdownHash": _hash(updated)}))
 
 
@@ -385,6 +397,7 @@ def _heading_span(markdown: str, heading: str) -> tuple[int, int]:
 
 def insert_section(args: dict, state) -> ToolkitResult:
     note = _load_note(state, str(args["noteId"]))
+    _check_hash(note, args["expectedMarkdownHash"])
     markdown, section, position = note.get("markdown") or "", str(args["sectionMarkdown"]).strip(), args["position"]
     if position == "END":
         updated = markdown.rstrip() + "\n\n" + section + "\n"
@@ -392,33 +405,41 @@ def insert_section(args: dict, state) -> ToolkitResult:
         start, end = _heading_span(markdown, str(args.get("heading") or ""))
         offset = start if position == "BEFORE" else end
         updated = markdown[:offset].rstrip() + "\n\n" + section + "\n\n" + markdown[offset:].lstrip()
-    saved = _save_note(note, updated)
+    saved = _save_note(note, updated, str(args["expectedUpdatedAt"]))
     return ToolkitResult(True, _json_observation("insert_section", {"noteId": saved.get("id"), "markdownHash": _hash(updated)}))
 
 
 def delete_section(args: dict, state) -> ToolkitResult:
     note = _load_note(state, str(args["noteId"]))
+    _check_hash(note, args["expectedMarkdownHash"])
     start, end = _heading_span(note.get("markdown") or "", str(args["heading"]))
     if args.get("confirm") is not True:
         preview = (note.get("markdown") or "")[start:end][:1200]
         return ToolkitResult(False, _json_observation("delete_section", {"confirmationRequired": True, "preview": preview}), error="confirmation_required")
     updated = ((note.get("markdown") or "")[:start].rstrip() + "\n\n" + (note.get("markdown") or "")[end:].lstrip()).strip() + "\n"
-    saved = _save_note(note, updated)
+    saved = _save_note(note, updated, str(args["expectedUpdatedAt"]))
     return ToolkitResult(True, _json_observation("delete_section", {"noteId": saved.get("id"), "deletedHeading": args["heading"]}))
 
 
 def rewrite_paragraph(args: dict, state) -> ToolkitResult:
     forwarded = {"noteId": args["noteId"], "findText": args["originalParagraph"],
-                 "replacement": args["rewrittenParagraph"], "expectedMarkdownHash": args.get("expectedMarkdownHash"),
+                 "replacement": args["rewrittenParagraph"], "expectedMarkdownHash": args["expectedMarkdownHash"],
+                 "expectedUpdatedAt": args["expectedUpdatedAt"],
                  "replaceAll": False}
     return edit_markdown(forwarded, state)
 
 
 def update_note(args: dict, state) -> ToolkitResult:
     note = _load_note(state, str(args["noteId"]))
+    _check_hash(note, args["expectedMarkdownHash"])
     if "title" not in args and "markdown" not in args:
         raise ValueError("Provide title and/or markdown")
-    saved = _save_note(note, str(args.get("markdown", note.get("markdown") or "")), str(args.get("title") or note["title"]))
+    saved = _save_note(
+        note,
+        str(args.get("markdown", note.get("markdown") or "")),
+        str(args["expectedUpdatedAt"]),
+        str(args.get("title") or note["title"]),
+    )
     return ToolkitResult(True, _json_observation("update_note", {"noteId": saved.get("id"), "title": saved.get("title")}))
 
 

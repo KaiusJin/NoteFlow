@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from noteflow_worker.config import settings
+from noteflow_worker.runtime.limits import process_resource_slot
 
 
 @dataclass(frozen=True)
@@ -148,8 +149,9 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=settings.notes_request_timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with process_resource_slot("embedding_provider", settings.embedding_max_concurrent_requests):
+            with urllib.request.urlopen(request, timeout=settings.notes_request_timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {exc.code}: {body[:1000]}") from exc

@@ -26,4 +26,19 @@ public class LocalFileStorageService {
             throw new IllegalStateException("Failed to store uploaded PDF", ex);
         }
     }
+
+    public void deleteIfExists(String storagePath) {
+        if (storagePath == null || storagePath.isBlank()) {
+            return;
+        }
+        try {
+            Path target = Path.of(storagePath).toAbsolutePath().normalize();
+            if (!target.startsWith(uploadDir)) {
+                throw new IllegalArgumentException("Refusing to delete a file outside managed upload storage");
+            }
+            Files.deleteIfExists(target);
+        } catch (IOException ex) {
+            throw new IllegalStateException("Failed to clean up uploaded PDF", ex);
+        }
+    }
 }

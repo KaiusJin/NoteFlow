@@ -91,7 +91,13 @@ public class ConversationService {
     }
 
     @Transactional
-    public Map<String, Object> send(UUID conversationId, String content, List<UUID> pdfIds, List<UUID> aiNoteIds) {
+    public Map<String, Object> send(
+            UUID conversationId,
+            String content,
+            List<UUID> pdfIds,
+            List<UUID> aiNoteIds,
+            boolean allowAgentWrites,
+            boolean allowAgentDeletes) {
         UUID userId = users.currentUserId();
         requireOwnedConversation(conversationId);
         String text = content == null ? "" : content.trim();
@@ -110,6 +116,7 @@ public class ConversationService {
 
         UUID userMessageId = UUID.randomUUID();
         UUID assistantMessageId = UUID.randomUUID();
+        List<String> capabilities = requestedCapabilities(text, allowAgentWrites, allowAgentDeletes);
         jdbc.update("""
             INSERT INTO rag_messages(id,conversation_id,role,status,content_markdown,token_count,completed_at)
             VALUES (?,?, 'USER','COMPLETED',?,?,NOW())
@@ -117,7 +124,10 @@ public class ConversationService {
         jdbc.update("""
             INSERT INTO rag_messages(id,conversation_id,role,status,content_markdown,metadata_json)
             VALUES (?,?, 'ASSISTANT','GENERATING','',?)
-            """, assistantMessageId, conversationId, toJson(Map.of("userMessageId", userMessageId.toString())));
+            """, assistantMessageId, conversationId, toJson(Map.of(
+                "userMessageId", userMessageId.toString(),
+                "agentCapabilities", capabilities
+            )));
         jdbc.update("UPDATE rag_conversations SET last_message_at=NOW(),updated_at=NOW() WHERE id=?", conversationId);
 
         Task task = tasks.createConversationAndEnqueue(userId, conversationId, assistantMessageId);
@@ -142,6 +152,35 @@ public class ConversationService {
               FROM rag_message_citations WHERE message_id=? ORDER BY citation_index
             """, row.get("id")));
         return result;
+    }
+
+    private List<String> requestedCapabilities(String message, boolean allowWrites, boolean allowDeletes) {
+        if (!allowWrites) return List.of();
+        String value = message.toLowerCase(java.util.Locale.ROOT);
+        List<String> result = new ArrayList<>();
+        if (containsAny(value, "edit", "rewrite", "rename", "insert", "append", "save", "create note",
+                "summary", "summarize", "study guide", "example", "study plan",
+                "修改", "编辑", "改写", "重写", "重命名", "插入", "追加", "保存", "创建笔记",
+                "总结", "摘要", "学习指南", "例子", "学习计划")) {
+            result.add("workspace:write");
+        }
+        if (containsAny(value, "quiz", "flashcard", "practice question", "generate notes", "study guide",
+                "测验", "题目", "闪卡", "练习题", "生成笔记", "学习指南")) {
+            result.add("study:write");
+        }
+        if (containsAny(value, "learning goal", "preference", "mastery", "study plan", "learning feedback",
+                "学习目标", "偏好", "掌握度", "学习计划", "学习反馈")) {
+            result.add("learning:write");
+        }
+        if (allowDeletes && containsAny(value, "delete", "remove", "erase", "删除", "移除", "清除")) {
+            if (!result.contains("workspace:write")) result.add("workspace:write");
+            result.add("workspace:delete");
+        }
+        return List.copyOf(result);
+    }
+
+    private boolean containsAny(String value, String... markers) {
+        return java.util.Arrays.stream(markers).anyMatch(value::contains);
     }
 
     private Object parseStructuredResponse(Object raw) {

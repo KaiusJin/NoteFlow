@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
 from noteflow_worker.memory.manager import ConversationMemoryManager
 from noteflow_worker.memory.store import MemoryStore
 from noteflow_worker.queue.redis_queue import TaskPayload
 
+logger = logging.getLogger(__name__)
 
 class MaintainConversationMemoryPipeline:
     """Background task: summary compression + long-term memory extraction.
@@ -28,9 +30,9 @@ class MaintainConversationMemoryPipeline:
             self._store.mark_task_processing(payload.task_id, "MAINTAINING_MEMORY", 10)
             self._store.ensure_memory_schema()
             report = self._manager.run_maintenance(payload.conversation_id)
-            print(
-                "Conversation memory maintenance "
-                + json.dumps(
+            logger.info(
+                "conversation_memory_maintenance report=%s",
+                json.dumps(
                     {
                         "conversationId": report.conversation_id,
                         "summarized": report.summarized,

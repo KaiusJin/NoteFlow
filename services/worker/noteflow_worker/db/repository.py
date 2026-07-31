@@ -11,231 +11,24 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from noteflow_worker.config import settings
+from noteflow_worker.db.connection import BaseRepository, CleanConnection
+from noteflow_worker.db.schema import require_tables
 
 
-@dataclass(frozen=True)
-class DocumentRecord:
-    id: str
-    storage_path: str
-    document_type: str
-    title: str = ""
-    content_source_type: str = "UNKNOWN"
-    page_count: Optional[int] = None
-
-
-@dataclass(frozen=True)
-class TextChunk:
-    page_number: int
-    chunk_index: int
-    content: str
-    section_title: Optional[str] = None
-    page_start: Optional[int] = None
-    page_end: Optional[int] = None
-    chunk_type: str = "PARAGRAPH"
-    token_count: Optional[int] = None
-    source_asset_id: Optional[str] = None
-    metadata_json: Optional[str] = None
-    id: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class PageAsset:
-    document_id: str
-    page_number: int
-    asset_type: str
-    image_path: str
-    width: int
-    height: int
-    image_count: int
-    drawing_count: int
-    image_coverage: float
-    text_length: int
-    visual_summary: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class LayoutBlock:
-    document_id: str
-    page_number: int
-    block_index: int
-    block_type: str
-    content: str
-    bbox_json: Optional[str] = None
-    section_title: Optional[str] = None
-    heading_path_json: Optional[str] = None
-    source_asset_id: Optional[str] = None
-    confidence: Optional[float] = None
-    metadata_json: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class VisualRegion:
-    document_id: str
-    page_number: int
-    region_index: int
-    region_type: str
-    asset_path: str
-    bbox_json: Optional[str]
-    page_asset_id: Optional[str]
-    width: int
-    height: int
-    confidence: float
-    metadata_json: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class VlmResult:
-    document_id: str
-    page_number: int
-    region_index: int
-    region_type: str
-    provider: str
-    model: str
-    transcription: str
-    description: str
-    latex: str
-    code: str
-    uncertainty: str
-    search_text: str
-    raw_response_json: Optional[str] = None
-    error_message: Optional[str] = None
-    input_fingerprint: Optional[str] = None
-    attempt_count: int = 1
-    content_kind: str = "unknown"
-    importance: str = "medium"
-    reading_order: str = ""
-    language: str = "unknown"
-
-
-@dataclass(frozen=True)
-class MarkdownPage:
-    document_id: str
-    page_number: int
-    markdown: str
-    source_type: str
-    quality_score: float
-    warnings_json: Optional[str] = None
-    structure_json: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class MarkdownDocument:
-    document_id: str
-    markdown: str
-    structure_json: Optional[str]
-    quality_report_json: Optional[str]
-
-
-@dataclass(frozen=True)
-class AiNoteSection:
-    note_id: str
-    document_id: str
-    section_index: int
-    section_type: str
-    heading: str
-    markdown: str
-    page_start: Optional[int]
-    page_end: Optional[int]
-    source_chunk_ids_json: str
-    source_pages_json: str
-    confidence: float
-    warnings_json: str
-    metadata_json: Optional[str] = None
-    id: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class EmbeddingSource:
-    document_id: str
-    source_domain: str
-    source_object_type: str
-    source_object_id: str
-    embedding_text: str
-    text_preview: str
-    metadata_json: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class DocumentEmbedding:
-    document_id: str
-    source_domain: str
-    source_object_type: str
-    source_object_id: str
-    embedding_provider: str
-    embedding_model: str
-    embedding_dimension: int
-    content_hash: str
-    embedding_text: str
-    text_preview: str
-    embedding: list[float]
-    metadata_json: Optional[str] = None
-
-
-class CleanConnection:
-    def __init__(self, conn):
-        self._conn = conn
-
-    def __enter__(self):
-        self._conn.__enter__()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        return self._conn.__exit__(exc_type, exc_val, exc_tb)
-
-    def execute(self, query, params=None, *, prepare=None):
-        clean_params = self._clean_nuls(params)
-        return self._conn.execute(query, clean_params, prepare=prepare)
-
-    def _clean_nuls(self, params):
-        if params is None:
-            return None
-        if isinstance(params, tuple):
-            return tuple(self._clean_nuls(x) for x in params)
-        if isinstance(params, list):
-            return [self._clean_nuls(x) for x in params]
-        if isinstance(params, dict):
-            return {k: self._clean_nuls(v) for k, v in params.items()}
-        if isinstance(params, str):
-            return params.replace('\x00', '')
-        return params
-
-    def __getattr__(self, name):
-        return getattr(self._conn, name)
-
-
-# Process-wide connection pool. Created lazily (never at import time) so that
-# spawned child processes build their own pool instead of inheriting sockets,
-# and so scripts that never touch the DB pay nothing.
-_pool: Optional[ConnectionPool] = None
-_pool_lock = threading.Lock()
-
-
-def _get_pool() -> ConnectionPool:
-    global _pool
-    if _pool is None:
-        with _pool_lock:
-            if _pool is None:
-                _pool = ConnectionPool(
-                    settings.database_url,
-                    min_size=settings.db_pool_min_size,
-                    max_size=settings.db_pool_max_size,
-                    kwargs={"row_factory": dict_row},
-                    name="noteflow-worker",
-                    open=True,
-                )
-                atexit.register(_pool.close)
-    return _pool
-
-
-class Repository:
-    @contextmanager
-    def connect(self):
-        # pool.connection() handles commit/rollback and returns the connection
-        # to the pool on exit, replacing the old connect-per-call behaviour.
-        with _get_pool().connection(
-            timeout=settings.db_pool_acquire_timeout_seconds
-        ) as conn:
-            yield CleanConnection(conn)
+from noteflow_worker.db.models import (
+    AiNoteSection,
+    DocumentEmbedding,
+    DocumentRecord,
+    EmbeddingSource,
+    LayoutBlock,
+    MarkdownDocument,
+    MarkdownPage,
+    PageAsset,
+    TextChunk,
+    VisualRegion,
+    VlmResult,
+)
+class Repository(BaseRepository):
 
     def load_document(self, document_id: str) -> DocumentRecord:
         with self.connect() as conn:
@@ -315,50 +108,7 @@ class Repository:
 
     def ensure_notes_schema(self) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_ai_notes (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  note_version INTEGER NOT NULL,
-                  status VARCHAR(64) NOT NULL,
-                  title VARCHAR(500),
-                  markdown TEXT NOT NULL,
-                  summary TEXT,
-                  model_provider VARCHAR(64),
-                  model_name VARCHAR(128),
-                  prompt_version VARCHAR(64),
-                  source_document_version VARCHAR(64),
-                  quality_report_json TEXT,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, note_version)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_ai_note_sections (
-                  id UUID PRIMARY KEY,
-                  note_id UUID NOT NULL,
-                  document_id UUID NOT NULL,
-                  section_index INTEGER NOT NULL,
-                  section_type VARCHAR(64) NOT NULL,
-                  heading VARCHAR(500),
-                  markdown TEXT NOT NULL,
-                  page_start INTEGER,
-                  page_end INTEGER,
-                  source_chunk_ids_json TEXT,
-                  source_pages_json TEXT,
-                  confidence DOUBLE PRECISION,
-                  warnings_json TEXT,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(note_id, section_index)
-                )
-                """
-            )
+            require_tables(conn, ("document_ai_notes", "document_ai_note_sections"))
 
     def save_ai_note(
         self,
@@ -630,25 +380,6 @@ class Repository:
         with self.connect() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS document_parse_results (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL UNIQUE,
-                  parser_name VARCHAR(100) NOT NULL,
-                  page_count INTEGER NOT NULL,
-                  extracted_text_length INTEGER NOT NULL,
-                  extracted_text_preview TEXT,
-                  detected_content_source_type VARCHAR(64) NOT NULL,
-                  source_confidence DOUBLE PRECISION,
-                  source_distribution_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute("ALTER TABLE document_parse_results ADD COLUMN IF NOT EXISTS source_confidence DOUBLE PRECISION")
-            conn.execute("ALTER TABLE document_parse_results ADD COLUMN IF NOT EXISTS source_distribution_json TEXT")
-            conn.execute(
-                """
                 INSERT INTO document_parse_results (
                   id,
                   document_id,
@@ -699,15 +430,6 @@ class Repository:
         with self.connect() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS document_parse_manifests (
-                  document_id UUID PRIMARY KEY,
-                  manifest_json TEXT NOT NULL,
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute(
-                """
                 INSERT INTO document_parse_manifests (document_id, manifest_json)
                 VALUES (%s, %s)
                 ON CONFLICT (document_id)
@@ -718,31 +440,6 @@ class Repository:
 
     def replace_chunks(self, document_id: str, chunks: Iterable[TextChunk]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_chunks (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  page_start INTEGER,
-                  page_end INTEGER,
-                  section_title VARCHAR(500),
-                  chunk_index INTEGER NOT NULL,
-                  chunk_type VARCHAR(64),
-                  content TEXT NOT NULL,
-                  token_count INTEGER,
-                  source_asset_id UUID,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, chunk_index)
-                )
-                """
-            )
-            conn.execute("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS page_start INTEGER")
-            conn.execute("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS page_end INTEGER")
-            conn.execute("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS chunk_type VARCHAR(64)")
-            conn.execute("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS source_asset_id UUID")
-            conn.execute("ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS metadata_json TEXT")
             conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (document_id,))
             for chunk in chunks:
                 page_start = chunk.page_start or chunk.page_number
@@ -785,26 +482,6 @@ class Repository:
     def replace_page_assets(self, document_id: str, assets: Iterable[PageAsset]) -> dict[int, str]:
         assets = list(assets)
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_page_assets (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  asset_type VARCHAR(64) NOT NULL,
-                  image_path TEXT NOT NULL,
-                  width INTEGER NOT NULL,
-                  height INTEGER NOT NULL,
-                  image_count INTEGER NOT NULL,
-                  drawing_count INTEGER NOT NULL,
-                  image_coverage DOUBLE PRECISION NOT NULL,
-                  text_length INTEGER NOT NULL,
-                  visual_summary TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number, asset_type)
-                )
-                """
-            )
             conn.execute("DELETE FROM document_page_assets WHERE document_id = %s", (document_id,))
             ids_by_page: dict[int, str] = {}
             for asset in assets:
@@ -847,26 +524,6 @@ class Repository:
 
     def replace_layout_blocks(self, document_id: str, blocks: Iterable[LayoutBlock]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_layout_blocks (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  block_index INTEGER NOT NULL,
-                  block_type VARCHAR(64) NOT NULL,
-                  content TEXT,
-                  bbox_json TEXT,
-                  section_title VARCHAR(500),
-                  heading_path_json TEXT,
-                  source_asset_id UUID,
-                  confidence DOUBLE PRECISION,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number, block_index)
-                )
-                """
-            )
             conn.execute("DELETE FROM document_layout_blocks WHERE document_id = %s", (document_id,))
             for block in blocks:
                 conn.execute(
@@ -944,26 +601,6 @@ class Repository:
 
     def replace_visual_regions(self, document_id: str, regions: Iterable[VisualRegion]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_visual_regions (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  region_index INTEGER NOT NULL,
-                  region_type VARCHAR(64) NOT NULL,
-                  asset_path TEXT NOT NULL,
-                  bbox_json TEXT,
-                  page_asset_id UUID,
-                  width INTEGER NOT NULL,
-                  height INTEGER NOT NULL,
-                  confidence DOUBLE PRECISION NOT NULL,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number, region_index)
-                )
-                """
-            )
             conn.execute("DELETE FROM document_visual_regions WHERE document_id = %s", (document_id,))
             for region in regions:
                 conn.execute(
@@ -1041,77 +678,13 @@ class Repository:
 
     def replace_vlm_results(self, document_id: str, results: Iterable[VlmResult]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_vlm_results (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  region_index INTEGER NOT NULL,
-                  region_type VARCHAR(64) NOT NULL,
-                  provider VARCHAR(64) NOT NULL,
-                  model VARCHAR(128) NOT NULL,
-                  transcription TEXT,
-                  description TEXT,
-                  latex TEXT,
-                  code TEXT,
-                  uncertainty TEXT,
-                  search_text TEXT,
-                  raw_response_json TEXT,
-                  error_message TEXT,
-                  input_fingerprint VARCHAR(64),
-                  attempt_count INTEGER NOT NULL DEFAULT 1,
-                  content_kind VARCHAR(32),
-                  importance VARCHAR(16),
-                  reading_order TEXT,
-                  language VARCHAR(32),
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number, region_index, provider, model)
-                )
-                """
-            )
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS input_fingerprint VARCHAR(64)")
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1")
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS content_kind VARCHAR(32)")
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS importance VARCHAR(16)")
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS reading_order TEXT")
-            conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS language VARCHAR(32)")
             conn.execute("DELETE FROM document_vlm_results WHERE document_id = %s", (document_id,))
             for result in results:
                 self._upsert_vlm_result_on_connection(conn, result)
 
     def ensure_vlm_schema(self) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_vlm_results (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  region_index INTEGER NOT NULL,
-                  region_type VARCHAR(64) NOT NULL,
-                  provider VARCHAR(64) NOT NULL,
-                  model VARCHAR(128) NOT NULL,
-                  transcription TEXT,
-                  description TEXT,
-                  latex TEXT,
-                  code TEXT,
-                  uncertainty TEXT,
-                  search_text TEXT,
-                  raw_response_json TEXT,
-                  error_message TEXT,
-                  input_fingerprint VARCHAR(64),
-                  attempt_count INTEGER NOT NULL DEFAULT 1,
-                  content_kind VARCHAR(32),
-                  importance VARCHAR(16),
-                  reading_order TEXT,
-                  language VARCHAR(32),
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number, region_index, provider, model)
-                )
-                """
-            )
-            self._ensure_vlm_schema_on_connection(conn)
+            require_tables(conn, ("document_vlm_results",))
 
     def upsert_vlm_result(self, result: VlmResult) -> None:
         """Persist one region immediately so retries never regenerate successes."""
@@ -1120,12 +693,7 @@ class Repository:
             self._upsert_vlm_result_on_connection(conn, result)
 
     def _ensure_vlm_schema_on_connection(self, conn) -> None:
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS input_fingerprint VARCHAR(64)")
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 1")
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS content_kind VARCHAR(32)")
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS importance VARCHAR(16)")
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS reading_order TEXT")
-        conn.execute("ALTER TABLE document_vlm_results ADD COLUMN IF NOT EXISTS language VARCHAR(32)")
+        require_tables(conn, ("document_vlm_results",))
 
     def _upsert_vlm_result_on_connection(self, conn, result: VlmResult) -> None:
         conn.execute(
@@ -1209,29 +777,6 @@ class Repository:
 
     def replace_markdown_pages(self, document_id: str, pages: Iterable[MarkdownPage]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_markdown_pages (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  page_number INTEGER NOT NULL,
-                  markdown TEXT NOT NULL,
-                  source_type VARCHAR(64) NOT NULL,
-                  quality_score DOUBLE PRECISION NOT NULL,
-                  warnings_json TEXT,
-                  structure_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(document_id, page_number)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_markdown_pages_document_page
-                ON document_markdown_pages(document_id, page_number)
-                """
-            )
             conn.execute("DELETE FROM document_markdown_pages WHERE document_id = %s", (document_id,))
             for page in pages:
                 conn.execute(
@@ -1264,25 +809,6 @@ class Repository:
         with self.connect() as conn:
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS document_markdown_documents (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL UNIQUE,
-                  markdown TEXT NOT NULL,
-                  structure_json TEXT,
-                  quality_report_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_markdown_documents_document
-                ON document_markdown_documents(document_id)
-                """
-            )
-            conn.execute(
-                """
                 INSERT INTO document_markdown_documents (
                   id,
                   document_id,
@@ -1311,34 +837,6 @@ class Repository:
     def _sync_raw_markdown_note(self, conn: CleanConnection, document: MarkdownDocument) -> None:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS notes (
-              id UUID PRIMARY KEY,
-              user_id UUID,
-              folder_id UUID,
-              title VARCHAR(255),
-              markdown TEXT,
-              source_kind VARCHAR(255),
-              source_document_id UUID,
-              created_at TIMESTAMPTZ,
-              updated_at TIMESTAMPTZ
-            )
-            """
-        )
-        updated = conn.execute(
-            """
-            UPDATE notes
-               SET title = COALESCE((SELECT title FROM documents WHERE id = %s), title) || ' - PDF Markdown',
-                   markdown = %s,
-                   updated_at = NOW()
-             WHERE source_document_id = %s
-               AND source_kind = 'RAW'
-            """,
-            (document.document_id, document.markdown, document.document_id),
-        )
-        if updated.rowcount:
-            return
-        conn.execute(
-            """
             INSERT INTO notes (
               id,
               user_id,
@@ -1364,83 +862,7 @@ class Repository:
 
     def ensure_embedding_schema(self) -> None:
         with self.connect() as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS document_embeddings (
-                  id UUID PRIMARY KEY,
-                  document_id UUID NOT NULL,
-                  source_domain VARCHAR(32),
-                  source_object_type VARCHAR(64),
-                  source_object_id UUID,
-                  embedding_provider VARCHAR(64),
-                  embedding_model VARCHAR(128),
-                  embedding_dimension INTEGER,
-                  content_hash VARCHAR(128),
-                  embedding vector,
-                  embedding_text TEXT,
-                  text_preview TEXT,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            for statement in [
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_domain VARCHAR(32)",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_object_type VARCHAR(64)",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS source_object_id UUID",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_provider VARCHAR(64)",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(128)",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS embedding_dimension INTEGER",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS content_hash VARCHAR(128)",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS text_preview TEXT",
-                "ALTER TABLE document_embeddings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()",
-            ]:
-                conn.execute(statement)
-            conn.execute(
-                """
-                DO $$
-                BEGIN
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'document_embeddings' AND column_name = 'source_table'
-                  ) THEN
-                    ALTER TABLE document_embeddings ALTER COLUMN source_table DROP NOT NULL;
-                  END IF;
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'document_embeddings' AND column_name = 'source_id'
-                  ) THEN
-                    ALTER TABLE document_embeddings ALTER COLUMN source_id DROP NOT NULL;
-                  END IF;
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'document_embeddings' AND column_name = 'content_kind'
-                  ) THEN
-                    ALTER TABLE document_embeddings ALTER COLUMN content_kind DROP NOT NULL;
-                  END IF;
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'document_embeddings' AND column_name = 'provider'
-                  ) THEN
-                    ALTER TABLE document_embeddings ALTER COLUMN provider DROP NOT NULL;
-                  END IF;
-                  IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'document_embeddings' AND column_name = 'model'
-                  ) THEN
-                    ALTER TABLE document_embeddings ALTER COLUMN model DROP NOT NULL;
-                  END IF;
-                END $$;
-                """
-            )
-            conn.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS uq_document_embeddings_source_provider_model
-                ON document_embeddings(source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
-                """
-            )
+            require_tables(conn, ("document_embeddings",))
 
     def load_embedding_sources(self, document_id: str, include_pdf: bool = True, include_ai_note: bool = True) -> list[EmbeddingSource]:
         sources: list[EmbeddingSource] = []
@@ -1775,72 +1197,3 @@ def json_dumps_compact(value: dict) -> str:
 
 def vector_literal(values: list[float]) -> str:
     return "[" + ",".join(format(float(value), ".10g") for value in values) + "]"
-
-
-# Canonical task-type and step lists shared by every schema owner that widens
-# the Hibernate-generated CHECK constraints. A single source prevents two
-# subsystems from fighting over the constraint definition.
-ALL_TASK_TYPES = (
-    "PARSE_DOCUMENT",
-    "GENERATE_EMBEDDINGS",
-    "GENERATE_NOTES",
-    "GENERATE_FLASHCARDS",
-    "GENERATE_QUIZ",
-    "GRADE_QUIZ_ATTEMPT",
-    "ANSWER_CONVERSATION_TURN",
-    "RESUME_AGENT_RUN",
-    "MAINTAIN_CONVERSATION_MEMORY",
-    "ASK_DOCUMENT",
-    "EXPORT_MARKDOWN",
-)
-
-ALL_TASK_STEPS = (
-    "UPLOADED",
-    "PARSING_PDF",
-    "EXTRACTING_TEXT",
-    "ANALYZING_VISUAL_CONTENT",
-    "CROPPING_VISUAL_REGIONS",
-    "VLM_ANALYSIS",
-    "LAYOUT_CHUNKING",
-    "CHUNKING",
-    "GENERATING_EMBEDDINGS",
-    "GENERATING_NOTES",
-    "GENERATING_FLASHCARDS",
-    "GENERATING_QUIZ",
-    "GRADING_QUIZ",
-    "ANSWERING",
-    "AGENT_PLANNING",
-    "AGENT_TOOL",
-    "AGENT_FINALIZING",
-    "AGENT_FALLBACK",
-    "MAINTAINING_MEMORY",
-    "COMPLETED",
-    "FAILED",
-)
-
-
-def ensure_task_constraints(conn) -> None:
-    """Widen the tasks CHECK constraints to the canonical type/step lists.
-
-    Idempotent: rewrites a constraint only when the newest member is missing
-    from its current definition.
-    """
-    sentinel_type = "RESUME_AGENT_RUN"
-    type_check = conn.execute(
-        """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
-           WHERE conrelid='tasks'::regclass AND conname='tasks_task_type_check'"""
-    ).fetchone()
-    if not type_check or sentinel_type not in type_check["definition"]:
-        conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_task_type_check")
-        values = ",".join(f"'{item}'" for item in ALL_TASK_TYPES)
-        conn.execute(f"ALTER TABLE tasks ADD CONSTRAINT tasks_task_type_check CHECK (task_type IN ({values}))")
-
-    sentinel_step = "AGENT_FALLBACK"
-    step_check = conn.execute(
-        """SELECT pg_get_constraintdef(oid) definition FROM pg_constraint
-           WHERE conrelid='tasks'::regclass AND conname='tasks_current_step_check'"""
-    ).fetchone()
-    if not step_check or sentinel_step not in step_check["definition"]:
-        conn.execute("ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_current_step_check")
-        values = ",".join(f"'{item}'" for item in ALL_TASK_STEPS)
-        conn.execute(f"ALTER TABLE tasks ADD CONSTRAINT tasks_current_step_check CHECK (current_step IN ({values}))")

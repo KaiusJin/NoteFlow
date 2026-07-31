@@ -2,14 +2,18 @@ package com.noteflow.retrieval;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 @Component
 class RetrievalSchemaManager implements ApplicationRunner {
+    private static final Logger log = LoggerFactory.getLogger(RetrievalSchemaManager.class);
     private final JdbcTemplate jdbc;
     private final AtomicBoolean ready = new AtomicBoolean(false);
 
@@ -33,60 +37,16 @@ class RetrievalSchemaManager implements ApplicationRunner {
         if (!Boolean.TRUE.equals(tableExists)) {
             return false;
         }
-        jdbc.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm");
-        jdbc.execute(
-            """
-            ALTER TABLE document_embeddings
-            ADD COLUMN IF NOT EXISTS search_vector tsvector
-            GENERATED ALWAYS AS (
-              setweight(to_tsvector('simple'::regconfig, COALESCE(embedding_text, '')), 'A') ||
-              setweight(to_tsvector('simple'::regconfig, COALESCE(text_preview, '')), 'B')
-            ) STORED
-            """
-        );
-        jdbc.execute(
-            """
-            ALTER TABLE document_embeddings
-            ADD COLUMN IF NOT EXISTS exact_search_text TEXT
-            GENERATED ALWAYS AS (
-              LOWER(
-                regexp_replace(
-                  translate(COALESCE(embedding_text, ''), '[]{}', '()()'),
-                  '[[:space:]]+',
-                  '',
-                  'g'
-                )
-              )
-            ) STORED
-            """
-        );
-        jdbc.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_document_embeddings_search_vector
-            ON document_embeddings USING GIN (search_vector)
-            """
-        );
-        jdbc.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_document_embeddings_exact_search
-            ON document_embeddings USING GIN (exact_search_text gin_trgm_ops)
-            """
-        );
-        jdbc.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_document_embeddings_document_domain
-            ON document_embeddings(document_id, source_domain)
-            """
-        );
-        jdbc.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_document_embeddings_provider_model
-            ON document_embeddings(embedding_provider, embedding_model)
-            """
-        );
         ensureVectorIndexes();
         ready.set(true);
         return true;
+    }
+
+    @Scheduled(fixedDelayString = "${noteflow.retrieval.hnsw-inspection-millis:300000}")
+    void inspectVectorIndexes() {
+        if (ready.get()) {
+            ensureVectorIndexes();
+        }
     }
 
     private void ensureVectorIndexes() {
@@ -115,8 +75,7 @@ class RetrievalSchemaManager implements ApplicationRunner {
                     """.formatted(dimension, indexedExpression, dimension)
                 );
             } catch (DataAccessException error) {
-                System.out.println("Skipping pgvector HNSW index creation for dimension "
-                    + dimension + ": " + error.getMessage());
+                log.warn("Skipping pgvector HNSW index creation for dimension {}", dimension, error);
             }
         }
     }

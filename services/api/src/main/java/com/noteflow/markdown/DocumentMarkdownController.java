@@ -46,11 +46,17 @@ public class DocumentMarkdownController {
     @GetMapping("/documents/{documentId}/markdown")
     public DocumentMarkdownDocumentResponse getMarkdownDocument(
             @PathVariable UUID documentId,
-            @RequestParam(required = false) Integer previewChars) {
+            @RequestParam(required = false) Integer previewChars,
+            @RequestParam(defaultValue = "0") Integer offsetChars,
+            @RequestParam(required = false) Integer lengthChars) {
         ensureDocumentAccess(documentId);
         learningMemory.recordDocumentActivity(documentId,"NOTE_OPENED","note-open:"+documentId+":"+(System.currentTimeMillis()/60_000));
         return markdownDocuments.findByDocumentId(documentId)
-            .map(document -> DocumentMarkdownDocumentResponse.from(document, safePreviewChars(previewChars)))
+            .map(document -> DocumentMarkdownDocumentResponse.from(
+                document,
+                Math.max(0, offsetChars == null ? 0 : offsetChars),
+                safePreviewChars(lengthChars == null ? previewChars : lengthChars)
+            ))
             .orElseThrow(() -> new IllegalArgumentException("Markdown document not found"));
     }
 

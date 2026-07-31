@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import hashlib
 import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Callable, Literal, TypedDict
@@ -23,6 +25,7 @@ from noteflow_worker.pdf.parser import estimate_tokens
 from noteflow_worker.queue.redis_queue import RedisTaskQueue
 from noteflow_worker.study.generation_client import StudyGenerationClient
 
+logger = logging.getLogger(__name__)
 try:
     from langgraph.graph import END, StateGraph
 except Exception:  # pragma: no cover - exercised only when optional dependency is absent.
@@ -105,6 +108,7 @@ class AgentState:
     embedding_provider_name: str
     embedding_model: str
     llm: StructuredMemoryLlm
+    capabilities: frozenset[str] = field(default_factory=frozenset)
     scratchpad: list[AgentTraceStep] = field(default_factory=list)
     evidence: list[Evidence] = field(default_factory=list)
     final: StructuredAnswer | None = None
@@ -169,6 +173,7 @@ class ToolCallingAgent:
         progress_callback: Callable[[str, int], None] | None = None,
         checkpoint_callback: Callable[[AgentState], None] | None = None,
         snapshot: dict | None = None,
+        capabilities: frozenset[str] | None = None,
     ) -> AgentState:
         state = AgentState(
             conversation_id=conversation_id,
@@ -182,6 +187,7 @@ class ToolCallingAgent:
             embedding_provider_name=getattr(self.embedding_provider, "provider_name", "disabled"),
             embedding_model=getattr(self.embedding_provider, "model", ""),
             llm=self.llm,
+            capabilities=capabilities or frozenset(),
             max_steps=self.max_steps,
         )
         if snapshot:
@@ -319,7 +325,7 @@ class ToolCallingAgent:
         try:
             checkpoint_callback(state)
         except Exception as exc:
-            print(f"Agent checkpoint failed (non-fatal): {exc}")
+            logger.exception("agent_checkpoint_failed non_fatal=true error=%s", exc)
 
     def should_fallback(self, state: AgentState) -> bool:
         if len(state.scratchpad) >= self.max_steps:
@@ -462,6 +468,7 @@ class ToolCallingAgent:
         state.reflection_count += 1
         started = time.monotonic()
         try:
+            enforce_orchestration_policy(state, retry_tool, retry_args)
             validate_tool_arguments(retry_args, self.tools[retry_tool].args_schema)
             result = self.tools[retry_tool].handler(retry_args, state)
         except Exception as exc:
@@ -757,7 +764,7 @@ def build_agent_prompt(state: AgentState, tools: dict[str, ToolSpec], max_steps:
                 separators=(",", ":"),
             )
         )
-    scratchpad = [trace_step_json(step, include_thought=True) for step in state.scratchpad]
+    scratchpad = incremental_scratchpad(state.scratchpad)
     # Index/source mapping only: the full evidence text already appears once in
     # the Answer context below, so repeating previews here would double the
     # token cost of every planning step.
@@ -780,6 +787,8 @@ Decision format (all fields are required):
 - To answer: actionType="final_answer", tool="none", argsJson="{{}}", and fill answerMarkdown, citations, confidence, insufficientEvidence.
 
 Use tools only when they materially improve the answer or start a requested study action.
+Persistent tools are executable only when the current turn carries the required server-issued capability.
+Current capability scopes: {json.dumps(sorted(state.capabilities), separators=(",", ":"))}.
 Use final_answer when the accumulated evidence is enough or when no available tool can help.
 Choose tools by role: retrieval finds facts; learning creates persistent Study/Notes artifacts; workspace edits durable Markdown; analytics derives learning state; planning organizes work; validation checks generated output.
 Use search_sources for source-grounded facts and search_notes for editable workspace notes. Read Markdown before changing it. Never mutate or delete content unless the user asked; delete_section requires confirm=true only after explicit user confirmation.
@@ -883,6 +892,7 @@ def agent_structured_response_json(state: AgentState) -> str:
                 "stopReason": state.stop_reason,
                 "stepCount": len(state.scratchpad),
                 "tokenBudgetUsed": state.token_budget_used,
+                "providerUsage": getattr(state.llm, "usage_snapshot", lambda: {})(),
                 "maxSteps": state.max_steps or settings.agent_max_steps,
                 "tools": list(build_tool_registry().keys()),
                 "trace": [trace_step_json(step, include_thought=False) for step in state.scratchpad],
@@ -917,6 +927,27 @@ def trace_step_json(step: AgentTraceStep, *, include_thought: bool) -> dict:
     return value
 
 
+def incremental_scratchpad(steps: list[AgentTraceStep]) -> list[dict]:
+    """Keep recent observations inline and replace older payloads with handles.
+
+    Full observations remain durable in agent_run_steps; planning prompts only
+    need a stable summary and hash for earlier steps. This bounds repeated
+    prompt growth without losing auditability or async artifact handles.
+    """
+
+    keep = max(1, settings.agent_full_observation_steps)
+    split = max(0, len(steps) - keep)
+    compact: list[dict] = []
+    for index, step in enumerate(steps):
+        value = trace_step_json(step, include_thought=index >= split)
+        if index < split:
+            value["observationHash"] = hashlib.sha256(step.observation.encode("utf-8")).hexdigest()
+            value["observation"] = public_step_summary(step)
+            value.pop("thought", None)
+        compact.append(value)
+    return compact
+
+
 def public_step_summary(step: AgentTraceStep) -> str:
     if step.action_type == "tool" and step.tool:
         return f"Called {step.tool}."
@@ -933,10 +964,37 @@ def public_step_summary(step: AgentTraceStep) -> str:
 
 WORKSPACE_MUTATION_TOOLS = {"edit_markdown", "insert_section", "delete_section", "rewrite_paragraph", "update_note"}
 GROUNDED_NOTE_TOOLS = {"generate_summary", "generate_study_guide", "generate_examples"}
+TOOL_CAPABILITIES = {
+    **{name: {"workspace:write"} for name in WORKSPACE_MUTATION_TOOLS},
+    "save_artifact": {"workspace:write"},
+    "create_study_plan": {"workspace:write"},
+    "generate_summary": {"workspace:write"},
+    "generate_study_guide": {"workspace:write"},
+    "generate_examples": {"workspace:write"},
+    "generate_quiz": {"study:write"},
+    "generate_flashcards": {"study:write"},
+    "generate_ai_notes": {"study:write"},
+    "generate_practice_questions": {"study:write"},
+    "retry_generation": {"study:write"},
+    "record_learning_feedback": {"learning:write"},
+    "set_learning_goal": {"learning:write"},
+    "set_learning_preference": {"learning:write"},
+    "link_learning_artifact": {"learning:write"},
+    "build_dynamic_study_plan": {"learning:write", "workspace:write"},
+    "correct_learning_memory": {"learning:write"},
+}
+TOOL_CAPABILITIES["delete_section"] = {"workspace:write", "workspace:delete"}
 
 
 def enforce_orchestration_policy(state: AgentState, tool_name: str, args: dict) -> None:
     """Deterministic prerequisites that the LLM cannot waive."""
+    required_capabilities = TOOL_CAPABILITIES.get(tool_name, set())
+    missing_capabilities = required_capabilities - state.capabilities
+    if missing_capabilities:
+        raise PermissionError(
+            "This turn is read-only; required server-issued capability scope(s): "
+            + ", ".join(sorted(missing_capabilities))
+        )
     if tool_name in WORKSPACE_MUTATION_TOOLS:
         note_id = str(args.get("noteId") or "")
         read_first = any(
@@ -945,6 +1003,11 @@ def enforce_orchestration_policy(state: AgentState, tool_name: str, args: dict) 
         )
         if not read_first:
             raise PermissionError("Workspace mutations require a successful read_markdown for the same note in this run.")
+    if tool_name == "delete_section":
+        request = state.question.lower()
+        delete_markers = ("delete", "remove", "erase", "删除", "移除", "清除")
+        if args.get("confirm") is not True or not any(marker in request for marker in delete_markers):
+            raise PermissionError("Deletion requires explicit delete intent in the current user message.")
     if tool_name in GROUNDED_NOTE_TOOLS:
         markdown = str(args.get("markdown") or "").strip()
         chunk_ids = {str(value) for value in args.get("sourceChunkIds") or []}

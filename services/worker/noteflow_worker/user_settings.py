@@ -7,9 +7,12 @@ answer, vision, embeddings) picks them up through its normal fallback chain:
 study/memory/answer already fall back to the notes provider and models.
 """
 
+import logging
+
 from noteflow_worker.config import settings
 from noteflow_worker.db.repository import Repository
 
+logger = logging.getLogger(__name__)
 
 def apply_user_ai_settings(user_id: str) -> None:
     if not user_id:
@@ -20,7 +23,7 @@ def apply_user_ai_settings(user_id: str) -> None:
         # The table only exists once the API has started at least once with
         # the settings feature. Missing table or transient DB issues must not
         # take the task down; environment configuration remains in effect.
-        print(f"Skipping user AI settings ({exc.__class__.__name__}: {exc})")
+        logger.warning("user_ai_settings_unavailable error_type=%s error=%s", exc.__class__.__name__, exc)
         return
     if row is None:
         return

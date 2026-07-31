@@ -1,0 +1,26 @@
+{
+  "title": "NoteFlow Overview",
+  "uid": "noteflow-overview",
+  "schemaVersion": 41,
+  "refresh": "15s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "API request rate",
+      "targets": [{"expr": "sum(rate(http_server_requests_seconds_count[5m]))"}],
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "JVM heap",
+      "targets": [{"expr": "sum(jvm_memory_used_bytes{area=\"heap\"})"}],
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Worker process CPU",
+      "targets": [{"expr": "rate(process_cpu_seconds_total{job=\"noteflow-worker\"}[5m])"}],
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}
+    }
+  ]
+}

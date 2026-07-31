@@ -3,6 +3,7 @@ package com.noteflow.documents;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -28,8 +29,13 @@ public class DocumentController {
     }
 
     @GetMapping("/documents")
-    public List<DocumentResponse> list() {
-        return documents.listCurrentUserDocuments();
+    public ResponseEntity<List<DocumentResponse>> list(
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(required = false) String cursor) {
+        var page = documents.listCurrentUserDocuments(limit, cursor);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        if (page.nextCursor() != null) response.header("X-Next-Cursor", page.nextCursor());
+        return response.body(page.items());
     }
 
     @GetMapping("/documents/{id}")

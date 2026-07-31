@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from uuid import uuid4
 
 from noteflow_worker.config import settings
@@ -13,6 +14,7 @@ from noteflow_worker.memory.manager import ConversationMemoryManager
 from noteflow_worker.pdf.parser import estimate_tokens
 from noteflow_worker.queue.redis_queue import RedisTaskQueue, TaskPayload
 
+logger = logging.getLogger(__name__)
 
 class AnswerConversationTurnPipeline:
     """One conversation turn, per the six-step contract in
@@ -57,6 +59,7 @@ class AnswerConversationTurnPipeline:
                 return
             saved_run = self.store.load_agent_snapshot(message_id) if payload.task_type == "RESUME_AGENT_RUN" else None
             question = str(saved_run["question"]) if saved_run else self.load_question(placeholder)
+            capabilities = self.load_capabilities(placeholder)
 
             provider = self.embedding_provider_factory()
             query_embedding = self.embed_query(provider, question)
@@ -78,6 +81,7 @@ class AnswerConversationTurnPipeline:
                     message_id, agent_structured_response_json(agent_state), agent_state.scratchpad
                 ),
                 snapshot=saved_run.get("state_json") if saved_run else None,
+                capabilities=capabilities,
             )
             if state.paused:
                 if not state.waiting_task_id:
@@ -117,7 +121,7 @@ class AnswerConversationTurnPipeline:
 
             self.schedule_maintenance_if_due(payload)
             self.store.mark_task_completed(payload.task_id)
-            print(
+            logger.info(
                 "Conversation turn answered "
                 + json.dumps(
                     {
@@ -147,6 +151,14 @@ class AnswerConversationTurnPipeline:
             raise ValueError("The user message is empty.")
         return question
 
+    def load_capabilities(self, placeholder: dict) -> frozenset[str]:
+        metadata = parse_json_safe(placeholder.get("metadata_json")) or {}
+        allowed = {"workspace:write", "workspace:delete", "study:write", "learning:write"}
+        raw = metadata.get("agentCapabilities")
+        if not isinstance(raw, list):
+            return frozenset()
+        return frozenset(str(value) for value in raw if str(value) in allowed)
+
     def embed_query(self, provider, question: str) -> list[float] | None:
         if provider.provider_name == "disabled":
             return None
@@ -173,7 +185,7 @@ class AnswerConversationTurnPipeline:
             )
         except Exception as exc:
             # Maintenance scheduling must never fail a successfully answered turn.
-            print(f"Memory maintenance scheduling failed (non-fatal): {exc}")
+            logger.exception("memory_maintenance_schedule_failed non_fatal=true error=%s", exc)
 
 
 def citation_from_evidence(position: int, item: Evidence) -> Citation:

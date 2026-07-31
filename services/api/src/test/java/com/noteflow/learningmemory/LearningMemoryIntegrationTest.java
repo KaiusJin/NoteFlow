@@ -39,7 +39,6 @@ class LearningMemoryIntegrationTest {
         DriverManagerDataSource dataSource=new DriverManagerDataSource(url,user,password);
         jdbc = new JdbcTemplate(dataSource);
         transactions=new TransactionTemplate(new DataSourceTransactionManager(dataSource));
-        new LearningMemorySchemaManager(jdbc).run(null);
         workspaceId = UUID.randomUUID(); documentId = UUID.randomUUID();
         jdbc.update("INSERT INTO users(id,display_name,email,created_at,updated_at) VALUES (?,'Learning Memory Test',?,NOW(),NOW())",workspaceId,"learning-memory-"+workspaceId+"@local");
         jdbc.update("INSERT INTO documents(id,user_id,title,storage_path,file_size,status,document_type,content_source_type) VALUES (?,?,?,'/tmp/learning-memory-test.pdf',1,'READY','COURSE_NOTES','TEXT_PDF')",

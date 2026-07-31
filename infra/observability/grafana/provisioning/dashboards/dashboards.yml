@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: NoteFlow
+    folder: NoteFlow
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

@@ -1,23 +1,24 @@
 package com.noteflow.tasks;
 
 import com.noteflow.workspace.LocalWorkspaceService;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 public class TaskController {
     private final TaskRepository tasks;
     private final LocalWorkspaceService users;
+    private final TaskEventStream events;
 
-    public TaskController(TaskRepository tasks, LocalWorkspaceService users) {
+    public TaskController(TaskRepository tasks, LocalWorkspaceService users, TaskEventStream events) {
         this.tasks = tasks;
         this.users = users;
+        this.events = events;
     }
 
     @GetMapping("/tasks/{id}")
@@ -40,18 +41,11 @@ public class TaskController {
 
     @GetMapping("/tasks")
     public List<TaskResponse> listAll() {
-        UUID userId = users.currentUserId();
-        Map<UUID, Task> visible = new LinkedHashMap<>();
-        tasks.findByUserIdAndStatusInOrderByCreatedAtDesc(
-                userId,
-                List.of(TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.RETRYING)
-            )
-            .forEach(task -> visible.put(task.getId(), task));
-        tasks.findTop100ByUserIdOrderByCreatedAtDesc(userId)
-            .forEach(task -> visible.putIfAbsent(task.getId(), task));
-        return visible.values().stream()
-            .sorted(Comparator.comparing(Task::getCreatedAt).reversed())
-            .map(TaskResponse::from)
-            .toList();
+        return events.currentTasks();
+    }
+
+    @GetMapping(value = "/events/tasks", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter taskEvents() {
+        return events.subscribe();
     }
 }

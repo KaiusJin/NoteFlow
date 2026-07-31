@@ -75,27 +75,26 @@ class StudyGenerationSupport {
         catch (JsonProcessingException error) { throw new IllegalArgumentException("Invalid generation configuration", error); }
     }
 
+    void lockGenerationVersion(String artifactType, UUID documentId) {
+        jdbc.queryForObject(
+            "SELECT pg_advisory_xact_lock(hashtext(?))",
+            Object.class,
+            "study-version:" + artifactType + ":" + documentId
+        );
+    }
+
     void bindTask(UUID taskId, UUID targetId) {
-        jdbc.execute("""
-            CREATE TABLE IF NOT EXISTS study_task_targets (
-              task_id UUID PRIMARY KEY, attempt_id UUID, target_id UUID,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
-            """);
         jdbc.update("INSERT INTO study_task_targets(task_id,target_id) VALUES (?,?) ON CONFLICT(task_id) DO UPDATE SET target_id=EXCLUDED.target_id",
             taskId, targetId);
     }
 
     UUID activeTaskId(UUID targetId) {
-        try {
-            List<Map<String, Object>> rows = jdbc.queryForList("""
-                SELECT t.id FROM study_task_targets x JOIN tasks t ON t.id=x.task_id
-                 WHERE x.target_id=? AND t.status IN ('PENDING','PROCESSING','RETRYING')
-                 ORDER BY t.created_at DESC LIMIT 1
-                """, targetId);
-            return rows.isEmpty() ? null : (UUID) rows.get(0).get("id");
-        } catch (org.springframework.dao.DataAccessException missingCompatibilityTable) {
-            return null;
-        }
+        List<Map<String, Object>> rows = jdbc.queryForList("""
+            SELECT t.id FROM study_task_targets x JOIN tasks t ON t.id=x.task_id
+             WHERE x.target_id=? AND t.status IN ('PENDING','PROCESSING','RETRYING')
+             ORDER BY t.created_at DESC LIMIT 1
+            """, targetId);
+        return rows.isEmpty() ? null : (UUID) rows.get(0).get("id");
     }
 
     static String origin(String value) { return "AGENT".equalsIgnoreCase(value) ? "AGENT" : "SECTION"; }

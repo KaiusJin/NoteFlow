@@ -45,6 +45,7 @@ public class QuizGenerationService {
         options.put("includeExplanations", !Boolean.FALSE.equals(request.includeExplanations()));
         if (scope.containsKey("focus")) options.put("focus", scope.get("focus"));
         UUID primary = sources.get(0).getId();
+        support.lockGenerationVersion("quiz", primary);
         String scopeJson = support.json(scope);
         var active = support.jdbc().queryForList("""
             SELECT id,status,version,title FROM quiz_sets

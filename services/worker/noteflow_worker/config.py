@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # shares the thread pool with I/O-bound pipelines. Route it to a spawn-based
     # process pool instead. 0 keeps the old single-pool thread behaviour.
     worker_parse_process_workers: int = 2
+    worker_metrics_bind_address: str = "127.0.0.1"
+    worker_metrics_port: int = 9464
+    otel_exporter_otlp_endpoint: str = ""
     pdf_cpu_workers: int = 0
     pdf_io_workers: int = 0
     pdf_gpu_workers: int = 0
@@ -35,6 +38,8 @@ class Settings(BaseSettings):
     pdf_ocr_languages: str = "en"
     pdf_enable_gpu_ocr: bool = True
     pdf_cleanup_intermediate_files: bool = True
+    pdf_sandbox_max_open_files: int = 256
+    pdf_sandbox_max_output_mib: int = 1024
     parse_stale_task_after_minutes: int = 10
     parse_max_task_retries: int = 3
     vision_provider: str = "disabled"
@@ -186,8 +191,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 12
     agent_wall_timeout_seconds: int = 90
     agent_token_budget: int = 60000
+    agent_input_cost_per_million_tokens: float = 0.0
+    agent_output_cost_per_million_tokens: float = 0.0
     agent_max_reflections: int = 2
     agent_trace_observation_max_chars: int = 1400
+    agent_full_observation_steps: int = 3
 
 
 settings = Settings()

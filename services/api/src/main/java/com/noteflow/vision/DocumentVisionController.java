@@ -2,8 +2,8 @@ package com.noteflow.vision;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
+import com.noteflow.storage.ManagedStorageFileService;
 import com.noteflow.workspace.LocalWorkspaceService;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.core.io.FileSystemResource;
@@ -22,13 +22,15 @@ public class DocumentVisionController {
     private final DocumentVlmResultRepository vlmResults;
     private final DocumentRepository documents;
     private final LocalWorkspaceService users;
+    private final ManagedStorageFileService storageFiles;
 
     public DocumentVisionController(DocumentVisualRegionRepository regions, DocumentVlmResultRepository vlmResults,
-            DocumentRepository documents, LocalWorkspaceService users) {
+            DocumentRepository documents, LocalWorkspaceService users, ManagedStorageFileService storageFiles) {
         this.regions = regions;
         this.vlmResults = vlmResults;
         this.documents = documents;
         this.users = users;
+        this.storageFiles = storageFiles;
     }
 
     @GetMapping("/documents/{documentId}/visual-regions")
@@ -63,10 +65,7 @@ public class DocumentVisionController {
             .orElseThrow(() -> new IllegalArgumentException("Visual region not found"));
         ensureDocumentAccess(region.getDocumentId());
 
-        FileSystemResource resource = new FileSystemResource(Path.of(region.getAssetPath()));
-        if (!resource.exists()) {
-            throw new IllegalArgumentException("Visual region asset not found");
-        }
+        FileSystemResource resource = new FileSystemResource(storageFiles.resolvePngForRead(region.getAssetPath()));
         return ResponseEntity.ok()
             .contentType(MediaType.IMAGE_PNG)
             .body(resource);

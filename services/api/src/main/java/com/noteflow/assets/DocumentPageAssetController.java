@@ -2,8 +2,8 @@ package com.noteflow.assets;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
+import com.noteflow.storage.ManagedStorageFileService;
 import com.noteflow.workspace.LocalWorkspaceService;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.core.io.FileSystemResource;
@@ -19,12 +19,14 @@ public class DocumentPageAssetController {
     private final DocumentPageAssetRepository assets;
     private final DocumentRepository documents;
     private final LocalWorkspaceService users;
+    private final ManagedStorageFileService storageFiles;
 
     public DocumentPageAssetController(DocumentPageAssetRepository assets, DocumentRepository documents,
-            LocalWorkspaceService users) {
+            LocalWorkspaceService users, ManagedStorageFileService storageFiles) {
         this.assets = assets;
         this.documents = documents;
         this.users = users;
+        this.storageFiles = storageFiles;
     }
 
     @GetMapping("/documents/{documentId}/assets")
@@ -41,10 +43,7 @@ public class DocumentPageAssetController {
             .orElseThrow(() -> new IllegalArgumentException("Asset not found"));
         ensureDocumentAccess(asset.getDocumentId());
 
-        FileSystemResource resource = new FileSystemResource(Path.of(asset.getImagePath()));
-        if (!resource.exists()) {
-            throw new IllegalArgumentException("Asset file not found");
-        }
+        FileSystemResource resource = new FileSystemResource(storageFiles.resolvePngForRead(asset.getImagePath()));
         return ResponseEntity.ok()
             .contentType(MediaType.IMAGE_PNG)
             .body(resource);

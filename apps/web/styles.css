@@ -198,6 +198,8 @@ button:disabled {
 }
 
 .document-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 112px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
@@ -2331,6 +2333,8 @@ button.library-twisty {
 }
 
 .library-note-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 72px;
   display: flex;
   align-items: center;
   gap: 10px;

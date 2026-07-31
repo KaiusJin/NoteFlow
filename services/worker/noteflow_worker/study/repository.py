@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
-from noteflow_worker.db.repository import Repository, ensure_task_constraints
+from noteflow_worker.db.repository import Repository
+from noteflow_worker.db.schema import require_tables
 from noteflow_worker.study.models import Flashcard, QuizAnswerToGrade, QuizQuestion, ReviewState
 
 
@@ -11,116 +12,22 @@ class StudyRepository(Repository):
     """Persistence boundary for generated study material and review state."""
 
     def ensure_study_schema(self) -> None:
-        statements = [
-            """CREATE TABLE IF NOT EXISTS flashcard_decks (
-              id UUID PRIMARY KEY, document_id UUID NOT NULL, user_id UUID NOT NULL, version INTEGER NOT NULL,
-              title TEXT NOT NULL, source_scope VARCHAR(32) NOT NULL DEFAULT 'WHOLE_DOCUMENT',
-              status VARCHAR(32) NOT NULL DEFAULT 'GENERATING', generation_options_json TEXT NOT NULL DEFAULT '{}',
-              provider VARCHAR(64), model VARCHAR(128), prompt_version VARCHAR(64),
-              total_source_groups INTEGER NOT NULL DEFAULT 0, completed_source_groups INTEGER NOT NULL DEFAULT 0,
-              quality_report_json TEXT, error_message TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(document_id, version))""",
-            """CREATE TABLE IF NOT EXISTS flashcards (
-              id UUID PRIMARY KEY, deck_id UUID NOT NULL REFERENCES flashcard_decks(id) ON DELETE CASCADE,
-              document_id UUID NOT NULL, source_group_index INTEGER NOT NULL, item_index INTEGER NOT NULL,
-              card_type VARCHAR(32) NOT NULL, front TEXT NOT NULL, back TEXT NOT NULL, cloze_text TEXT NOT NULL DEFAULT '',
-              difficulty VARCHAR(16) NOT NULL, topic TEXT NOT NULL, hint TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]',
-              source_chunk_ids_json TEXT NOT NULL, source_pages_json TEXT NOT NULL, dedupe_hash VARCHAR(64) NOT NULL,
-              confidence DOUBLE PRECISION NOT NULL, warnings_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}',
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              UNIQUE(deck_id, source_group_index, item_index), UNIQUE(deck_id, dedupe_hash))""",
-            """CREATE TABLE IF NOT EXISTS flashcard_review_states (
-              user_id UUID NOT NULL, flashcard_id UUID NOT NULL REFERENCES flashcards(id) ON DELETE CASCADE,
-              status VARCHAR(16) NOT NULL DEFAULT 'NEW', ease_factor DOUBLE PRECISION NOT NULL DEFAULT 2.5,
-              interval_days INTEGER NOT NULL DEFAULT 0, repetitions INTEGER NOT NULL DEFAULT 0,
-              due_at TIMESTAMPTZ, last_reviewed_at TIMESTAMPTZ, last_grade VARCHAR(16),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(user_id, flashcard_id))""",
-            """CREATE TABLE IF NOT EXISTS quiz_sets (
-              id UUID PRIMARY KEY, document_id UUID NOT NULL, user_id UUID NOT NULL, version INTEGER NOT NULL,
-              title TEXT NOT NULL, source_scope VARCHAR(32) NOT NULL DEFAULT 'WHOLE_DOCUMENT',
-              status VARCHAR(32) NOT NULL DEFAULT 'GENERATING', difficulty_distribution_json TEXT NOT NULL,
-              generation_options_json TEXT NOT NULL DEFAULT '{}', provider VARCHAR(64), model VARCHAR(128), prompt_version VARCHAR(64),
-              total_source_groups INTEGER NOT NULL DEFAULT 0, completed_source_groups INTEGER NOT NULL DEFAULT 0,
-              quality_report_json TEXT, error_message TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(document_id, version))""",
-            """CREATE TABLE IF NOT EXISTS quiz_questions (
-              id UUID PRIMARY KEY, quiz_set_id UUID NOT NULL REFERENCES quiz_sets(id) ON DELETE CASCADE,
-              document_id UUID NOT NULL, source_group_index INTEGER NOT NULL, item_index INTEGER NOT NULL,
-              question_type VARCHAR(32) NOT NULL, difficulty VARCHAR(16) NOT NULL, topic TEXT NOT NULL, stem TEXT NOT NULL,
-              options_json TEXT NOT NULL DEFAULT '[]', correct_answer TEXT NOT NULL, answer_key TEXT NOT NULL,
-              rubric_json TEXT NOT NULL, explanation TEXT NOT NULL, related_formula TEXT NOT NULL DEFAULT '',
-              common_mistake TEXT NOT NULL DEFAULT '', distractor_rationale_json TEXT NOT NULL DEFAULT '[]',
-              points DOUBLE PRECISION NOT NULL, source_chunk_ids_json TEXT NOT NULL, source_pages_json TEXT NOT NULL,
-              dedupe_hash VARCHAR(64) NOT NULL, confidence DOUBLE PRECISION NOT NULL, warnings_json TEXT NOT NULL DEFAULT '[]',
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              UNIQUE(quiz_set_id, source_group_index, item_index), UNIQUE(quiz_set_id, dedupe_hash))""",
-            """CREATE TABLE IF NOT EXISTS quiz_attempts (
-              id UUID PRIMARY KEY, quiz_set_id UUID NOT NULL REFERENCES quiz_sets(id) ON DELETE CASCADE, user_id UUID NOT NULL,
-              status VARCHAR(32) NOT NULL DEFAULT 'IN_PROGRESS', score DOUBLE PRECISION NOT NULL DEFAULT 0,
-              max_score DOUBLE PRECISION NOT NULL DEFAULT 0, weak_topics_json TEXT NOT NULL DEFAULT '[]',
-              started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), submitted_at TIMESTAMPTZ, completed_at TIMESTAMPTZ,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
-            """CREATE TABLE IF NOT EXISTS quiz_answers (
-              id UUID PRIMARY KEY, attempt_id UUID NOT NULL REFERENCES quiz_attempts(id) ON DELETE CASCADE,
-              question_id UUID NOT NULL REFERENCES quiz_questions(id) ON DELETE CASCADE, user_response TEXT NOT NULL DEFAULT '',
-              is_correct BOOLEAN, awarded_points DOUBLE PRECISION, feedback TEXT, key_points_hit_json TEXT,
-              graded_by VARCHAR(16), grading_error TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              UNIQUE(attempt_id, question_id))""",
-            """CREATE TABLE IF NOT EXISTS study_generation_checkpoints (
-              generation_type VARCHAR(32) NOT NULL, set_id UUID NOT NULL, source_group_index INTEGER NOT NULL,
-              status VARCHAR(16) NOT NULL, produced_count INTEGER NOT NULL DEFAULT 0, error_message TEXT,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), PRIMARY KEY(generation_type,set_id,source_group_index))""",
-            """CREATE TABLE IF NOT EXISTS study_task_targets (
-              task_id UUID PRIMARY KEY, attempt_id UUID NOT NULL REFERENCES quiz_attempts(id) ON DELETE CASCADE,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
-            """CREATE TABLE IF NOT EXISTS study_execution_leases (
-              lease_key TEXT PRIMARY KEY, holder_id UUID NOT NULL, expires_at TIMESTAMPTZ NOT NULL,
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""",
-            "CREATE INDEX IF NOT EXISTS idx_flashcard_due ON flashcard_review_states(user_id, due_at) WHERE status <> 'SUSPENDED'",
-            "CREATE INDEX IF NOT EXISTS idx_flashcards_deck ON flashcards(deck_id, source_group_index, item_index)",
-            "CREATE INDEX IF NOT EXISTS idx_quiz_questions_set ON quiz_questions(quiz_set_id, source_group_index, item_index)",
-            "CREATE INDEX IF NOT EXISTS idx_quiz_answers_attempt ON quiz_answers(attempt_id, graded_by)",
-            "ALTER TABLE quiz_answers ADD COLUMN IF NOT EXISTS response_time_ms INTEGER",
-            "ALTER TABLE quiz_answers ADD COLUMN IF NOT EXISTS hint_used BOOLEAN NOT NULL DEFAULT FALSE",
-        ]
         with self.connect() as conn:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext('noteflow-study-schema-v1'))")
-            for statement in statements:
-                conn.execute(statement)
-            conn.execute("ALTER TABLE quiz_attempts ADD COLUMN IF NOT EXISTS grading_usage_json TEXT NOT NULL DEFAULT '{}'")
-            # Two generation channels: SECTION (whole-document, from the study
-            # views) and AGENT (conversation agent, arbitrary document/chunk/
-            # section scope). Scope details live in source_scope_json.
-            for table in ("flashcard_decks", "quiz_sets"):
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS origin VARCHAR(16) NOT NULL DEFAULT 'SECTION'")
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS source_scope_json TEXT NOT NULL DEFAULT '{{}}'")
-            # Agent-created generations bind their task to a specific deck/set so
-            # concurrent SECTION and AGENT generations for one document cannot
-            # steal each other's rows. attempt_id keeps its original grading use.
-            conn.execute("ALTER TABLE study_task_targets ALTER COLUMN attempt_id DROP NOT NULL")
-            conn.execute("ALTER TABLE study_task_targets ADD COLUMN IF NOT EXISTS target_id UUID")
-            foreign_keys = (
-                ("fk_flashcard_decks_document", "flashcard_decks", "document_id", "documents", "id"),
-                ("fk_quiz_sets_document", "quiz_sets", "document_id", "documents", "id"),
+            require_tables(
+                conn,
+                (
+                    "flashcard_decks",
+                    "flashcards",
+                    "flashcard_review_states",
+                    "quiz_sets",
+                    "quiz_questions",
+                    "quiz_attempts",
+                    "quiz_answers",
+                    "study_generation_checkpoints",
+                    "study_task_targets",
+                    "study_execution_leases",
+                ),
             )
-            for name, table, column, parent, parent_column in foreign_keys:
-                exists = conn.execute("SELECT 1 FROM pg_constraint WHERE conname=%s", (name,)).fetchone()
-                if not exists:
-                    conn.execute(f"""ALTER TABLE {table} ADD CONSTRAINT {name} FOREIGN KEY ({column})
-                      REFERENCES {parent}({parent_column}) ON DELETE CASCADE NOT VALID""")
-            conn.execute("""CREATE OR REPLACE FUNCTION cleanup_study_generation_checkpoints() RETURNS TRIGGER AS $$
-              BEGIN DELETE FROM study_generation_checkpoints WHERE set_id=OLD.id; RETURN OLD; END;
-              $$ LANGUAGE plpgsql""")
-            for trigger_name, table in (("trg_flashcard_checkpoint_cleanup", "flashcard_decks"),
-                                        ("trg_quiz_checkpoint_cleanup", "quiz_sets")):
-                exists = conn.execute("SELECT 1 FROM pg_trigger WHERE tgname=%s AND NOT tgisinternal",
-                                      (trigger_name,)).fetchone()
-                if not exists:
-                    conn.execute(f"""CREATE TRIGGER {trigger_name} AFTER DELETE ON {table} FOR EACH ROW
-                      EXECUTE FUNCTION cleanup_study_generation_checkpoints()""")
-            # Hibernate-generated enum checks in existing installations must be
-            # widened before the worker can update new task types/steps.
-            ensure_task_constraints(conn)
 
     def latest_generating_deck_id(self, document_id: str, user_id: str) -> str:
         return self._latest_id("flashcard_decks", document_id, user_id)

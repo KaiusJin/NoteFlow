@@ -1,4 +1,5 @@
 import multiprocessing
+import logging
 from concurrent.futures import (
     FIRST_COMPLETED,
     Executor,
@@ -28,50 +29,59 @@ from noteflow_worker.queue.redis_queue import (
 from noteflow_worker.study.repository import StudyRepository
 from noteflow_worker.conversation.store import ConversationStore
 from noteflow_worker.user_settings import apply_user_ai_settings
+from noteflow_worker.runtime.sandbox import initialize_parse_worker_sandbox
+from noteflow_worker.observability import initialize_observability, task_span
 
+logger = logging.getLogger("noteflow.worker")
 
 def process_payload(payload: TaskPayload) -> None:
+    with task_span(payload.task_type, payload.task_id, payload.event_id):
+        _process_payload(payload)
+
+
+def _process_payload(payload: TaskPayload) -> None:
     apply_user_ai_settings(payload.user_id)
     repository = Repository()
     parse_pipeline = ParseDocumentPipeline(repository)
     embeddings_pipeline = GenerateEmbeddingsPipeline(repository)
     notes_pipeline = GenerateNotesPipeline(repository)
     if payload.task_type == "PARSE_DOCUMENT":
-        print(f"Processing parse task {payload.task_id} for document {payload.document_id}")
+        logger.info("processing_task task_type=PARSE_DOCUMENT task_id=%s document_id=%s trace_id=%s", payload.task_id, payload.document_id, payload.event_id)
         parse_pipeline.run(payload)
         return
     if payload.task_type == "GENERATE_EMBEDDINGS":
-        print(f"Processing embeddings task {payload.task_id} for document {payload.document_id}")
+        logger.info("processing_task task_type=GENERATE_EMBEDDINGS task_id=%s document_id=%s trace_id=%s", payload.task_id, payload.document_id, payload.event_id)
         embeddings_pipeline.run(payload)
         return
     if payload.task_type == "GENERATE_NOTES":
-        print(f"Processing notes task {payload.task_id} for document {payload.document_id}")
+        logger.info("processing_task task_type=GENERATE_NOTES task_id=%s document_id=%s trace_id=%s", payload.task_id, payload.document_id, payload.event_id)
         notes_pipeline.run(payload)
         return
     if payload.task_type == "GENERATE_FLASHCARDS":
-        print(f"Processing flashcard task {payload.task_id} for document {payload.document_id}")
+        logger.info("processing_task task_type=GENERATE_FLASHCARDS task_id=%s document_id=%s trace_id=%s", payload.task_id, payload.document_id, payload.event_id)
         GenerateFlashcardsPipeline(StudyRepository()).run(payload)
         return
     if payload.task_type == "GENERATE_QUIZ":
-        print(f"Processing quiz task {payload.task_id} for document {payload.document_id}")
+        logger.info("processing_task task_type=GENERATE_QUIZ task_id=%s document_id=%s trace_id=%s", payload.task_id, payload.document_id, payload.event_id)
         GenerateQuizPipeline(StudyRepository()).run(payload)
         return
     if payload.task_type == "GRADE_QUIZ_ATTEMPT":
-        print(f"Processing quiz grading task {payload.task_id} for attempt {payload.attempt_id}")
+        logger.info("processing_task task_type=GRADE_QUIZ_ATTEMPT task_id=%s attempt_id=%s trace_id=%s", payload.task_id, payload.attempt_id, payload.event_id)
         GradeQuizAttemptPipeline(StudyRepository()).run(payload)
         return
     if payload.task_type in {"ANSWER_CONVERSATION_TURN", "RESUME_AGENT_RUN"}:
-        print(f"Answering conversation {payload.conversation_id}, message {payload.message_id}")
+        logger.info("processing_task task_type=%s task_id=%s conversation_id=%s message_id=%s trace_id=%s", payload.task_type, payload.task_id, payload.conversation_id, payload.message_id, payload.event_id)
         AnswerConversationTurnPipeline().run(payload)
         return
     if payload.task_type == "MAINTAIN_CONVERSATION_MEMORY":
-        print(f"Processing memory maintenance task {payload.task_id} for conversation {payload.conversation_id}")
+        logger.info("processing_task task_type=MAINTAIN_CONVERSATION_MEMORY task_id=%s conversation_id=%s trace_id=%s", payload.task_id, payload.conversation_id, payload.event_id)
         MaintainConversationMemoryPipeline().run(payload)
         return
-    print(f"Skipping unsupported task type: {payload.task_type}")
+    logger.warning("unsupported_task task_type=%s task_id=%s", payload.task_type, payload.task_id)
 
 
 def main() -> None:
+    initialize_observability()
     queue = RedisTaskQueue()
     max_tasks = max(1, settings.worker_max_concurrent_tasks)
     background_limit = min(
@@ -80,7 +90,11 @@ def main() -> None:
     )
     parse_workers = max(0, settings.worker_parse_process_workers)
     active: dict[Future, TaskPayload] = {}
-    print(
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s level=%(levelname)s logger=%(name)s message=%(message)s",
+    )
+    logger.info(
         "NoteFlow worker started. Waiting for document tasks... "
         f"max_concurrent_tasks={max_tasks} max_background_tasks={background_limit} "
         f"parse_process_workers={parse_workers}"
@@ -99,6 +113,7 @@ def main() -> None:
         parse_executor = ProcessPoolExecutor(
             max_workers=parse_workers,
             mp_context=multiprocessing.get_context("spawn"),
+            initializer=initialize_parse_worker_sandbox,
         )
     total_capacity = max_tasks + (parse_workers if parse_executor else 0)
     try:
@@ -106,7 +121,7 @@ def main() -> None:
             while True:
                 reclaimed = queue.reclaim_expired_leases()
                 if reclaimed:
-                    print(f"Reclaimed {reclaimed} expired Redis task lease(s).")
+                    logger.warning("redis_leases_reclaimed count=%s", reclaimed)
                 refresh_active_leases(queue, active)
                 active = reap_completed(queue, active)
                 if len(active) >= total_capacity:
@@ -154,7 +169,7 @@ def finish_completed(queue: RedisTaskQueue, done: set[Future], active: dict[Futu
         try:
             future.result()
         except Exception as exc:
-            print(f"Task failed but worker will continue: {exc}")
+            logger.exception("task_failed worker_continues=true error=%s", exc)
         finally:
             if payload is not None:
                 schedule_agent_resumes(queue, payload.task_id)
@@ -169,9 +184,9 @@ def schedule_agent_resumes(queue: RedisTaskQueue, completed_task_id: str) -> Non
                 task_type="RESUME_AGENT_RUN", priority=PRIORITY_INTERACTIVE,
                 conversation_id=row["conversation_id"], message_id=row["message_id"],
             ))
-            print(f"Resuming Agent message {row['message_id']} after task {completed_task_id}")
+            logger.info("agent_resume_scheduled message_id=%s completed_task_id=%s", row["message_id"], completed_task_id)
     except Exception as exc:
-        print(f"Could not schedule Agent continuation for task {completed_task_id}: {exc}")
+        logger.exception("agent_resume_schedule_failed completed_task_id=%s error=%s", completed_task_id, exc)
 
 
 def recover_stale_notes_tasks(queue: RedisTaskQueue) -> None:
@@ -185,9 +200,9 @@ def recover_stale_notes_tasks(queue: RedisTaskQueue) -> None:
             task_type=row["task_type"],
         )
         queue.push(payload)
-        print(f"Recovered stale notes task {payload.task_id} for document {payload.document_id}")
+        logger.warning("stale_task_recovered task_type=GENERATE_NOTES task_id=%s document_id=%s", payload.task_id, payload.document_id)
     if rows:
-        print(f"Recovered {len(rows)} stale notes task(s) on worker startup.")
+        logger.warning("stale_tasks_recovered task_type=GENERATE_NOTES count=%s", len(rows))
 
 
 def recover_stale_parse_tasks(queue: RedisTaskQueue) -> None:
@@ -204,9 +219,9 @@ def recover_stale_parse_tasks(queue: RedisTaskQueue) -> None:
             task_type=row["task_type"],
         )
         queue.push(payload)
-        print(f"Recovered stale parse task {payload.task_id} for document {payload.document_id}")
+        logger.warning("stale_task_recovered task_type=PARSE_DOCUMENT task_id=%s document_id=%s", payload.task_id, payload.document_id)
     if rows:
-        print(f"Recovered {len(rows)} stale parse task(s) on worker startup.")
+        logger.warning("stale_tasks_recovered task_type=PARSE_DOCUMENT count=%s", len(rows))
 
 
 def recover_stale_study_tasks(queue: RedisTaskQueue) -> None:
@@ -218,7 +233,7 @@ def recover_stale_study_tasks(queue: RedisTaskQueue) -> None:
             user_id=str(row["user_id"]), task_type=row["task_type"],
             attempt_id=str(row["attempt_id"]) if row.get("attempt_id") else None)
         queue.push(payload)
-        print(f"Recovered stale study task {payload.task_id} ({payload.task_type})")
+        logger.warning("stale_task_recovered task_type=%s task_id=%s", payload.task_type, payload.task_id)
 
 
 def recover_stale_answer_tasks(queue: RedisTaskQueue) -> None:
@@ -235,7 +250,7 @@ def recover_stale_answer_tasks(queue: RedisTaskQueue) -> None:
             message_id=str(row["message_id"]),
         )
         queue.push(payload)
-        print(f"Recovered stale answer task {payload.task_id} for conversation {payload.conversation_id}")
+        logger.warning("stale_task_recovered task_type=%s task_id=%s conversation_id=%s", payload.task_type, payload.task_id, payload.conversation_id)
 
 
 if __name__ == "__main__":

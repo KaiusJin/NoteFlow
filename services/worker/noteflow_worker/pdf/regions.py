@@ -588,9 +588,14 @@ def analyze_regions_with_vlm(
     required_region_keys: set[tuple[int, int]] | None = None,
     existing_results: list[VlmResult] | None = None,
     persist_result=None,
+    content_cache=None,
     max_workers: int | None = None,
 ) -> list[VlmResult]:
     provider = make_vision_provider()
+    producer_version = (
+        f"{getattr(provider, 'provider_name', 'unknown')}:"
+        f"{getattr(provider, 'model', 'unknown')}:vision-prompt-v4"
+    )
     required_region_keys = required_region_keys or set()
     existing_by_fingerprint = {
         result.input_fingerprint: result
@@ -602,6 +607,19 @@ def analyze_regions_with_vlm(
     for region in regions:
         fingerprint = region_input_fingerprint(region)
         existing = existing_by_fingerprint.get(fingerprint)
+        if existing is None and content_cache is not None:
+            cached = content_cache.get("vlm-region", fingerprint, producer_version)
+            if isinstance(cached, dict):
+                allowed = set(VlmResult.__dataclass_fields__)
+                existing = VlmResult(
+                    **{
+                        **{key: value for key, value in cached.items() if key in allowed},
+                        "document_id": region.document_id,
+                        "page_number": region.page_number,
+                        "region_index": region.region_index,
+                        "region_type": region.region_type,
+                    }
+                )
         if existing:
             results_by_key[(region.page_number, region.region_index)] = VlmResult(
                 **{
@@ -629,6 +647,17 @@ def analyze_regions_with_vlm(
                 results_by_key[(region.page_number, region.region_index)] = result
                 if persist_result is not None:
                     persist_result(result)
+                if content_cache is not None and not result.error_message:
+                    content_cache.put(
+                        "vlm-region",
+                        fingerprint,
+                        producer_version,
+                        {
+                            key: value
+                            for key, value in result.__dict__.items()
+                            if key not in {"document_id", "page_number", "region_index", "region_type"}
+                        },
+                    )
 
     results = [results_by_key[(region.page_number, region.region_index)] for region in regions]
     if fail_on_error or required_region_keys:

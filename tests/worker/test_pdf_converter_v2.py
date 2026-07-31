@@ -124,6 +124,33 @@ class PriorityQueueTest(unittest.TestCase):
             return None
 
         def eval(self, script, keys_count, *args):
+            if keys_count == 2:
+                payloads_key, deadlines_key, lease_id, deadline = args
+                if not self.hexists(payloads_key, lease_id):
+                    return 0
+                self.zadd(deadlines_key, {lease_id: float(deadline)})
+                return 1
+            if keys_count == 5:
+                payloads_key, deadlines_key, queue_0, queue_1, queue_2, now, limit = args
+                expired = self.zrangebyscore(deadlines_key, "-inf", now, start=0, num=int(limit))
+                reclaimed = 0
+                queues = (queue_0, queue_1, queue_2)
+                for lease_id in expired:
+                    deadline = self.zsets.get(deadlines_key, {}).get(lease_id)
+                    if deadline is None or float(deadline) > float(now):
+                        continue
+                    payload = self.hget(payloads_key, lease_id)
+                    self.hdel(payloads_key, lease_id)
+                    self.zrem(deadlines_key, lease_id)
+                    if payload is None:
+                        continue
+                    decoded = json.loads(payload)
+                    priority = decoded.get("priority")
+                    if priority not in (PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE, PRIORITY_BACKGROUND):
+                        priority = priority_for_task_type(decoded.get("taskType", ""))
+                    self.rpush(queues[int(priority)], payload)
+                    reclaimed += 1
+                return reclaimed
             queue_name, payloads_key, deadlines_key, lease_id, deadline = args
             payload = self.lpop(queue_name)
             if payload is None:
@@ -214,6 +241,12 @@ class PriorityQueueTest(unittest.TestCase):
         fake.zsets[f"{queue.queue_name(PRIORITY_USER_VISIBLE).rsplit(':priority:', 1)[0]}:processing:deadlines"][payload.lease_id] = time.time() - 1
         self.assertEqual(queue.reclaim_expired_leases(), 1)
         self.assertEqual(fake.lpop(queue.queue_name(PRIORITY_USER_VISIBLE)) is not None, True)
+        self.assertEqual(queue.reclaim_expired_leases(), 0)
+
+    def test_extending_missing_lease_does_not_create_orphan_deadline(self):
+        queue, fake = self.make_queue()
+        queue.extend_lease(TaskPayload("parse", "doc", "user", "PARSE_DOCUMENT", lease_id="missing"))
+        self.assertFalse(fake.zsets.get(queue._lease_deadlines_key))
 
 
 class EvidenceRouterTest(unittest.TestCase):
