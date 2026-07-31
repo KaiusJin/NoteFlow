@@ -32,7 +32,14 @@ public class ConversationController {
 
     @PostMapping("/{conversationId}/messages")
     public Map<String, Object> send(@PathVariable UUID conversationId, @RequestBody SendRequest request) {
-        return conversations.send(conversationId, request.content(), request.pdfDocumentIds(), request.aiNoteDocumentIds());
+        return conversations.send(
+            conversationId,
+            request.content(),
+            request.pdfDocumentIds(),
+            request.aiNoteDocumentIds(),
+            request.allowAgentWrites(),
+            request.allowAgentDeletes()
+        );
     }
 
     @GetMapping("/messages/{messageId}")
@@ -44,5 +51,11 @@ public class ConversationController {
     }
 
     public record CreateRequest(String title) {}
-    public record SendRequest(String content, List<UUID> pdfDocumentIds, List<UUID> aiNoteDocumentIds) {}
+    public record SendRequest(
+        String content,
+        List<UUID> pdfDocumentIds,
+        List<UUID> aiNoteDocumentIds,
+        boolean allowAgentWrites,
+        boolean allowAgentDeletes
+    ) {}
 }

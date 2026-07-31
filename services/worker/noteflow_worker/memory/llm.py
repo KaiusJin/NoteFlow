@@ -43,12 +43,16 @@ class StructuredMemoryLlm:
         self.timeout_seconds = timeout_seconds or settings.memory_request_timeout_seconds
         self.max_attempts = max(1, max_attempts or settings.memory_request_max_attempts)
         self.backoff_seconds = backoff_seconds or settings.memory_retry_backoff_seconds
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._total_tokens = 0
 
     def generate(self, prompt: str, response_schema: dict, schema_name: str, validate: Callable[[dict], None]) -> dict:
         last_error = ""
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = self._request(prompt, response_schema, schema_name)
+                self._record_usage(response)
                 parsed = parse_json_object(extract_response_text(response))
                 validate(parsed)
                 return parsed
@@ -61,6 +65,34 @@ class StructuredMemoryLlm:
                 jitter = random.uniform(0.0, min(1.0, self.backoff_seconds * 0.25))
                 time.sleep(min(30.0, base + jitter))
         raise MemoryLlmError(last_error or "Memory LLM call failed.")
+
+    def _record_usage(self, response: dict) -> None:
+        usage = response.get("usageMetadata") or response.get("usage") or {}
+        input_tokens = int(usage.get("promptTokenCount") or usage.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("candidatesTokenCount") or usage.get("completion_tokens") or 0)
+        total_tokens = int(usage.get("totalTokenCount") or usage.get("total_tokens") or input_tokens + output_tokens)
+        self._input_tokens += max(0, input_tokens)
+        self._output_tokens += max(0, output_tokens)
+        self._total_tokens += max(0, total_tokens)
+
+    def usage_snapshot(self) -> dict:
+        estimated_cost = (
+            self._input_tokens * settings.agent_input_cost_per_million_tokens
+            + self._output_tokens * settings.agent_output_cost_per_million_tokens
+        ) / 1_000_000
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "inputTokens": self._input_tokens,
+            "outputTokens": self._output_tokens,
+            "totalTokens": self._total_tokens,
+            "estimatedCost": round(estimated_cost, 8),
+            "currency": "USD",
+            "pricingConfigured": (
+                settings.agent_input_cost_per_million_tokens > 0
+                or settings.agent_output_cost_per_million_tokens > 0
+            ),
+        }
 
     def _request(self, prompt: str, response_schema: dict, schema_name: str) -> dict:
         if self._request_fn is not None:

@@ -1,6 +1,9 @@
 package com.noteflow.library;
 
 import com.noteflow.workspace.LocalWorkspaceService;
+import com.noteflow.common.CursorPage;
+import com.noteflow.common.OpaqueCursor;
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -82,8 +85,24 @@ public class LibraryService {
 
     @Transactional
     public List<NoteResponse> listNotes() {
+        return listNotes(100, null).items();
+    }
+
+    @Transactional
+    public CursorPage<NoteResponse> listNotes(int requestedLimit, String rawCursor) {
         UUID userId = users.currentUserId();
-        return notes.findByUserIdOrderByUpdatedAtDesc(userId).stream().map(NoteResponse::summary).toList();
+        int limit = Math.max(1, Math.min(200, requestedLimit));
+        OpaqueCursor cursor = OpaqueCursor.decode(rawCursor);
+        List<Note> fetched = cursor == null
+            ? notes.findCursorPage(userId, limit + 1)
+            : notes.findCursorPageAfter(userId, cursor.timestamp(), cursor.id(), limit + 1);
+        boolean hasNext = fetched.size() > limit;
+        List<Note> page = hasNext ? fetched.subList(0, limit) : fetched;
+        Note last = hasNext ? page.getLast() : null;
+        return new CursorPage<>(
+            page.stream().map(NoteResponse::summary).toList(),
+            last == null ? null : new OpaqueCursor(last.getUpdatedAt(), last.getId()).encode()
+        );
     }
 
     public NoteResponse getNote(UUID noteId) {
@@ -104,11 +123,17 @@ public class LibraryService {
     }
 
     @Transactional
-    public NoteResponse updateNote(UUID noteId, String title, String markdown) {
+    public NoteResponse updateNote(UUID noteId, String title, String markdown, Instant expectedUpdatedAt) {
         UUID userId = users.currentUserId();
-        Note note = requireNote(noteId, userId);
-        note.update(title, markdown);
-        return NoteResponse.from(notes.save(note));
+        requireExpectedVersion(expectedUpdatedAt);
+        requireNote(noteId, userId);
+        int updated = notes.updateContentIfUnchanged(
+            noteId, userId, title, markdown == null ? "" : markdown, expectedUpdatedAt, Instant.now()
+        );
+        if (updated != 1) {
+            throw new ConcurrentNoteEditException();
+        }
+        return NoteResponse.from(requireNote(noteId, userId));
     }
 
     @Transactional
@@ -123,13 +148,18 @@ public class LibraryService {
     }
 
     @Transactional
-    public NoteResponse renameNote(UUID noteId, String title) {
+    public NoteResponse renameNote(UUID noteId, String title, Instant expectedUpdatedAt) {
         UUID userId = users.currentUserId();
-        Note note = requireNote(noteId, userId);
-        if (title != null && !title.isBlank()) {
-            note.rename(title.trim());
+        requireExpectedVersion(expectedUpdatedAt);
+        requireNote(noteId, userId);
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("Note title is required");
         }
-        return NoteResponse.from(notes.save(note));
+        int updated = notes.renameIfUnchanged(noteId, userId, title.trim(), expectedUpdatedAt, Instant.now());
+        if (updated != 1) {
+            throw new ConcurrentNoteEditException();
+        }
+        return NoteResponse.from(requireNote(noteId, userId));
     }
 
     @Transactional
@@ -158,6 +188,12 @@ public class LibraryService {
     private Note requireNote(UUID noteId, UUID userId) {
         return notes.findByIdAndUserId(noteId, userId)
             .orElseThrow(() -> new IllegalArgumentException("Note not found"));
+    }
+
+    private void requireExpectedVersion(Instant expectedUpdatedAt) {
+        if (expectedUpdatedAt == null) {
+            throw new IllegalArgumentException("expectedUpdatedAt is required");
+        }
     }
 
     private String normalizeSourceKind(String sourceKind) {

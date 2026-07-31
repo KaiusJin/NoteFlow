@@ -1,11 +1,16 @@
 import json
+import logging
+from dataclasses import asdict
+from pathlib import Path
 
 from noteflow_worker.config import settings
+from noteflow_worker.cache.content_addressed import ContentAddressedCache, content_hash
+from noteflow_worker.db.repository import MarkdownDocument, MarkdownPage, TextChunk
 from noteflow_worker.db.repository import Repository
 from noteflow_worker.pdf.artifacts import cleanup_orphaned_pdf_artifacts
 from noteflow_worker.pdf.layout import build_layout_parse, build_markdown_chunks
-from noteflow_worker.pdf.markdown import build_markdown_document
-from noteflow_worker.pdf.parser import ensure_pdf_exists, parse_pdf
+from noteflow_worker.pdf.markdown import MarkdownBuildResult, build_markdown_document
+from noteflow_worker.pdf.parser import PageTextProfile, ParsedPdf, ensure_pdf_exists, parse_pdf
 from noteflow_worker.pdf.regions import analyze_regions_with_vlm, build_visual_regions, select_regions_for_vlm
 from noteflow_worker.pdf.router import FULL_PAGE_VLM, build_document_route_plan
 from noteflow_worker.pdf.strategies import resolve_processing_strategy
@@ -13,6 +18,7 @@ from noteflow_worker.pdf.visual import analyze_pdf_visuals, to_page_assets
 from noteflow_worker.queue.redis_queue import TaskPayload
 from noteflow_worker.runtime.resource_pools import build_resource_pool_plan
 
+logger = logging.getLogger(__name__)
 
 class ParseDocumentPipeline:
     def __init__(self, repository: Repository) -> None:
@@ -35,7 +41,26 @@ class ParseDocumentPipeline:
             )
 
             self._repository.mark_processing(payload.task_id, payload.document_id, "EXTRACTING_TEXT", 25)
-            parsed = parse_pdf(document.storage_path, document.document_type)
+            content_cache = ContentAddressedCache(self._repository)
+            pdf_digest = content_hash(Path(document.storage_path).read_bytes())
+            parse_version = f"native-pdf-parser-v2:{document.document_type}"
+            cached_parse = content_cache.get("pdf-parse", pdf_digest, parse_version)
+            if isinstance(cached_parse, dict):
+                parsed = ParsedPdf(
+                    page_count=int(cached_parse["page_count"]),
+                    text=str(cached_parse["text"]),
+                    preview=str(cached_parse["preview"]),
+                    content_source_type=str(cached_parse["content_source_type"]),
+                    chunks=[TextChunk(**chunk) for chunk in cached_parse.get("chunks", [])],
+                    page_profiles=[
+                        PageTextProfile(**profile) for profile in cached_parse.get("page_profiles", [])
+                    ],
+                    source_confidence=float(cached_parse["source_confidence"]),
+                    source_distribution=dict(cached_parse["source_distribution"]),
+                )
+            else:
+                parsed = parse_pdf(document.storage_path, document.document_type)
+                content_cache.put("pdf-parse", pdf_digest, parse_version, asdict(parsed))
             strategy = resolve_processing_strategy(document.document_type, parsed.content_source_type)
 
             self._repository.mark_processing(
@@ -44,7 +69,12 @@ class ParseDocumentPipeline:
                 "ANALYZING_VISUAL_CONTENT",
                 38,
             )
-            visual_pages = analyze_pdf_visuals(document.storage_path, payload.document_id, resource_plan)
+            visual_pages = analyze_pdf_visuals(
+                document.storage_path,
+                payload.document_id,
+                resource_plan,
+                content_cache=content_cache,
+            )
             route_plan = build_document_route_plan(document.document_type, parsed.page_profiles, visual_pages)
             parse_manifest = {
                 "schemaVersion": "pdf-converter-v2",
@@ -127,6 +157,7 @@ class ParseDocumentPipeline:
                 required_region_keys=route_plan.required_vlm_keys,
                 existing_results=existing_results,
                 persist_result=self._repository.upsert_vlm_result,
+                content_cache=content_cache,
                 max_workers=resource_plan.vlm_workers,
             )
             # Canonicalize the result set after incremental per-region commits.
@@ -148,12 +179,60 @@ class ParseDocumentPipeline:
                 visual_regions=visual_regions,
             )
             self._repository.replace_layout_blocks(payload.document_id, layout.blocks)
-            markdown = build_markdown_document(
-                payload.document_id,
-                layout.blocks,
-                vlm_results,
-                document_type=document.document_type,
+            markdown_digest = content_hash(
+                json.dumps(
+                    [
+                        {
+                            key: value
+                            for key, value in asdict(block).items()
+                            if key not in {"document_id", "source_asset_id"}
+                        }
+                        for block in layout.blocks
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    [
+                        {
+                            key: value
+                            for key, value in asdict(result).items()
+                            if key not in {"document_id"}
+                        }
+                        for result in vlm_results
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                document.document_type,
             )
+            cached_markdown = content_cache.get("markdown-document", markdown_digest, "markdown-v2")
+            if isinstance(cached_markdown, dict):
+                markdown = MarkdownBuildResult(
+                    pages=[
+                        MarkdownPage(**{**page, "document_id": payload.document_id})
+                        for page in cached_markdown.get("pages", [])
+                    ],
+                    document=MarkdownDocument(
+                        **{**cached_markdown["document"], "document_id": payload.document_id}
+                    ),
+                )
+            else:
+                markdown = build_markdown_document(
+                    payload.document_id,
+                    layout.blocks,
+                    vlm_results,
+                    document_type=document.document_type,
+                )
+                content_cache.put(
+                    "markdown-document",
+                    markdown_digest,
+                    "markdown-v2",
+                    {
+                        "pages": [asdict(page) for page in markdown.pages],
+                        "document": asdict(markdown.document),
+                    },
+                )
             self._repository.replace_markdown_pages(payload.document_id, markdown.pages)
             self._repository.save_markdown_document(markdown.document)
 
@@ -189,7 +268,7 @@ class ParseDocumentPipeline:
 
             self._repository.ensure_embedding_schema()
             self._repository.mark_completed(payload.task_id, payload.document_id)
-            print(
+            logger.info(
                 "PDF parse completed "
                 + json.dumps(
                     {

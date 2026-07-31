@@ -45,11 +45,17 @@ public class StudyController {
     @GetMapping("/quiz-sets/{id}/questions") public List<Map<String,Object>> questions(@PathVariable UUID id){return study.questions(id);}
     @PostMapping("/quiz-sets/{id}/attempts") public Map<String,Object> start(@PathVariable UUID id){return study.startAttempt(id);}
     @PutMapping("/quiz-attempts/{attemptId}/answers/{questionId}") public Map<String,Object> answer(@PathVariable UUID attemptId,@PathVariable UUID questionId,@RequestBody AnswerRequest r){return study.saveAnswer(attemptId,questionId,r.response(),r.responseTimeMs(),Boolean.TRUE.equals(r.hintUsed()));}
+    @PutMapping("/quiz-attempts/{attemptId}/answers") public Map<String,Object> answers(
+            @PathVariable UUID attemptId, @RequestBody BatchAnswersRequest request) {
+        return study.saveAnswers(attemptId, request.answers());
+    }
     @PostMapping("/quiz-attempts/{id}/submit") public Map<String,Object> submit(@PathVariable UUID id){return study.submit(id);}
     @GetMapping("/quiz-attempts/{id}") public Map<String,Object> attempt(@PathVariable UUID id){return study.attemptResult(id);}
 
     public record ReviewRequest(String grade, String eventId) {}
     public record AnswerRequest(String response,Integer responseTimeMs,Boolean hintUsed) {}
+    public record BatchAnswersRequest(List<BatchAnswerRequest> answers) {}
+    public record BatchAnswerRequest(UUID questionId,String response,Integer responseTimeMs,Boolean hintUsed) {}
     public record QuizOptionsRequest(Integer easy, Integer medium, Integer hard, List<String> questionTypes,
                                      Boolean includeExplanations, String section, String focus, String title) {}
     public record FlashcardOptionsRequest(Integer count, Boolean groupBySection, String section, String focus, String title) {}

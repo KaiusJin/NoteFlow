@@ -1,9 +1,18 @@
-pydantic>=2.9,<3
-pydantic-settings>=2.6,<3
-psycopg[binary,pool]>=3.3,<4
-Pillow>=10,<13
-PyMuPDF>=1.24,<2
-pypdf>=5,<7
-pytesseract>=0.3,<1
-redis>=5,<7
-langgraph>=0.2,<1
+# Compatibility install file. Exact versions are governed by pyproject.toml
+# and uv.lock; use `uv sync --frozen` for reproducible environments.
+pydantic==2.13.4
+pydantic-settings==2.14.2
+psycopg[binary,pool]==3.3.4
+Pillow==12.3.0
+PyMuPDF==1.27.2.3
+pypdf==6.14.2
+pytesseract==0.3.13
+redis==6.4.0
+langgraph==1.2.10
+langgraph-checkpoint==4.1.1
+opentelemetry-api==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-instrumentation-psycopg==0.65b0
+opentelemetry-instrumentation-redis==0.65b0
+opentelemetry-sdk==1.44.0
+prometheus-client==0.26.0

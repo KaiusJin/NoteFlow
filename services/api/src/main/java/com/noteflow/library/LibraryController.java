@@ -20,9 +20,11 @@ import org.springframework.web.multipart.MultipartFile;
 @RestController
 public class LibraryController {
     private final LibraryService library;
+    private final NoteImportReader noteImports;
 
-    public LibraryController(LibraryService library) {
+    public LibraryController(LibraryService library, NoteImportReader noteImports) {
         this.library = library;
+        this.noteImports = noteImports;
     }
 
     // ----- Folders -------------------------------------------------------
@@ -54,8 +56,13 @@ public class LibraryController {
     // ----- Notes ---------------------------------------------------------
 
     @GetMapping("/notes")
-    public List<NoteResponse> listNotes() {
-        return library.listNotes();
+    public ResponseEntity<List<NoteResponse>> listNotes(
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(required = false) String cursor) {
+        var page = library.listNotes(limit, cursor);
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok();
+        if (page.nextCursor() != null) response.header("X-Next-Cursor", page.nextCursor());
+        return response.body(page.items());
     }
 
     @GetMapping("/notes/{noteId}")
@@ -74,9 +81,9 @@ public class LibraryController {
             return library.moveNote(noteId, request.folderId());
         }
         if (request.title() != null && request.markdown() == null) {
-            return library.renameNote(noteId, request.title());
+            return library.renameNote(noteId, request.title(), request.expectedUpdatedAt());
         }
-        return library.updateNote(noteId, request.title(), request.markdown());
+        return library.updateNote(noteId, request.title(), request.markdown(), request.expectedUpdatedAt());
     }
 
     @DeleteMapping("/notes/{noteId}")
@@ -88,12 +95,8 @@ public class LibraryController {
     @PostMapping(value = "/notes/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public NoteResponse importNote(@RequestPart("file") MultipartFile file,
             @RequestParam(value = "folderId", required = false) UUID folderId) {
-        try {
-            String content = new String(file.getBytes(), StandardCharsets.UTF_8);
-            return library.importNote(file.getOriginalFilename(), content, folderId);
-        } catch (java.io.IOException ex) {
-            throw new IllegalArgumentException("Could not read uploaded file");
-        }
+        String content = noteImports.readUtf8(file);
+        return library.importNote(file.getOriginalFilename(), content, folderId);
     }
 
     @GetMapping("/notes/{noteId}/export")
@@ -116,6 +119,7 @@ public class LibraryController {
     public record NoteCreateRequest(String title, String markdown, UUID folderId, String sourceKind) {
     }
 
-    public record NoteUpdateRequest(String title, String markdown, UUID folderId, boolean move) {
+    public record NoteUpdateRequest(String title, String markdown, UUID folderId, boolean move,
+                                    java.time.Instant expectedUpdatedAt) {
     }
 }

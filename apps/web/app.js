@@ -1,3 +1,5 @@
+import { escapeHtml, renderRich } from "./rich-renderer.js";
+
 const API_BASE_URL = localStorage.getItem("noteflowApiBaseUrl") || "http://localhost:8080";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +20,7 @@ let conversationsLoading = false;
 let conversationsError = null;
 let attemptPollTimer = null;
 let globalPollTimeout = null;
+let taskEventSource = null;
 
 const viewRoot = document.querySelector("#view-root");
 const sidebarTasks = document.querySelector("#sidebar-tasks");
@@ -117,6 +120,7 @@ let pollFailureCount = 0;
 
 async function startGlobalPolling() {
   if (globalPollTimeout) clearTimeout(globalPollTimeout);
+  connectTaskEvents();
   const tick = async () => {
     if (document.hidden) {
       globalPollTimeout = setTimeout(tick, 5000);
@@ -130,9 +134,10 @@ async function startGlobalPolling() {
       return;
     }
     try {
+      const taskStreamOpen = taskEventSource?.readyState === EventSource.OPEN;
       const [docsResponse, tasksResponse] = await Promise.all([
         fetch(`${API_BASE_URL}/documents`),
-        fetch(`${API_BASE_URL}/tasks`),
+        taskStreamOpen ? Promise.resolve(null) : fetch(`${API_BASE_URL}/tasks`),
       ]);
       pollFailureCount = 0;
       if (docsResponse.ok) {
@@ -142,21 +147,42 @@ async function startGlobalPolling() {
         const generalDocs = viewRoot.querySelector("#general-documents");
         if (generalDocs) renderGeneralDocuments(generalDocs, documents);
       }
-      if (tasksResponse.ok) {
-        latestTasksList = await readJson(tasksResponse);
-        renderSidebarTasks();
-        const generalStatus = viewRoot.querySelector("#general-task-status");
-        if (generalStatus) renderGeneralTaskStatus(generalStatus);
-        handleTaskTransitions();
+      if (tasksResponse?.ok) {
+        applyTaskSnapshot(await readJson(tasksResponse));
       }
     } catch (error) {
       pollFailureCount += 1;
       if (pollFailureCount <= 3) console.error("Polling error:", error);
     }
+    const taskStreamOpen = taskEventSource?.readyState === EventSource.OPEN;
     const hasActiveTasks = latestTasksList.some((task) => ["PENDING", "PROCESSING", "RETRYING"].includes(task.status));
-    globalPollTimeout = setTimeout(tick, hasActiveTasks ? 1500 : 5000);
+    globalPollTimeout = setTimeout(tick, taskStreamOpen ? 15000 : hasActiveTasks ? 1500 : 5000);
   };
   await tick();
+}
+
+function connectTaskEvents() {
+  if (!window.EventSource || taskEventSource) return;
+  taskEventSource = new EventSource(`${API_BASE_URL}/events/tasks`);
+  taskEventSource.addEventListener("tasks", (event) => {
+    try {
+      applyTaskSnapshot(JSON.parse(event.data));
+    } catch (error) {
+      console.error("Invalid task event:", error);
+    }
+  });
+  taskEventSource.onerror = () => {
+    // EventSource reconnects automatically. The global loop falls back to
+    // bounded HTTP polling while the stream is unavailable.
+  };
+}
+
+function applyTaskSnapshot(tasks) {
+  latestTasksList = Array.isArray(tasks) ? tasks : [];
+  renderSidebarTasks();
+  const generalStatus = viewRoot.querySelector("#general-task-status");
+  if (generalStatus) renderGeneralTaskStatus(generalStatus);
+  handleTaskTransitions();
 }
 
 function handleTaskTransitions() {
@@ -220,6 +246,14 @@ function renderAgentView() {
           <div class="chat-source-row">
             <button type="button" id="chat-open-sources" class="chip-button" title="Choose which files ground the answers">＋ Sources</button>
             <span id="chat-source-summary" class="chat-scope-hint" title="Current retrieval scope for your questions">${escapeHtml(agentSourcesSummary())}</span>
+            <label class="chat-capability-toggle" title="Permit persistent notes, study artifacts, and learning-state changes for this message">
+              <input id="chat-allow-writes" type="checkbox" />
+              Allow changes
+            </label>
+            <label class="chat-capability-toggle" title="Also permit destructive note-section deletion for this message">
+              <input id="chat-allow-deletes" type="checkbox" disabled />
+              Allow deletes
+            </label>
           </div>
         </form>
       </div>
@@ -227,6 +261,12 @@ function renderAgentView() {
     ${renderSourceModal()}
   `;
   wireSourceModal();
+  const allowWrites = viewRoot.querySelector("#chat-allow-writes");
+  const allowDeletes = viewRoot.querySelector("#chat-allow-deletes");
+  allowWrites.addEventListener("change", () => {
+    allowDeletes.disabled = !allowWrites.checked;
+    if (!allowWrites.checked) allowDeletes.checked = false;
+  });
   scrollChatToBottom();
   viewRoot.querySelector("#chat-query").focus();
   if (!conversationsLoaded && !conversationsLoading) loadConversationList({ hydrateLatestIfEmpty: true });
@@ -377,6 +417,8 @@ async function handleChatSubmit(form) {
   const queryInput = form.querySelector("#chat-query");
   const query = queryInput.value.trim();
   if (!query) return;
+  const allowAgentWrites = Boolean(form.querySelector("#chat-allow-writes")?.checked);
+  const allowAgentDeletes = allowAgentWrites && Boolean(form.querySelector("#chat-allow-deletes")?.checked);
   // Empty selection means "all sources" (backend treats empty id lists as unscoped).
   const sourceScope = {
     pdfDocumentIds: agentSources.pdf.filter((id) => documentsMap.has(id)),
@@ -400,7 +442,7 @@ async function handleChatSubmit(form) {
     const response = await fetch(`${API_BASE_URL}/conversations/${activeConversationId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: query, ...sourceScope }),
+      body: JSON.stringify({ content: query, ...sourceScope, allowAgentWrites, allowAgentDeletes }),
     });
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || "Unable to send message");
@@ -952,13 +994,15 @@ function renderQuizQuestion(question, index) {
 async function submitQuizAttempt(form) {
   const attemptId = form.dataset.attemptId;
   const questionIds = JSON.parse(form.dataset.questionIds);
-  for (const questionId of questionIds) {
+  const answers = questionIds.map((questionId) => {
     const selected = form.querySelector(`[name="q-${questionId}"]:checked`);
     const text = form.querySelector(`textarea[name="q-${questionId}"]`);
-    await studyPut(`/quiz-attempts/${attemptId}/answers/${questionId}`, {
+    return {
+      questionId,
       response: selected?.value ?? text?.value ?? "",
-    });
-  }
+    };
+  });
+  await studyPut(`/quiz-attempts/${attemptId}/answers`, { answers });
   const result = await studyPost(`/quiz-attempts/${attemptId}/submit`);
   await renderAttempt(attemptId, result.status === "GRADING");
 }
@@ -1044,7 +1088,7 @@ const GEMINI_EMBEDDING_MODELS = ["gemini-embedding-001"];
 const OPENAI_EMBEDDING_MODELS = ["text-embedding-3-small", "text-embedding-3-large"];
 
 function modelOptions(models) {
-  return models.map((model) => `<option value="${model}"></option>`).join("");
+  return models.map((model) => `<option value="${escapeHtml(model)}"></option>`).join("");
 }
 
 function providerOptions(selected) {
@@ -1076,7 +1120,7 @@ async function renderSettingsView() {
   } catch (error) {
     viewRoot.querySelector(".panel").innerHTML = `
       <div class="eyebrow">Error</div>
-      <p>Could not load settings: ${error.message}</p>
+      <p>Could not load settings: ${escapeHtml(error.message)}</p>
     `;
     return;
   }
@@ -1089,11 +1133,11 @@ async function renderSettingsView() {
       <form id="settings-form" class="form">
         <label>Gemini API key
           <input id="settings-gemini-key" type="password" autocomplete="off"
-            placeholder="${current.geminiKeySet ? `Saved (${current.geminiKeyHint}) — leave blank to keep` : "Not set"}" />
+            placeholder="${escapeHtml(current.geminiKeySet ? `Saved (${current.geminiKeyHint}) — leave blank to keep` : "Not set")}" />
         </label>
         <label>OpenAI API key
           <input id="settings-openai-key" type="password" autocomplete="off"
-            placeholder="${current.openaiKeySet ? `Saved (${current.openaiKeyHint}) — leave blank to keep` : "Not set"}" />
+            placeholder="${escapeHtml(current.openaiKeySet ? `Saved (${current.openaiKeyHint}) — leave blank to keep` : "Not set")}" />
         </label>
 
         <div class="eyebrow">Chat & notes model</div>
@@ -1102,12 +1146,12 @@ async function renderSettingsView() {
         </label>
         <label>Gemini model
           <input id="settings-gemini-llm-model" list="gemini-llm-models"
-            value="${current.geminiLlmModel || ""}" placeholder="gemini-2.5-flash (default)" />
+            value="${escapeHtml(current.geminiLlmModel || "")}" placeholder="gemini-2.5-flash (default)" />
           <datalist id="gemini-llm-models">${modelOptions(GEMINI_LLM_MODELS)}</datalist>
         </label>
         <label>OpenAI model
           <input id="settings-openai-llm-model" list="openai-llm-models"
-            value="${current.openaiLlmModel || ""}" placeholder="gpt-4o-mini (default)" />
+            value="${escapeHtml(current.openaiLlmModel || "")}" placeholder="gpt-4o-mini (default)" />
           <datalist id="openai-llm-models">${modelOptions(OPENAI_LLM_MODELS)}</datalist>
         </label>
 
@@ -1117,12 +1161,12 @@ async function renderSettingsView() {
         </label>
         <label>Gemini embedding model
           <input id="settings-gemini-embedding-model" list="gemini-embedding-models"
-            value="${current.geminiEmbeddingModel || ""}" placeholder="gemini-embedding-001 (default)" />
+            value="${escapeHtml(current.geminiEmbeddingModel || "")}" placeholder="gemini-embedding-001 (default)" />
           <datalist id="gemini-embedding-models">${modelOptions(GEMINI_EMBEDDING_MODELS)}</datalist>
         </label>
         <label>OpenAI embedding model
           <input id="settings-openai-embedding-model" list="openai-embedding-models"
-            value="${current.openaiEmbeddingModel || ""}" placeholder="text-embedding-3-small (default)" />
+            value="${escapeHtml(current.openaiEmbeddingModel || "")}" placeholder="text-embedding-3-small (default)" />
           <datalist id="openai-embedding-models">${modelOptions(OPENAI_EMBEDDING_MODELS)}</datalist>
         </label>
         <p class="hint">Changing the embedding provider or model only affects new embeddings —
@@ -1148,9 +1192,9 @@ function renderEffectiveSettings(effective) {
   if (!effective) return "";
   return `
     <ul class="meta-list">
-      <li><strong>LLM provider:</strong> ${effective.llmProvider}</li>
-      <li><strong>Embedding provider:</strong> ${effective.embeddingProvider}</li>
-      <li><strong>Embedding model:</strong> ${effective.embeddingModel}</li>
+      <li><strong>LLM provider:</strong> ${escapeHtml(effective.llmProvider)}</li>
+      <li><strong>Embedding provider:</strong> ${escapeHtml(effective.embeddingProvider)}</li>
+      <li><strong>Embedding model:</strong> ${escapeHtml(effective.embeddingModel)}</li>
     </ul>
   `;
 }
@@ -1647,6 +1691,7 @@ let editorDraftTitle = "Untitled note";
 // document note is open. Note tabs use the key `note:<id>`; document tabs use
 // the raw document id.
 let editorNoteId = null;
+let editorNoteUpdatedAt = null;
 let editorNoteTitles = parseJsonSafe(localStorage.getItem("noteflowEditorNoteTitles")) || {};
 // Library (Files section) state, backed by /folders and /notes.
 let libraryFolders = [];
@@ -2485,11 +2530,14 @@ function wireEditorEvents(doc, startDoc = doc) {
       editorNoteTitles[editorNoteId] = editorNoteTitle;
       localStorage.setItem("noteflowEditorNoteTitles", JSON.stringify(editorNoteTitles));
       try {
-        await fetch(`${API_BASE_URL}/notes/${editorNoteId}`, {
+        const response = await fetch(`${API_BASE_URL}/notes/${editorNoteId}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: editorNoteTitle }),
+          body: JSON.stringify({ title: editorNoteTitle, expectedUpdatedAt: editorNoteUpdatedAt }),
         });
+        const saved = await readJson(response);
+        if (!response.ok) throw new Error(saved.message || "Rename failed");
+        editorNoteUpdatedAt = saved.updatedAt || editorNoteUpdatedAt;
       } catch (error) {
         console.error("Rename failed:", error);
       }
@@ -2552,6 +2600,7 @@ async function loadStandaloneNote(noteId) {
     const payload = await readJson(response);
     if (!response.ok) throw new Error(payload.message || "Could not load the note");
     editorNoteTitle = payload.title || "Untitled note";
+    editorNoteUpdatedAt = payload.updatedAt || null;
     editorDraftTitle = editorNoteTitle;
     editorNoteTitles[noteId] = editorNoteTitle;
     localStorage.setItem("noteflowEditorNoteTitles", JSON.stringify(editorNoteTitles));
@@ -2903,12 +2952,24 @@ async function persistEditorMarkdown(markdown) {
       const response = await fetch(`${API_BASE_URL}/notes/${noteId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: editorNoteTitle, markdown: fullMarkdown }),
+        body: JSON.stringify({
+          title: editorNoteTitle,
+          markdown: fullMarkdown,
+          expectedUpdatedAt: editorNoteUpdatedAt,
+        }),
       });
-      if (!response.ok) throw new Error("Save failed");
+      const saved = await readJson(response);
+      if (!response.ok) {
+        if (response.status === 409) {
+          editorDirty = true;
+          throw new Error("Conflict: reload the note before saving");
+        }
+        throw new Error(saved.message || "Save failed");
+      }
+      editorNoteUpdatedAt = saved.updatedAt || editorNoteUpdatedAt;
       setEditorStatus(`Saved · ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-    } catch {
-      setEditorStatus("Could not save (offline)", true);
+    } catch (error) {
+      setEditorStatus(error.message || "Could not save", true);
     }
     return;
   }
@@ -3264,154 +3325,6 @@ function summaryItem(label, value) {
       <div class="summary-value">${escapeHtml(value ?? "-")}</div>
     </div>
   `;
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-// ---------------------------------------------------------------------------
-// Rich rendering: Markdown + LaTeX (KaTeX)
-//
-// Math spans are extracted BEFORE escaping so that `<`, `>`, `&`, and `\`
-// inside TeX survive intact, then rendered with katex.renderToString and
-// re-inserted. The Markdown subset is deliberately small and operates on
-// already-escaped text, so no untrusted HTML can reach the DOM.
-// ---------------------------------------------------------------------------
-function renderRich(rawText) {
-  if (rawText == null || rawText === "") return "";
-  const text = String(rawText);
-  const mathTokens = [];
-  const protectedText = protectMath(text, mathTokens);
-  let html = renderMarkdownSubset(protectedText);
-  // Control-char sentinels never occur in study content and survive HTML
-  // escaping intact, so placeholders cannot collide with text like "MATH239".
-  html = html.replace(/\u0001(\d+)\u0001/g, (_, index) => renderMathToken(mathTokens[Number(index)]));
-  return html;
-}
-
-function protectMath(text, tokens) {
-  const patterns = [
-    { re: /\$\$([\s\S]+?)\$\$/g, display: true },
-    { re: /\\\[([\s\S]+?)\\\]/g, display: true },
-    { re: /\\\(([\s\S]+?)\\\)/g, display: false },
-    { re: /(?<![\\$])\$(?!\s)((?:\\.|[^$\\])+?)(?<!\s)\$(?!\d)/g, display: false },
-  ];
-  let output = text;
-  for (const { re, display } of patterns) {
-    output = output.replace(re, (_, tex) => {
-      const index = tokens.push({ tex: tex.trim(), display }) - 1;
-      return `\u0001${index}\u0001`;
-    });
-  }
-  return output;
-}
-
-function renderMathToken(token) {
-  if (!token) return "";
-  if (typeof window.katex === "undefined") {
-    return `<code class="math-fallback">${escapeHtml(token.tex)}</code>`;
-  }
-  try {
-    return window.katex.renderToString(token.tex, {
-      displayMode: token.display,
-      throwOnError: false,
-      output: "html",
-    });
-  } catch {
-    return `<code class="math-fallback">${escapeHtml(token.tex)}</code>`;
-  }
-}
-
-function renderMarkdownSubset(text) {
-  const lines = text.split("\n");
-  const blocks = [];
-  let paragraph = [];
-  let list = null;
-  let code = null;
-
-  const flushParagraph = () => {
-    if (paragraph.length) {
-      blocks.push(`<p>${paragraph.map(renderInline).join("<br/>")}</p>`);
-      paragraph = [];
-    }
-  };
-  const flushList = () => {
-    if (list) {
-      const tag = list.ordered ? "ol" : "ul";
-      blocks.push(`<${tag}>${list.items.map((item) => `<li>${renderInline(item)}</li>`).join("")}</${tag}>`);
-      list = null;
-    }
-  };
-
-  for (const rawLine of lines) {
-    if (code) {
-      if (rawLine.trim().startsWith("```")) {
-        blocks.push(`<pre class="code-block"><code>${code.lines.join("\n")}</code></pre>`);
-        code = null;
-      } else {
-        code.lines.push(escapeHtml(rawLine));
-      }
-      continue;
-    }
-    const line = rawLine.replace(/\s+$/, "");
-    const fenceMatch = line.trim().match(/^```(\w*)/);
-    if (fenceMatch) {
-      flushParagraph();
-      flushList();
-      code = { lang: fenceMatch[1], lines: [] };
-      continue;
-    }
-    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
-    if (headingMatch) {
-      flushParagraph();
-      flushList();
-      const level = headingMatch[1].length;
-      blocks.push(`<h${level} class="md-h md-h${level}">${renderInline(headingMatch[2])}</h${level}>`);
-      continue;
-    }
-    const orderedMatch = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    const bulletMatch = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (orderedMatch || bulletMatch) {
-      flushParagraph();
-      const ordered = Boolean(orderedMatch);
-      if (!list || list.ordered !== ordered) {
-        flushList();
-        list = { ordered, items: [] };
-      }
-      list.items.push((orderedMatch || bulletMatch)[1]);
-      continue;
-    }
-    if (!line.trim()) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-    flushList();
-    paragraph.push(line);
-  }
-  if (code) blocks.push(`<pre class="code-block"><code>${code.lines.join("\n")}</code></pre>`);
-  flushParagraph();
-  flushList();
-  return blocks.join("");
-}
-
-function renderInline(text) {
-  const codeSpans = [];
-  let out = text.replace(/`([^`]+)`/g, (_, code) => {
-    const index = codeSpans.push(code) - 1;
-    return `\u0002${index}\u0002`;
-  });
-  out = escapeHtml(out);
-  out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  out = out.replace(/(^|[^*])\*([^*]+)\*(?!\*)/g, "$1<em>$2</em>");
-  out = out.replace(/\u0002(\d+)\u0002/g, (_, index) => `<code>${escapeHtml(codeSpans[Number(index)])}</code>`);
-  return out;
 }
 
 // ---------------------------------------------------------------------------

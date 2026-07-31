@@ -251,11 +251,40 @@ class ToolCallingAgentTest(unittest.TestCase):
         self.assertFalse(request["includeExplanations"])
 
     def test_workspace_mutation_requires_read_in_same_run(self):
-        state = SimpleNamespace(scratchpad=[])
+        state = SimpleNamespace(scratchpad=[], capabilities=frozenset({"workspace:write"}))
         with self.assertRaisesRegex(PermissionError, "read_markdown"):
             enforce_orchestration_policy(state, "edit_markdown", {"noteId": "note-1"})
         state.scratchpad.append(SimpleNamespace(ok=True, tool="read_markdown", args={"noteId": "note-1"}))
         enforce_orchestration_policy(state, "edit_markdown", {"noteId": "note-1"})
+
+    def test_server_capability_is_required_for_persistent_tools(self):
+        read_only = SimpleNamespace(scratchpad=[], capabilities=frozenset())
+        with self.assertRaisesRegex(PermissionError, "server-issued capability"):
+            enforce_orchestration_policy(read_only, "save_artifact", {})
+        write_enabled = SimpleNamespace(scratchpad=[], capabilities=frozenset({"workspace:write"}))
+        enforce_orchestration_policy(write_enabled, "save_artifact", {})
+        with self.assertRaisesRegex(PermissionError, "workspace:delete"):
+            enforce_orchestration_policy(write_enabled, "delete_section", {"noteId": "note-1"})
+
+    def test_model_confirm_cannot_invent_delete_intent(self):
+        read_step = SimpleNamespace(ok=True, tool="read_markdown", args={"noteId": "note-1"})
+        state = SimpleNamespace(
+            scratchpad=[read_step],
+            capabilities=frozenset({"workspace:write", "workspace:delete"}),
+            question="Summarize the attached PDF",
+        )
+        with self.assertRaisesRegex(PermissionError, "explicit delete intent"):
+            enforce_orchestration_policy(
+                state,
+                "delete_section",
+                {"noteId": "note-1", "confirm": True},
+            )
+        state.question = "Delete the obsolete section"
+        enforce_orchestration_policy(
+            state,
+            "delete_section",
+            {"noteId": "note-1", "confirm": True},
+        )
 
     def test_async_tool_pauses_then_resumes_through_mandatory_evaluation(self):
         first_llm = ScriptedLlm([wire_tool("Create it.", "async_quiz", {"documentIds": ["doc-1"]})])
@@ -302,7 +331,14 @@ class ToolCallingAgentTest(unittest.TestCase):
         }
         failed = ArtifactEvaluation(False, True, {"status": "PARTIAL", "reason": "coverage"})
         with patch("noteflow_worker.conversation.agent.evaluate_pending_artifact", return_value=failed):
-            retried = agent.run("conversation-1", "user-1", "Create a quiz", context(), snapshot=snapshot)
+            retried = agent.run(
+                "conversation-1",
+                "user-1",
+                "Create a quiz",
+                context(),
+                snapshot=snapshot,
+                capabilities=frozenset({"study:write"}),
+            )
         self.assertTrue(retried.paused)
         self.assertEqual(retried.waiting_task_id, "task-2")
         self.assertEqual(retried.reflection_count, 1)

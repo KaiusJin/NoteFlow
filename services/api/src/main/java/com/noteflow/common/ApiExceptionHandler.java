@@ -1,5 +1,6 @@
 package com.noteflow.common;
 
+import com.noteflow.library.ConcurrentNoteEditException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -10,6 +11,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> handleBadRequest(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiError.of(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ConcurrentNoteEditException.class)
+    public ResponseEntity<ApiError> handleConflict(ConcurrentNoteEditException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiError.of(ex.getMessage()));
     }
 
     @ExceptionHandler(IllegalStateException.class)

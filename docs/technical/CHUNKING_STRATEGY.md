@@ -4,7 +4,7 @@ This document describes the current PDF chunking strategy, why it is designed th
 
 Document-type-specific routing is defined in:
 
-[DOCUMENT_TYPE_PROCESSING_STRATEGY.md](/Users/kaius/Project/NoteFlow/docs/technical/DOCUMENT_TYPE_PROCESSING_STRATEGY.md)
+[DOCUMENT_TYPE_PROCESSING_STRATEGY.md](DOCUMENT_TYPE_PROCESSING_STRATEGY.md)
 
 ## 1. Goal
 
@@ -36,11 +36,11 @@ PDF
 
 The implementation lives in:
 
-[parser.py](/Users/kaius/Project/NoteFlow/services/worker/noteflow_worker/pdf/parser.py)
-[layout.py](/Users/kaius/Project/NoteFlow/services/worker/noteflow_worker/pdf/layout.py)
-[visual.py](/Users/kaius/Project/NoteFlow/services/worker/noteflow_worker/pdf/visual.py)
-[regions.py](/Users/kaius/Project/NoteFlow/services/worker/noteflow_worker/pdf/regions.py)
-[providers.py](/Users/kaius/Project/NoteFlow/services/worker/noteflow_worker/vision/providers.py)
+[parser.py](../../services/worker/noteflow_worker/pdf/parser.py)
+[layout.py](../../services/worker/noteflow_worker/pdf/layout.py)
+[visual.py](../../services/worker/noteflow_worker/pdf/visual.py)
+[regions.py](../../services/worker/noteflow_worker/pdf/regions.py)
+[providers.py](../../services/worker/noteflow_worker/vision/providers.py)
 
 ## 3. Page Numbers
 

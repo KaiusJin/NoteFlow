@@ -27,6 +27,59 @@ PRIORITY_SCHEDULE = (
     PRIORITY_BACKGROUND,
 )
 
+RECLAIM_EXPIRED_LEASES_SCRIPT = """
+local expired = redis.call(
+  'ZRANGEBYSCORE',
+  KEYS[2],
+  '-inf',
+  ARGV[1],
+  'LIMIT',
+  0,
+  tonumber(ARGV[2])
+)
+local reclaimed = 0
+for _, lease_id in ipairs(expired) do
+  local deadline = redis.call('ZSCORE', KEYS[2], lease_id)
+  if deadline and tonumber(deadline) <= tonumber(ARGV[1]) then
+    local payload = redis.call('HGET', KEYS[1], lease_id)
+    redis.call('HDEL', KEYS[1], lease_id)
+    redis.call('ZREM', KEYS[2], lease_id)
+    if payload then
+      local decoded = cjson.decode(payload)
+      local priority = tonumber(decoded['priority'])
+      if priority == nil then
+        local task_type = decoded['taskType'] or ''
+        if task_type == 'ASK_DOCUMENT'
+            or task_type == 'EXPORT_MARKDOWN'
+            or task_type == 'ANSWER_CONVERSATION_TURN'
+            or task_type == 'RESUME_AGENT_RUN' then
+          priority = 0
+        elseif task_type == 'GENERATE_EMBEDDINGS'
+            or task_type == 'MAINTAIN_CONVERSATION_MEMORY' then
+          priority = 2
+        else
+          priority = 1
+        end
+      end
+      if priority < 0 or priority > 2 then
+        priority = 1
+      end
+      redis.call('RPUSH', KEYS[3 + priority], payload)
+      reclaimed = reclaimed + 1
+    end
+  end
+end
+return reclaimed
+"""
+
+EXTEND_LEASE_SCRIPT = """
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 then
+  redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1])
+  return 1
+end
+return 0
+"""
+
 
 def priority_for_task_type(task_type: str) -> int:
     if task_type in {"ASK_DOCUMENT", "EXPORT_MARKDOWN", "ANSWER_CONVERSATION_TURN", "RESUME_AGENT_RUN"}:
@@ -49,6 +102,8 @@ class TaskPayload:
     attempt_id: str | None = None
     # Answer-turn tasks target the assistant placeholder message.
     message_id: str | None = None
+    # Stable producer event id used for delivery tracing and deduplication.
+    event_id: str | None = None
     # Redis-side delivery lease. New producers do not need to set this.
     lease_id: str | None = None
 
@@ -121,6 +176,7 @@ class RedisTaskQueue:
                 **({"conversationId": payload.conversation_id} if payload.conversation_id else {}),
                 **({"attemptId": payload.attempt_id} if payload.attempt_id else {}),
                 **({"messageId": payload.message_id} if payload.message_id else {}),
+                **({"eventId": payload.event_id} if payload.event_id else {}),
             },
             separators=(",", ":"),
         )
@@ -137,33 +193,33 @@ class RedisTaskQueue:
     def extend_lease(self, payload: TaskPayload) -> None:
         if not payload.lease_id:
             return
-        if not self._client.hexists(self._lease_payloads_key, payload.lease_id):
-            return
         deadline = time.time() + max(30, settings.queue_lease_seconds)
-        self._client.zadd(self._lease_deadlines_key, {payload.lease_id: deadline})
+        self._client.eval(
+            EXTEND_LEASE_SCRIPT,
+            2,
+            self._lease_payloads_key,
+            self._lease_deadlines_key,
+            payload.lease_id,
+            deadline,
+        )
 
     def reclaim_expired_leases(self) -> int:
         now = time.time()
         limit = max(1, settings.queue_reclaim_batch_size)
-        expired = self._client.zrangebyscore(
-            self._lease_deadlines_key,
-            min="-inf",
-            max=now,
-            start=0,
-            num=limit,
+        return int(
+            self._client.eval(
+                RECLAIM_EXPIRED_LEASES_SCRIPT,
+                5,
+                self._lease_payloads_key,
+                self._lease_deadlines_key,
+                self.queue_name(PRIORITY_INTERACTIVE),
+                self.queue_name(PRIORITY_USER_VISIBLE),
+                self.queue_name(PRIORITY_BACKGROUND),
+                now,
+                limit,
+            )
+            or 0
         )
-        reclaimed = 0
-        for lease_id in expired:
-            raw_payload = self._client.hget(self._lease_payloads_key, lease_id)
-            pipe = self._client.pipeline()
-            pipe.hdel(self._lease_payloads_key, lease_id)
-            pipe.zrem(self._lease_deadlines_key, lease_id)
-            pipe.execute()
-            if raw_payload is None:
-                continue
-            self.push(self._decode(raw_payload, priority_for_task_type(json.loads(raw_payload).get("taskType", ""))))
-            reclaimed += 1
-        return reclaimed
 
     def _lease_from_queue(self, queue_name: str) -> tuple[str | None, str | None]:
         lease_id = str(uuid4())
@@ -203,5 +259,6 @@ class RedisTaskQueue:
             conversation_id=payload.get("conversationId") or None,
             attempt_id=payload.get("attemptId") or None,
             message_id=payload.get("messageId") or None,
+            event_id=payload.get("eventId") or None,
             lease_id=lease_id,
         )

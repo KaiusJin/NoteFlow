@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from noteflow_worker.db.repository import Repository, vector_literal
+from noteflow_worker.db.schema import require_tables
 from noteflow_worker.memory.models import (
     CONVERSATION_STATUSES,
     MEMORY_STATUS_ACTIVE,
@@ -26,135 +27,21 @@ MAINTENANCE_LOCK_NAMESPACE = 730_115
 class MemoryStore(Repository):
     """SQL persistence for conversation memory.
 
-    Ownership: this store owns rag_messages, rag_conversation_summaries,
-    rag_memories, and the memory-state columns on rag_conversations. The
-    conversation API owns the remaining rag_conversations columns; both sides
-    use idempotent DDL so either service can start first.
+    Flyway owns the schema shared by the API and worker. This store validates
+    its contract and owns only runtime data.
     """
 
     def ensure_memory_schema(self) -> None:
         with self.connect() as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_conversations (
-                  id UUID PRIMARY KEY,
-                  user_id UUID NOT NULL,
-                  title VARCHAR(300),
-                  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
-                  active_summary TEXT,
-                  active_summary_json TEXT,
-                  summary_version INTEGER NOT NULL DEFAULT 0,
-                  summary_token_count INTEGER NOT NULL DEFAULT 0,
-                  summary_covers_through_at TIMESTAMPTZ,
-                  summary_covers_through_message_id UUID,
-                  extraction_covers_through_at TIMESTAMPTZ,
-                  extraction_covers_through_message_id UUID,
-                  last_message_at TIMESTAMPTZ,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            for statement in [
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS active_summary_json TEXT",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS summary_version INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS summary_token_count INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS summary_covers_through_at TIMESTAMPTZ",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS summary_covers_through_message_id UUID",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS extraction_covers_through_at TIMESTAMPTZ",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS extraction_covers_through_message_id UUID",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS selected_pdf_document_ids JSONB NOT NULL DEFAULT '[]'",
-                "ALTER TABLE rag_conversations ADD COLUMN IF NOT EXISTS selected_ai_note_document_ids JSONB NOT NULL DEFAULT '[]'",
-            ]:
-                conn.execute(statement)
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_rag_conversations_user_recent
-                ON rag_conversations(user_id, last_message_at DESC NULLS LAST)
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_user_preferences (
-                  user_id UUID NOT NULL,
-                  preference_key VARCHAR(64) NOT NULL,
-                  preference_value VARCHAR(400) NOT NULL,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  PRIMARY KEY (user_id, preference_key)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_messages (
-                  id UUID PRIMARY KEY,
-                  conversation_id UUID NOT NULL,
-                  role VARCHAR(32) NOT NULL,
-                  status VARCHAR(32) NOT NULL DEFAULT 'COMPLETED',
-                  content_markdown TEXT,
-                  token_count INTEGER NOT NULL DEFAULT 0,
-                  metadata_json TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_rag_messages_conversation_created
-                ON rag_messages(conversation_id, created_at, id)
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_conversation_summaries (
-                  id UUID PRIMARY KEY,
-                  conversation_id UUID NOT NULL,
-                  version INTEGER NOT NULL,
-                  summary_text TEXT NOT NULL,
-                  summary_json TEXT,
-                  token_count INTEGER NOT NULL DEFAULT 0,
-                  covered_message_count INTEGER NOT NULL DEFAULT 0,
-                  covers_through_at TIMESTAMPTZ,
-                  covers_through_message_id UUID,
-                  provider VARCHAR(64),
-                  model VARCHAR(128),
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(conversation_id, version)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_memories (
-                  id UUID PRIMARY KEY,
-                  user_id UUID NOT NULL,
-                  conversation_id UUID,
-                  memory_type VARCHAR(32) NOT NULL,
-                  content TEXT NOT NULL,
-                  content_hash VARCHAR(128) NOT NULL,
-                  confidence DOUBLE PRECISION NOT NULL,
-                  status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
-                  source_message_id UUID,
-                  superseded_by UUID,
-                  embedding vector,
-                  embedding_provider VARCHAR(64),
-                  embedding_model VARCHAR(128),
-                  embedding_dimension INTEGER,
-                  access_count INTEGER NOT NULL DEFAULT 0,
-                  last_accessed_at TIMESTAMPTZ,
-                  expires_at TIMESTAMPTZ,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_rag_memories_user_status
-                ON rag_memories(user_id, status)
-                """
+            require_tables(
+                conn,
+                (
+                    "rag_conversations",
+                    "rag_user_preferences",
+                    "rag_messages",
+                    "rag_conversation_summaries",
+                    "rag_memories",
+                ),
             )
 
     # ------------------------------------------------------------------

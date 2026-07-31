@@ -1,12 +1,10 @@
 package com.noteflow.tasks;
 
-import com.noteflow.queue.DocumentTaskQueue;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TaskDispatchService {
@@ -17,28 +15,31 @@ public class TaskDispatchService {
     );
 
     private final TaskRepository tasks;
-    private final DocumentTaskQueue queue;
+    private final TaskOutboxRepository outbox;
 
-    public TaskDispatchService(TaskRepository tasks, DocumentTaskQueue queue) {
+    public TaskDispatchService(TaskRepository tasks, TaskOutboxRepository outbox) {
         this.tasks = tasks;
-        this.queue = queue;
+        this.outbox = outbox;
     }
 
+    @Transactional
     public Task createAndEnqueue(UUID documentId, UUID userId, TaskType taskType) {
         return createAndEnqueue(documentId, userId, taskType, null);
     }
 
+    @Transactional
     public Task createAndEnqueue(UUID documentId, UUID userId, TaskType taskType, UUID attemptId) {
         Task task = new Task(UUID.randomUUID(), documentId, userId, taskType);
         tasks.save(task);
-        enqueueAfterCommit(task, attemptId);
+        outbox.save(new TaskOutbox(UUID.randomUUID(), task.getId(), attemptId, null, null));
         return task;
     }
 
+    @Transactional
     public Task createConversationAndEnqueue(UUID userId, UUID conversationId, UUID messageId) {
         Task task = new Task(UUID.randomUUID(), null, userId, TaskType.ANSWER_CONVERSATION_TURN);
         tasks.save(task);
-        enqueueAfterCommit(task, null, conversationId, messageId);
+        outbox.save(new TaskOutbox(UUID.randomUUID(), task.getId(), null, conversationId, messageId));
         return task;
     }
 
@@ -53,22 +54,5 @@ public class TaskDispatchService {
 
     public Optional<Task> latestTask(UUID documentId, TaskType taskType) {
         return tasks.findFirstByDocumentIdAndTaskTypeOrderByCreatedAtDesc(documentId, taskType);
-    }
-
-    private void enqueueAfterCommit(Task task, UUID attemptId) {
-        enqueueAfterCommit(task, attemptId, null, null);
-    }
-
-    private void enqueueAfterCommit(Task task, UUID attemptId, UUID conversationId, UUID messageId) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            queue.enqueue(task, attemptId, conversationId, messageId);
-            return;
-        }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                queue.enqueue(task, attemptId, conversationId, messageId);
-            }
-        });
     }
 }

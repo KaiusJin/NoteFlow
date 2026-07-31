@@ -1,0 +1,145 @@
+name: Quality and security gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: noteflow
+          POSTGRES_USER: noteflow
+          POSTGRES_PASSWORD: noteflow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U noteflow -d noteflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Apply Flyway migrations from an empty database
+        working-directory: services/api
+        run: |
+          SERVER_PORT=18081 ./gradlew bootRun > /tmp/noteflow-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..60}; do
+            curl --fail --silent http://127.0.0.1:18081/actuator/health && break
+            if ! kill -0 "$api_pid" 2>/dev/null; then
+              cat /tmp/noteflow-api.log
+              exit 1
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:18081/actuator/health
+          kill "$api_pid"
+          wait "$api_pid" || true
+      - name: Verify API, integration tests, and dependency locks
+        working-directory: services/api
+        env:
+          NOTEFLOW_RUN_DB_TESTS: "1"
+        run: ./gradlew test --warning-mode fail
+
+  worker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: noteflow
+          POSTGRES_USER: noteflow
+          POSTGRES_PASSWORD: noteflow
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U noteflow -d noteflow"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    env:
+      NOTEFLOW_RUN_DB_TESTS: "1"
+      DATABASE_URL: postgresql://noteflow:noteflow@localhost:5432/noteflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install locked Worker dependencies
+        working-directory: services/worker
+        run: uv sync --frozen
+      - name: Initialize test schema from versioned migrations
+        run: |
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V1__baseline.sql
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V2__reliable_task_outbox.sql
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V3__content_addressed_cache.sql
+      - name: Run Worker unit and PostgreSQL integration tests
+        run: ./tests/run_worker_tests.sh
+      - name: Audit Python dependencies
+        working-directory: services/worker
+        run: |
+          uv export --frozen --no-dev --format requirements-txt --output-file /tmp/worker-requirements.txt
+          uvx pip-audit -r /tmp/worker-requirements.txt
+
+  browser-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/e2e/package-lock.json
+      - working-directory: tests/e2e
+        run: npm ci
+      - working-directory: tests/e2e
+        run: npx playwright install --with-deps chromium
+      - working-directory: tests/e2e
+        run: npm test
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan repository filesystem
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0.20.6
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: noteflow-sbom.cdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noteflow-sbom
+          path: noteflow-sbom.cdx.json

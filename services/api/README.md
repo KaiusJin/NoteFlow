@@ -51,5 +51,11 @@ SPRING_DATASOURCE_USERNAME=noteflow
 SPRING_DATASOURCE_PASSWORD=noteflow
 REDIS_HOST=localhost
 REDIS_PORT=6379
+NOTEFLOW_API_BIND_ADDRESS=127.0.0.1
 NOTEFLOW_UPLOAD_DIR=storage/uploads
+NOTEFLOW_NOTE_IMPORT_MAX_BYTES=5242880
 ```
+
+The API is intentionally loopback-only for NoteFlow's local single-user deployment model.
+Do not change `NOTEFLOW_API_BIND_ADDRESS` to a non-loopback address without first adding
+an authentication and authorization layer.

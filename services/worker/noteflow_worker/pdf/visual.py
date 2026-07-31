@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import replace
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
 from threading import Lock
 from typing import Optional
@@ -8,6 +9,7 @@ from typing import Optional
 import fitz
 
 from noteflow_worker.db.repository import PageAsset
+from noteflow_worker.config import settings
 from noteflow_worker.pdf.ocr import clean_ocr_text, make_ocr_backend
 from noteflow_worker.runtime.resource_pools import ResourcePoolPlan
 from noteflow_worker.runtime.limits import process_resource_slot
@@ -66,6 +68,7 @@ def analyze_pdf_visuals(
     path: str,
     document_id: str,
     resource_plan: ResourcePoolPlan | None = None,
+    content_cache=None,
 ) -> list[VisualPage]:
     pdf_path = Path(path)
     output_dir = pdf_path.parent.parent / "rendered" / document_id
@@ -96,6 +99,19 @@ def analyze_pdf_visuals(
     ]
     if not candidates or backend.name == "disabled":
         return visual_pages
+    producer_version = f"{backend.name}:{settings.pdf_ocr_languages}:ocr-v1"
+    ocr_by_page: dict[int, str | None] = {}
+    uncached_candidates: list[VisualPage] = []
+    for page in candidates:
+        digest = hashlib.sha256(Path(page.image_path).read_bytes()).hexdigest()
+        cached = content_cache.get("ocr-page", digest, producer_version) if content_cache is not None else None
+        if isinstance(cached, dict) and isinstance(cached.get("text"), str):
+            ocr_by_page[page.page_number] = cached["text"]
+        else:
+            uncached_candidates.append(page)
+    candidates = uncached_candidates
+    if not candidates:
+        return [replace(page, ocr_text=ocr_by_page.get(page.page_number)) for page in visual_pages]
     configured_workers = (
         resource_plan.gpu_workers if backend.uses_gpu and resource_plan else
         resource_plan.cpu_workers if resource_plan else 1
@@ -103,7 +119,6 @@ def analyze_pdf_visuals(
     workers = max(1, min(configured_workers, len(candidates)))
     backends = shared_ocr_backends(backend, workers, resource_plan)
     workers = len(backends)
-    ocr_by_page: dict[int, str | None] = {}
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=f"ocr-{backend.name}") as executor:
         futures = {
             executor.submit(
@@ -118,6 +133,10 @@ def analyze_pdf_visuals(
             page_number = futures[future]
             try:
                 ocr_by_page[page_number] = clean_ocr_text(future.result())
+                if content_cache is not None and ocr_by_page[page_number]:
+                    page = next(candidate for candidate in candidates if candidate.page_number == page_number)
+                    digest = hashlib.sha256(Path(page.image_path).read_bytes()).hexdigest()
+                    content_cache.put("ocr-page", digest, producer_version, {"text": ocr_by_page[page_number]})
             except Exception:
                 ocr_by_page[page_number] = None
     return [replace(page, ocr_text=ocr_by_page.get(page.page_number)) for page in visual_pages]

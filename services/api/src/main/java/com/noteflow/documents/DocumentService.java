@@ -2,6 +2,8 @@ package com.noteflow.documents;
 
 import com.noteflow.storage.LocalFileStorageService;
 import com.noteflow.storage.StoredFile;
+import com.noteflow.common.CursorPage;
+import com.noteflow.common.OpaqueCursor;
 import com.noteflow.tasks.Task;
 import com.noteflow.tasks.TaskDispatchService;
 import com.noteflow.tasks.TaskStatus;
@@ -10,19 +12,26 @@ import com.noteflow.workspace.LocalWorkspaceService;
 import com.noteflow.notes.DocumentAiNote;
 import com.noteflow.notes.DocumentAiNoteRepository;
 import com.noteflow.tasks.TaskRepository;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
-import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.multipart.MultipartFile;
 
 @Service
 public class DocumentService {
+    private static final int PDF_HEADER_SCAN_BYTES = 1024;
+    private static final byte[] PDF_SIGNATURE = "%PDF-".getBytes(StandardCharsets.US_ASCII);
     private final LocalWorkspaceService users;
     private final DocumentRepository documents;
     private final TaskDispatchService taskDispatcher;
@@ -48,6 +57,7 @@ public class DocumentService {
         UUID userId = users.currentUserId();
         UUID documentId = UUID.randomUUID();
         StoredFile storedFile = storage.savePdf(documentId, file);
+        registerRollbackCleanup(storedFile.storagePath());
         String resolvedTitle = title == null || title.isBlank() ? originalFilename(file) : title.trim();
 
         Document document = new Document(
@@ -67,18 +77,33 @@ public class DocumentService {
     }
 
     public List<DocumentResponse> listCurrentUserDocuments() {
+        return listCurrentUserDocuments(100, null).items();
+    }
+
+    public CursorPage<DocumentResponse> listCurrentUserDocuments(int requestedLimit, String rawCursor) {
         UUID userId = users.currentUserId();
-        List<Document> userDocuments = documents.findByUserIdOrderByCreatedAtDesc(userId);
+        int limit = Math.max(1, Math.min(200, requestedLimit));
+        OpaqueCursor cursor = OpaqueCursor.decode(rawCursor);
+        List<Document> fetched = cursor == null
+            ? documents.findCursorPage(userId, limit + 1)
+            : documents.findCursorPageAfter(userId, cursor.timestamp(), cursor.id(), limit + 1);
+        boolean hasNext = fetched.size() > limit;
+        List<Document> userDocuments = hasNext ? fetched.subList(0, limit) : fetched;
         List<UUID> documentIds = userDocuments.stream().map(Document::getId).toList();
         Map<UUID, String> aiNoteStatuses = latestAiNoteStatuses(documentIds);
         Map<UUID, String> embeddingStatuses = embeddingStatuses(documentIds);
-        return userDocuments.stream()
+        List<DocumentResponse> items = userDocuments.stream()
             .map(document -> DocumentResponse.from(
                 document,
                 aiNoteStatuses.getOrDefault(document.getId(), "NOT_STARTED"),
                 embeddingStatuses.getOrDefault(document.getId(), "NOT_STARTED")
             ))
             .toList();
+        Document last = hasNext ? userDocuments.getLast() : null;
+        return new CursorPage<>(
+            items,
+            last == null ? null : new OpaqueCursor(last.getCreatedAt(), last.getId()).encode()
+        );
     }
 
     public DocumentResponse getCurrentUserDocument(UUID id) {
@@ -97,17 +122,13 @@ public class DocumentService {
         if (activeTask != null) {
             return "PROCESSING";
         }
-        try {
-            Integer count = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM document_embeddings WHERE document_id = ? AND embedding IS NOT NULL",
-                Integer.class,
-                documentId
-            );
-            if (count != null && count > 0) {
-                return "READY";
-            }
-        } catch (DataAccessException ignored) {
-            return "NOT_STARTED";
+        Integer count = jdbc.queryForObject(
+            "SELECT COUNT(*) FROM document_embeddings WHERE document_id = ? AND embedding IS NOT NULL",
+            Integer.class,
+            documentId
+        );
+        if (count != null && count > 0) {
+            return "READY";
         }
         return latestEmbeddingTaskStatus(documentId);
     }
@@ -150,17 +171,13 @@ public class DocumentService {
     private Set<UUID> documentsWithEmbeddings(List<UUID> documentIds) {
         if (documentIds.isEmpty()) return Set.of();
         String placeholders = String.join(",", java.util.Collections.nCopies(documentIds.size(), "?"));
-        try {
-            return jdbc.queryForList(
-                    "SELECT document_id FROM document_embeddings WHERE document_id IN (" + placeholders + ") AND embedding IS NOT NULL GROUP BY document_id",
-                    UUID.class,
-                    documentIds.toArray()
-                )
-                .stream()
-                .collect(Collectors.toSet());
-        } catch (DataAccessException ignored) {
-            return Set.of();
-        }
+        return jdbc.queryForList(
+                "SELECT document_id FROM document_embeddings WHERE document_id IN (" + placeholders + ") AND embedding IS NOT NULL GROUP BY document_id",
+                UUID.class,
+                documentIds.toArray()
+            )
+            .stream()
+            .collect(Collectors.toSet());
     }
 
     private String latestEmbeddingTaskStatus(UUID documentId) {
@@ -174,13 +191,51 @@ public class DocumentService {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("PDF file is required");
         }
-        String name = originalFilename(file).toLowerCase();
+        String name = originalFilename(file).toLowerCase(Locale.ROOT);
         if (!name.endsWith(".pdf")) {
             throw new IllegalArgumentException("Only PDF uploads are supported");
+        }
+        if (!hasPdfSignature(file)) {
+            throw new IllegalArgumentException("Uploaded file is not a valid PDF");
+        }
+    }
+
+    private boolean hasPdfSignature(MultipartFile file) {
+        try (InputStream input = file.getInputStream()) {
+            byte[] prefix = input.readNBytes(PDF_HEADER_SCAN_BYTES);
+            for (int offset = 0; offset <= prefix.length - PDF_SIGNATURE.length; offset++) {
+                boolean matches = true;
+                for (int index = 0; index < PDF_SIGNATURE.length; index++) {
+                    if (prefix[offset + index] != PDF_SIGNATURE[index]) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (IOException error) {
+            throw new IllegalArgumentException("Could not read uploaded PDF", error);
         }
     }
 
     private String originalFilename(MultipartFile file) {
         return file.getOriginalFilename() == null ? "untitled.pdf" : file.getOriginalFilename();
+    }
+
+    private void registerRollbackCleanup(String storagePath) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Upload persistence requires an active transaction");
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_ROLLED_BACK) {
+                    storage.deleteIfExists(storagePath);
+                }
+            }
+        });
     }
 }

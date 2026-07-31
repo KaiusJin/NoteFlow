@@ -33,6 +33,7 @@ public class FlashcardGenerationService {
         options.put("groupBySection", !Boolean.FALSE.equals(request.groupBySection()));
         if (scope.containsKey("focus")) options.put("focus", scope.get("focus"));
         UUID primary = sources.get(0).getId();
+        support.lockGenerationVersion("flashcard", primary);
         String scopeJson = support.json(scope);
         String optionsJson = support.json(options);
         var active = support.jdbc().queryForList("""

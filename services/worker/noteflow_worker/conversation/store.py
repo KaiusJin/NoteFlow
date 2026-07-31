@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from uuid import uuid4
 
-from noteflow_worker.db.repository import ensure_task_constraints
+from noteflow_worker.db.schema import require_tables
 from noteflow_worker.memory.store import MemoryStore
 
 
@@ -36,89 +36,23 @@ class ConversationStore(MemoryStore):
     """Persistence for answer turns: message lifecycle and durable citations.
 
     Extends MemoryStore so one instance serves both the memory contract and
-    the answer-turn contract; DDL stays idempotent and mirrors the Java
-    conversation service exactly (either side may start first).
+    the answer-turn contract. Flyway owns schema changes; this store only
+    validates that its required tables are present.
     """
 
     def ensure_conversation_schema(self) -> None:
         self.ensure_memory_schema()
         with self.connect() as conn:
-            for statement in [
-                "ALTER TABLE rag_messages ADD COLUMN IF NOT EXISTS model_provider VARCHAR(64)",
-                "ALTER TABLE rag_messages ADD COLUMN IF NOT EXISTS model_name VARCHAR(128)",
-                "ALTER TABLE rag_messages ADD COLUMN IF NOT EXISTS structured_response_json TEXT",
-                "ALTER TABLE rag_messages ADD COLUMN IF NOT EXISTS error_message TEXT",
-                "ALTER TABLE rag_messages ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ",
-                # Conversation turns are not document-scoped tasks.
-                "ALTER TABLE tasks ALTER COLUMN document_id DROP NOT NULL",
-            ]:
-                conn.execute(statement)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS rag_message_citations (
-                  id UUID PRIMARY KEY,
-                  message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
-                  citation_index INTEGER NOT NULL,
-                  source_domain VARCHAR(32) NOT NULL,
-                  source_object_type VARCHAR(64) NOT NULL,
-                  source_object_ids JSONB NOT NULL,
-                  document_id UUID NOT NULL,
-                  page_start INTEGER,
-                  page_end INTEGER,
-                  source_title VARCHAR(500),
-                  evidence_snapshot TEXT NOT NULL,
-                  retrieval_score DOUBLE PRECISION,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(message_id, citation_index)
-                )
-                """
+            require_tables(
+                conn,
+                (
+                    "rag_message_citations",
+                    "conversation_task_targets",
+                    "agent_run_steps",
+                    "agent_run_snapshots",
+                    "agent_task_waits",
+                ),
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS conversation_task_targets (
-                  task_id UUID PRIMARY KEY,
-                  conversation_id UUID NOT NULL,
-                  message_id UUID NOT NULL,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_run_steps (
-                  id UUID PRIMARY KEY,
-                  message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
-                  step_index INTEGER NOT NULL,
-                  thought TEXT,
-                  action_type VARCHAR(32) NOT NULL,
-                  tool VARCHAR(128),
-                  args_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                  observation TEXT NOT NULL,
-                  ok BOOLEAN NOT NULL DEFAULT TRUE,
-                  tokens INTEGER NOT NULL DEFAULT 0,
-                  latency_ms INTEGER NOT NULL DEFAULT 0,
-                  handle_json JSONB,
-                  error_message TEXT,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                  UNIQUE(message_id, step_index)
-                )
-                """
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_run_steps_message ON agent_run_steps(message_id, step_index)")
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS agent_run_snapshots (
-                  message_id UUID PRIMARY KEY REFERENCES rag_messages(id) ON DELETE CASCADE,
-                  conversation_id UUID NOT NULL,user_id UUID NOT NULL,question TEXT NOT NULL,
-                  status VARCHAR(24) NOT NULL,state_json JSONB NOT NULL,waiting_task_id UUID,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())"""
-            )
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS agent_task_waits (
-                  task_id UUID NOT NULL,message_id UUID NOT NULL REFERENCES rag_messages(id) ON DELETE CASCADE,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(task_id,message_id))"""
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_task_waits_task ON agent_task_waits(task_id)")
-            ensure_task_constraints(conn)
 
     def load_message(self, message_id: str) -> dict:
         with self.connect() as conn:

@@ -25,11 +25,17 @@ public class DocumentTaskQueue {
     }
 
     public void enqueue(Task task, java.util.UUID attemptId, java.util.UUID conversationId, java.util.UUID messageId) {
+        enqueue(task, attemptId, conversationId, messageId, null);
+    }
+
+    public void enqueue(Task task, java.util.UUID attemptId, java.util.UUID conversationId, java.util.UUID messageId,
+            java.util.UUID eventId) {
         String attemptField = attemptId == null ? "" : ",\"attemptId\":\"" + attemptId + "\"";
         String conversationField = conversationId == null ? "" : ",\"conversationId\":\"" + conversationId + "\"";
         String messageField = messageId == null ? "" : ",\"messageId\":\"" + messageId + "\"";
+        String eventField = eventId == null ? "" : ",\"eventId\":\"" + eventId + "\"";
         String payload = """
-            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s%s%s}
+            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s%s%s%s}
             """.formatted(
                 task.getId(),
                 task.getDocumentId() == null ? "null" : "\"" + task.getDocumentId() + "\"",
@@ -39,7 +45,8 @@ public class DocumentTaskQueue {
                 Instant.now().toEpochMilli() / 1000.0,
                 attemptField,
                 conversationField,
-                messageField
+                messageField,
+                eventField
             ).trim();
         redis.opsForList().rightPush(priorityQueueName(task.getPriority()), payload);
     }

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from noteflow_worker.config import settings
+from noteflow_worker.runtime.limits import process_resource_slot
 
 ALLOWED_SECTION_TYPES = {
     "KEY_IDEAS",
@@ -214,8 +215,9 @@ def post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=settings.notes_request_timeout_seconds) as response:
-            return json.loads(response.read().decode("utf-8"))
+        with process_resource_slot("notes_provider", settings.notes_max_concurrent_requests):
+            with urllib.request.urlopen(request, timeout=settings.notes_request_timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Notes API HTTP {exc.code}: {body[:1000]}") from exc
