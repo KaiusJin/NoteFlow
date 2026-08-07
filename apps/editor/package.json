@@ -9,7 +9,7 @@
     "watch": "vite build --watch"
   },
   "dependencies": {
-    "@milkdown/crepe": "^7.21.3",
+    "@milkdown/crepe": "^7.22.0",
     "@milkdown/kit": "^7.21.3"
   },
   "devDependencies": {
