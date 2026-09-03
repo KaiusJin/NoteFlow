@@ -1,12 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeading } from "../components/PageHeading";
 import { StatusPill } from "../components/StatusPill";
 import { apiPage, apiRequest } from "../lib/api";
-import type { DocumentSummary } from "../types";
-
-interface StudySet { id: string; title: string; status: string; version: number; created_at: string }
+import type { DocumentSummary, StudySet } from "../types";
 
 export default function StudyPage() {
   const queryClient = useQueryClient();
@@ -45,14 +44,14 @@ export default function StudyPage() {
 
       {!documentId ? <EmptyState icon="◇" title="Choose what to practice">Only parsed, ready documents are offered as study sources.</EmptyState> : (
         <div className="study-columns">
-          <StudySetList title="Flashcard decks" empty="No flashcard decks yet." items={decks.data ?? []} />
-          <StudySetList title="Quizzes" empty="No quizzes yet." items={quizzes.data ?? []} />
+          <StudySetList title="Flashcard decks" empty="No flashcard decks yet." items={decks.data ?? []} kind="flashcards" />
+          <StudySetList title="Quizzes" empty="No quizzes yet." items={quizzes.data ?? []} kind="quizzes" />
         </div>
       )}
     </div>
   );
 }
 
-function StudySetList({ title, empty, items }: { title: string; empty: string; items: StudySet[] }) {
-  return <section className="panel"><div className="section-heading"><div><p className="eyebrow">Generated sets</p><h2>{title}</h2></div></div>{items.length === 0 ? <p className="muted-copy">{empty}</p> : items.map((item) => <article className="study-set" key={item.id}><div><strong>{item.title}</strong><small>Version {item.version}</small></div><StatusPill status={item.status} /></article>)}</section>;
+function StudySetList({ title, empty, items, kind }: { title: string; empty: string; items: StudySet[]; kind: "flashcards" | "quizzes" }) {
+  return <section className="panel"><div className="section-heading"><div><p className="eyebrow">Generated sets</p><h2>{title}</h2></div></div>{items.length === 0 ? <p className="muted-copy">{empty}</p> : items.map((item) => item.status === "READY" ? <Link className="study-set study-set-link" key={item.id} to={`/study/${kind}/${item.id}`}><div><strong>{item.title}</strong><small>Version {item.version}</small></div><span><StatusPill status={item.status} /> <i aria-hidden="true">→</i></span></Link> : <article className="study-set" key={item.id}><div><strong>{item.title}</strong><small>Version {item.version}</small></div><StatusPill status={item.status} /></article>)}</section>;
 }

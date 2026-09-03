@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState, type ChangeEvent, type DragEvent, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeading } from "../components/PageHeading";
 import { StatusPill } from "../components/StatusPill";
@@ -92,12 +93,13 @@ export default function DocumentsPage() {
         {!documents.isLoading && items.length === 0 ? <EmptyState icon="▤" title="No documents yet">Your first uploaded source will appear here.</EmptyState> : null}
         <div className="document-grid">
           {items.map((document) => (
-            <article className="document-card" key={document.id}>
+            <Link className="document-card document-card-link" key={document.id} to={`/documents/${document.id}`}>
               <div className="document-card-top"><span className="file-mark large">PDF</span><StatusPill status={document.status} /></div>
               <h3>{document.title}</h3>
               <p>{document.originalFilename}</p>
               <dl><div><dt>Pages</dt><dd>{document.pageCount ?? "—"}</dd></div><div><dt>Notes</dt><dd>{document.aiNoteStatus ?? "Not generated"}</dd></div></dl>
-            </article>
+              <span className="document-open">Open workspace <span aria-hidden="true">→</span></span>
+            </Link>
           ))}
         </div>
         {documents.hasNextPage ? <button className="secondary-button load-more" type="button" disabled={documents.isFetchingNextPage} onClick={() => void documents.fetchNextPage()}>{documents.isFetchingNextPage ? "Loading…" : "Load more"}</button> : null}

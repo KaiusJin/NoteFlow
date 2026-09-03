@@ -46,11 +46,11 @@ export default function DashboardPage() {
           ) : (
             <div className="document-list compact-list">
               {recentDocuments.map((document) => (
-                <article className="document-row" key={document.id}>
+                <Link className="document-row document-row-link" key={document.id} to={`/documents/${document.id}`}>
                   <span className="file-mark">PDF</span>
                   <div className="document-copy"><strong>{document.title}</strong><small>{document.pageCount ? `${document.pageCount} pages` : "Page count pending"} · {formatDate(document.createdAt)}</small></div>
                   <StatusPill status={document.status} />
-                </article>
+                </Link>
               ))}
             </div>
           )}
