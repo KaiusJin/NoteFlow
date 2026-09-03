@@ -19,6 +19,8 @@ flowchart LR
     A --> O[(task_outbox)]
     O -->|短事务领取| P[Outbox Publisher]
     P -->|事务外网络调用| R[(Redis 优先级队列)]
+    P -->|Redis cooldown 合并| C[Cloud Run Jobs API]
+    C --> W
     R -->|Redis delivery lease| W[Python Worker]
     W -->|CAS execution_id| T
     W -->|心跳 / 完成 / 重试| T
@@ -36,6 +38,7 @@ flowchart LR
 6. 正常业务失败已由 pipeline 写成 `FAILED`，消费者确认消息，不做无意义重试。只有逃逸异常进入有界重试，超过预算进入带原因与时间戳的 DLQ。
 7. Redis 消息丢失或 Redis 暂时不可用不会永久卡住任务：恢复扫描会重新发布数据库中的 `RETRYING` 行。重复消息由数据库领取操作廉价拒绝。
 8. SIGTERM/SIGINT 触发有界 drain；线程池和进程池不会再因 context manager 的隐式无限等待而阻止容器退出。
+9. outbox 成功写入 Redis 后，API 用自身 workload identity 调用 Cloud Run Jobs `jobs.run`；Redis cooldown key 合并并发唤醒，30 秒低频队列检查负责补偿控制面失败。
 
 ## 并发模型
 
@@ -55,7 +58,7 @@ flowchart LR
 
 ## 代价与后续
 
-该设计选择“至少一次投递 + 数据库幂等执行”，不承诺端到端 exactly-once；外部 AI 调用仍可能在响应返回前发生网络中断，因此生成物写入也必须保持幂等键或版本约束。后续需要增加 DLQ 管理端点、队列/租约指标告警，以及正式的 Cloud Run 唤醒器。
+该设计选择“至少一次投递 + 数据库幂等执行”，不承诺端到端 exactly-once；外部 AI 调用仍可能在响应返回前发生网络中断，因此生成物写入也必须保持幂等键或版本约束。后续需要增加 DLQ 管理端点、队列/租约指标告警，以及在真实 GCP 项目验证 Cloud Run IAM 与任务启动延迟。
 
 ## 未采用方案
 

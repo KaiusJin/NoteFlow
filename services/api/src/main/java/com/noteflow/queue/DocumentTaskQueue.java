@@ -2,12 +2,18 @@ package com.noteflow.queue;
 
 import com.noteflow.tasks.Task;
 import java.time.Instant;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
 public class DocumentTaskQueue {
+    private static final DefaultRedisScript<Long> PENDING_TASK_COUNT = new DefaultRedisScript<>(
+        "local total = 0; for _, key in ipairs(KEYS) do total = total + redis.call('LLEN', key); end; return total",
+        Long.class
+    );
     private final String queueName;
     private final StringRedisTemplate redis;
 
@@ -49,6 +55,14 @@ public class DocumentTaskQueue {
                 eventField
             ).trim();
         redis.opsForList().rightPush(priorityQueueName(task.getPriority()), payload);
+    }
+
+    public boolean hasPendingTasks() {
+        Long count = redis.execute(
+            PENDING_TASK_COUNT,
+            List.of(priorityQueueName(0), priorityQueueName(1), priorityQueueName(2))
+        );
+        return count != null && count > 0;
     }
 
     private String priorityQueueName(int priority) {

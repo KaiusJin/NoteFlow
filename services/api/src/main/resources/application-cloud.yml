@@ -33,3 +33,11 @@ noteflow:
     allowed-origin-patterns: ${NOTEFLOW_ALLOWED_ORIGINS}
   security:
     internal-token: ${NOTEFLOW_INTERNAL_TOKEN}
+  worker:
+    # Full resource name: projects/<project>/locations/<region>/jobs/<job>.
+    # Leave blank for a continuously running worker. When set, the API uses its
+    # Cloud Run service identity to start a scale-to-zero worker job on demand.
+    cloud-run-job-resource: ${NOTEFLOW_CLOUD_RUN_JOB_RESOURCE:}
+    wakeup-cooldown-seconds: ${NOTEFLOW_WORKER_WAKEUP_COOLDOWN_SECONDS:20}
+    wakeup-recovery-millis: ${NOTEFLOW_WORKER_WAKEUP_RECOVERY_MILLIS:30000}
+    launch-timeout-seconds: ${NOTEFLOW_WORKER_LAUNCH_TIMEOUT_SECONDS:10}

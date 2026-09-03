@@ -34,12 +34,19 @@ Redis 不保存最终业务事实；它负责需要低延迟的数据流职责�
 
 推荐运行方式：
 
-1. API 完成 outbox 发布后，调用 Cloud Run Jobs Executions API 唤醒一个 worker job。
+1. API 完成 outbox 发布后，调用 Cloud Run Jobs Executions API 唤醒一个 worker job；多个 API 实例通过 Redis cooldown key 合并重复唤醒。
 2. job 设置 `WORKER_MAX_TASKS_PER_RUN=20`，领取一批任务；队列清空或达到上限后退出。
-3. 增加一个低频恢复触发器，只用于处理“Redis 已入队但即时唤醒调用失败”的情况，而不是持续轮询。
+3. API 每 30 秒用一条 Redis Lua 命令检查三个优先级队列；只在仍有积压时补发唤醒，用于处理“Redis 已入队但即时唤醒调用失败”的情况。
 4. 本地开发可保持 `WORKER_MAX_TASKS_PER_RUN=0`，连接本机 Redis 常驻运行。
 
-当前仓库已经实现 job 的“有限任务后退出”能力；正式部署前仍需实现并验证 API 到 Cloud Run Job 的 IAM 唤醒器。这是上线阻断项，不能用文档假装已经完成。
+当前仓库已经实现 job 的“有限任务后退出”和 API 到 Cloud Run Jobs v2 `jobs.run` 的唤醒器。API 使用 Cloud Run metadata server 获取短期 access token，不保存 Google service-account JSON key。部署时仍必须把 API 的运行身份授予目标 job 的 `roles/run.invoker`，并在真实 GCP 项目做一次端到端验证。
+
+关键环境变量：
+
+- `NOTEFLOW_CLOUD_RUN_JOB_RESOURCE=projects/<project>/locations/<region>/jobs/<job>`
+- `WORKER_MAX_TASKS_PER_RUN=20`
+- `NOTEFLOW_WORKER_WAKEUP_COOLDOWN_SECONDS=20`
+- `NOTEFLOW_WORKER_WAKEUP_RECOVERY_MILLIS=30000`
 
 ## 数据库连接预算
 
@@ -73,7 +80,8 @@ Redis 不保存最终业务事实；它负责需要低延迟的数据流职责�
 - [x] PostgreSQL outbox、Redis delivery lease、数据库 execution lease、有限重试/DLQ
 - [x] 有界线程池、PDF 进程池、连接池预算和优雅停机
 - [ ] Supabase Storage 对象存储替换本地文件路径
-- [ ] Cloud Run API/Job 容器与 IAM 唤醒器
+- [x] Cloud Run IAM 无密钥唤醒器、Redis 合并和低频恢复机制
+- [ ] Cloud Run API/Job 容器、部署清单与真实 IAM 验证
 - [ ] Supabase 项目中的真实 Auth/Google/邮件模板端到端验证
 - [ ] GitHub branch protection required checks 与 Preview/production 部署工作流
 - [ ] 备份、DLQ 运维入口、成本/错误率告警和恢复演练

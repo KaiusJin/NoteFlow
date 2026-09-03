@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 import com.noteflow.queue.DocumentTaskQueue;
@@ -22,6 +23,7 @@ class TaskOutboxPublisherTest {
     private TaskOutboxClaimService claims;
     private TaskOutboxSettlementService settlements;
     private DocumentTaskQueue queue;
+    private WorkerWakeupCoordinator workerWakeup;
     private TaskOutboxPublisher publisher;
 
     @BeforeEach
@@ -31,7 +33,8 @@ class TaskOutboxPublisherTest {
         claims = Mockito.mock(TaskOutboxClaimService.class);
         settlements = Mockito.mock(TaskOutboxSettlementService.class);
         queue = Mockito.mock(DocumentTaskQueue.class);
-        publisher = new TaskOutboxPublisher(outbox, claims, settlements, tasks, queue, 12, 30);
+        workerWakeup = Mockito.mock(WorkerWakeupCoordinator.class);
+        publisher = new TaskOutboxPublisher(outbox, claims, settlements, tasks, queue, workerWakeup, 12, 30);
     }
 
     @Test
@@ -46,6 +49,7 @@ class TaskOutboxPublisherTest {
 
         verify(queue).enqueue(task, null, null, null, event.getId());
         verify(settlements).markPublished(eq(event.getId()), any(UUID.class));
+        verify(workerWakeup).requestWakeup();
     }
 
     @Test
@@ -62,6 +66,7 @@ class TaskOutboxPublisherTest {
         assertEquals(1, publisher.publishBatch(10));
 
         verify(settlements).markFailed(eq(event.getId()), any(UUID.class), any(IllegalStateException.class), eq(12));
+        verify(workerWakeup, never()).requestWakeup();
     }
 
     @Test
