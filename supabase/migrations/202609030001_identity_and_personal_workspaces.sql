@@ -100,6 +100,21 @@ begin
     provisional_username := 'user_' || substring(replace(new.id::text, '-', '') from 1 for 12);
   end if;
 
+  -- Compatibility projection for the existing Spring domain schema. Supabase
+  -- Auth remains the credential source; this row contains no password/session.
+  insert into public.users (id, display_name, email, created_at, updated_at)
+  values (
+    new.id,
+    nullif(trim(coalesce(new.raw_user_meta_data ->> 'full_name', new.raw_user_meta_data ->> 'name', '')), ''),
+    new.email,
+    now(),
+    now()
+  )
+  on conflict (id) do update set
+    display_name = excluded.display_name,
+    email = excluded.email,
+    updated_at = now();
+
   insert into public.profiles (id, username, display_name, avatar_url, onboarding_completed)
   values (
     new.id,
@@ -109,8 +124,8 @@ begin
     profile_is_complete
   );
 
-  insert into public.workspaces (owner_id, name, kind)
-  values (new.id, 'My workspace', 'personal')
+  insert into public.workspaces (id, owner_id, name, kind)
+  values (new.id, new.id, 'My workspace', 'personal')
   returning id into personal_workspace_id;
 
   insert into public.workspace_members (workspace_id, user_id, role)

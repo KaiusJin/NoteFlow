@@ -4,12 +4,16 @@ This project delegates passwords, one-time codes, sessions and Google OAuth toke
 
 ## 1. Create the project and schema
 
-Link the Supabase CLI project, then apply `supabase/migrations/202609030001_identity_and_personal_workspaces.sql`. The migration creates:
+The current transition has two explicit schema owners: Flyway owns the NoteFlow domain tables and Supabase owns the managed `auth` schema. Apply Spring/Flyway migrations V1–V5 to the empty Supabase database first, then link the Supabase CLI project and apply `supabase/migrations/202609030001_identity_and_personal_workspaces.sql`. Never let both tools define the same table.
+
+The Supabase migration creates:
 
 - `profiles`, with a unique normalized username and row-level security;
 - `workspaces` and `workspace_members`, which establish the tenant boundary;
 - an `auth.users` trigger that creates the profile and personal workspace in the same transaction;
 - `username_available`, a narrowly scoped registration check available to anonymous clients.
+
+It also maintains a credential-free row in the legacy `public.users` table. This is a compatibility projection for existing foreign keys; Supabase `auth.users` remains the identity source. The personal workspace initially uses the same UUID as the Auth user so existing `user_id` tenant columns remain enforceable during the workspace-column migration.
 
 Do not copy password hashes, email verification codes or refresh tokens into public tables.
 
