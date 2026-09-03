@@ -81,7 +81,8 @@ Redis 不保存最终业务事实；它负责需要低延迟的数据流职责�
 - [x] 有界线程池、PDF 进程池、连接池预算和优雅停机
 - [x] cloud profile 的私有 Supabase Storage、Worker 临时物化和派生 PNG 回传
 - [x] Cloud Run IAM 无密钥唤醒器、Redis 合并和低频恢复机制
-- [ ] Cloud Run API/Job 容器、部署清单与真实 IAM 验证
+- [x] 非 root Cloud Run API/Job 容器、版本化部署模板与容器安全扫描
+- [ ] 真实 GCP 项目的 Secret Manager、job-scoped IAM 与冷启动验证
 - [ ] Supabase 项目中的真实 Auth/Google/邮件模板端到端验证
 - [ ] GitHub branch protection required checks 与 Preview/production 部署工作流
 - [ ] 备份、DLQ 运维入口、成本/错误率告警和恢复演练

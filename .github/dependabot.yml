@@ -15,6 +15,26 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /tests/e2e
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /apps/web-v2
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /services/api
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: docker
+    directory: /services/worker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
   - package-ecosystem: github-actions
     directory: /
     schedule:

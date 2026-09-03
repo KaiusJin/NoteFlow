@@ -1,0 +1,65 @@
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: noteflow-worker
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/secrets: >-
+          database-url:projects/PROJECT_NUMBER/secrets/noteflow-database-url,
+          redis-url:projects/PROJECT_NUMBER/secrets/noteflow-redis-url,
+          internal-token:projects/PROJECT_NUMBER/secrets/noteflow-internal-token,
+          supabase-secret:projects/PROJECT_NUMBER/secrets/noteflow-supabase-secret
+    spec:
+      taskCount: 1
+      parallelism: 1
+      template:
+        spec:
+          serviceAccountName: noteflow-worker@PROJECT_ID.iam.gserviceaccount.com
+          maxRetries: 1
+          timeoutSeconds: "3600"
+          containers:
+            - image: REGION-docker.pkg.dev/PROJECT_ID/noteflow/worker:IMAGE_TAG
+              resources:
+                limits:
+                  cpu: "2"
+                  memory: 4Gi
+              env:
+                - name: NOTEFLOW_API_URL
+                  value: https://API_HOSTNAME
+                - name: SUPABASE_URL
+                  value: https://PROJECT_REF.supabase.co
+                - name: SUPABASE_STORAGE_BUCKET
+                  value: noteflow-private
+                - name: WORKER_MAX_TASKS_PER_RUN
+                  value: "20"
+                - name: WORKER_MAX_CONCURRENT_TASKS
+                  value: "3"
+                - name: WORKER_MAX_BACKGROUND_TASKS
+                  value: "1"
+                - name: WORKER_PARSE_PROCESS_WORKERS
+                  value: "1"
+                - name: DB_POOL_MAX_SIZE
+                  value: "4"
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: database-url
+                      key: "1"
+                - name: REDIS_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: redis-url
+                      key: "1"
+                - name: NOTEFLOW_INTERNAL_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: internal-token
+                      key: "1"
+                - name: SUPABASE_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: supabase-secret
+                      key: "1"

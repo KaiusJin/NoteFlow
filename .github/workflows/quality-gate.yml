@@ -157,6 +157,24 @@ jobs:
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
+      - name: Build production API container
+        run: docker build --tag noteflow-api:ci services/api
+      - name: Build production Worker container
+        run: docker build --tag noteflow-worker:ci services/worker
+      - name: Scan API container
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          image-ref: noteflow-api:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - name: Scan Worker container
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        with:
+          image-ref: noteflow-worker:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0.20.6
         with:
