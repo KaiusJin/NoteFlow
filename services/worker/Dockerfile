@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ghcr.io/astral-sh/uv:0.10.10 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.9 AS uv
 
 FROM python:3.14.4-slim-bookworm AS build
 WORKDIR /build
