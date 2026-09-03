@@ -16,7 +16,7 @@ dependencies = [
     "psycopg[binary,pool]==3.3.4",
     "pydantic==2.13.4",
     "pydantic-settings==2.14.2",
-    "pymupdf==1.27.2.3",
+    "pymupdf==1.28.2",
     "pypdf==6.16.1",
     "pytesseract==0.3.13",
     "redis==6.4.0",
