@@ -2,13 +2,13 @@
 
 FROM ghcr.io/astral-sh/uv:0.10.10 AS uv
 
-FROM python:3.14.4-slim-bookworm AS build
+FROM python:3.14.7-slim-bookworm AS build
 WORKDIR /build
 COPY --from=uv /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-FROM python:3.14.4-slim-bookworm AS runtime
+FROM python:3.14.7-slim-bookworm AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
