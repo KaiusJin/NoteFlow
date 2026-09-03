@@ -153,7 +153,7 @@ jobs:
       - name: Scan repository filesystem
         # v0.36.0, pinned to its immutable upstream commit after the 2026
         # Trivy Action tag migration/supply-chain incident.
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           scan-type: fs
           scan-ref: .
@@ -165,14 +165,14 @@ jobs:
       - name: Build production Worker container
         run: docker build --tag noteflow-worker:ci services/worker
       - name: Scan API container
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: noteflow-api:ci
           severity: HIGH,CRITICAL
           exit-code: "1"
           ignore-unfixed: true
       - name: Scan Worker container
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25
         with:
           image-ref: noteflow-worker:ci
           severity: HIGH,CRITICAL
