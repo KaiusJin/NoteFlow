@@ -1,9 +1,72 @@
 # NoteFlow 业务完成度、性能与重构审计
 
 > 审计日期：2026-09-03  
-> 审计对象：`agent/noteflow-security-remediation`，HEAD `1688876`，以及当前未提交工作区  
-> 文档性质：发布决策与重构建议。本文不把“测试通过”直接等同于“产品可发布”。  
-> 重要说明：审计期间未修改业务代码；当前未提交改动均按用户资产保留。
+> 审计对象：`agent/noteflow-security-remediation`、PR #27，以及审计开始时的未提交工作区
+> 文档性质：发布决策、重构建议与实施验收记录。本文不把“测试通过”直接等同于“产品可发布”。
+> 重要说明：第 1–15 节保留审计开始时的基线证据；下面的“实施更新”是当前状态的优先解释。
+
+## 0. 实施更新（2026-09-03，优先于后文基线）
+
+### 0.1 已确定的产品与部署边界
+
+本轮已按讨论结果正式选择：**登录制、云端保存的 Web App/PWA**。主前端使用 React + TypeScript + Vite 并部署到 Cloudflare Pages；Supabase 提供 Auth、Postgres/pgvector 和私有 Storage；Spring Boot API 与 Python/LangGraph Worker 保留；Redis 继续承担任务分发、租约、退避和死信语义。第一阶段的离线能力只包括应用壳和 IndexedDB 草稿，不承诺离线 AI 推理。
+
+这套方案不要求固定购买 Railway。低流量演示可以用 Cloudflare Pages、Supabase 免费额度、Upstash Redis 免费额度以及 Cloud Run scale-to-zero/Job 的免费额度起步；但免费额度、区域和价格会变化，且模型调用、超额资源、网络流量和冷启动仍需接受真实运行监控。部署决策与变量清单见 `docs/deployment/FREE_CLOUD_ARCHITECTURE.md`。
+
+### 0.2 本轮已落地
+
+| 范围 | 当前实现 | 状态 |
+|---|---|---:|
+| 身份 | 邮箱+密码、6 位邮箱 OTP、重发验证码、用户名唯一性、Google OAuth；Spring 验证 Supabase JWT | 代码完成，待真实 Supabase 配置 |
+| 多租户 | `profiles/workspaces/workspace_members`、RLS、服务端 tenant context、内部服务身份 | 代码完成，待两用户云端隔离 E2E |
+| 前端 | 模块化 PWA；文档上传/列表/详情、Search、Agent、AI 笔记、IndexedDB 草稿、云端保存、闪卡复习、Quiz 作答/评分、设置 | MVP 主闭环完成 |
+| 私有文件 | API 上传 Supabase 私有 bucket；Worker 临时下载、派生 PNG 回传和清理；API 鉴权代理资源 | 代码完成，待真实 bucket E2E |
+| Redis/任务 | outbox、优先级队列、Redis lease、DB CAS execution lease、有限重试、DLQ、恢复、Cloud Run Job 唤醒 | 完成并有回归测试 |
+| 并发 | Java 有界执行池和超时降级；Python 有界线程/进程池、全局 provider 限流、优雅停机 | 完成 |
+| Agent | 现有 LangGraph/ReAct、工具权限、暂停/恢复和引用链保留 | 保留并加固 |
+| 运行交付 | API/Worker 非 root Dockerfile、Cloud Run Service/Job 模板、Supabase/Upstash/Cloudflare 配置说明 | 可重复构建，尚未真实部署 |
+| 工程治理 | PR #27、main 强制 PR、管理员也受保护、严格 required checks、线性历史、禁止 force push/删除 | 完成 |
+
+### 0.3 本轮修复的性能与正确性问题
+
+- 修复跨用户 AI 设置快照串用，并把按用户缓存限制为 1024 项 access-order LRU；用户 API Key 不再进入 Gemini URL 或回显上游错误体。
+- 会话消息与引用改为批量查询；消息分页取“最新一页”再正序返回，避免超过 100 条后只看到最旧消息。
+- `ContextBuilder` 只读取命中 chunk 的前后邻居，不再把每个命中文档的全部正文装入内存。
+- 自定义检索 scope、学习目标文档校验、文件夹删除、Quiz 自动评分均改为批量数据库操作。
+- AI 笔记版本分配加入 PostgreSQL advisory lock；HyDE 增加独立超时并可降级。
+- 全局 API 异常处理覆盖格式错误、数据冲突、超大上传和未知异常，同时保留框架原有 4xx 状态。
+- 前端继续按页面拆包；新增页面后生产构建约 553 KiB precache，React/数据层仍保持懒加载与请求去重。
+
+### 0.4 验证证据
+
+| 验证 | 当前结果 |
+|---|---:|
+| Java 测试 | 88，0 failure |
+| Python 测试 | 160 passed，13 skipped（跳过项依赖可选外部/数据库条件） |
+| Web v2 | TypeScript + Vite 生产构建通过 |
+| 旧 Web 安全测试 | Playwright 1/1 通过，JavaScript 语法通过 |
+| 容器 | API 与 Worker 镜像本机构建成功；均以 uid 10001 运行 |
+| 配置 | Cloud Run YAML 可解析；`docker-compose config` 通过 |
+| 浏览器 | 登录/注册/验证码表单、移动端 375px、桌面端 1440px 无横向溢出、无控制台错误 |
+
+没有 Supabase、Google OAuth、Upstash 和 GCP 的用户项目凭据，因此**没有**声称真实云端端到端已经通过。上线前必须完成：Supabase migration + Auth 模板/Google provider、私有 bucket、Cloud Run 服务身份与 Secret Manager、Upstash TLS、Cloudflare Pages 环境变量，并用两个测试用户执行上传→解析→笔记→搜索/Agent→复习→重新登录的完整流程。
+
+### 0.5 审计开始时未提交重构的最终处理意见
+
+| 改动组 | 决定 | 原因 |
+|---|---|---|
+| Java 安全/性能重构 | 已修正后纳入 PR | 收益可验证，完整 Java 测试通过；修正了会话分页回归、缓存无界和 4xx 被误报 500 |
+| 旧 Web 事件/错误提示 | 已纳入 PR | 修复持久根节点重复绑定和无提示失败，Playwright 安全测试通过 |
+| Tempo/Collector、`.claude` | 已纳入 PR | 本地观测数据持久化、内存上限明确；个人启动配置不应入库 |
+| `apps/web/vendor/editor` 全量哈希产物替换 | **建议撤回，不纳入 PR** | 约 7.8 万行噪声且新 Web v2 不依赖它；如继续维护旧编辑器，应由 CI 构建 artifact，而非人工提交 hash bundle |
+| `FULL_PROJECT_REVIEW_2026-08-30_ZH.md`、`REMEDIATION_IMPLEMENTATION_2026-08-30_ZH.md` 与指向它们的旧索引改动 | **建议撤回或移入历史目录，不纳入 PR** | 内容假设工作区 clean/本地单用户，已被本文件、ADR 和实际云端实现取代 |
+
+### 0.6 仍未完成、不能包装成“已上线”的部分
+
+1. 真实云资源尚未创建/绑定，故生产域名、邮件投递、Google consent、RLS、私有对象下载和 scale-to-zero 唤醒仍需云端验收。
+2. 文档删除/恢复、模型成本预估与硬配额、编辑冲突 UI、管理员 DLQ 重放面板仍是上线前的高优先级产品项。
+3. CI 已成为 main 合并门禁；PR 只有所有 required checks 成功且分支与 main 同步后才能合并。
+4. 旧 Web 仅作为本地兼容层，不应继续承载新的云端产品功能；富编辑器能力应通过受控 adapter 逐步迁入 Web v2。
 
 ## 1. 结论先行
 
