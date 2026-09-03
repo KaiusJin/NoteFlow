@@ -70,11 +70,11 @@ class ExternalSemanticReranker {
             String modelName = model.startsWith("models/") ? model : "models/" + model;
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(
-                    "https://generativelanguage.googleapis.com/v1beta/"
-                        + modelName + ":generateContent?key=" + apiKey
+                    "https://generativelanguage.googleapis.com/v1beta/" + modelName + ":generateContent"
                 ))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json")
+                .header("x-goog-api-key", apiKey)
                 .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                 .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());

@@ -129,11 +129,11 @@ class HydeQueryExpander {
         ));
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(
-                "https://generativelanguage.googleapis.com/v1beta/"
-                    + modelName + ":generateContent?key=" + geminiApiKey
+                "https://generativelanguage.googleapis.com/v1beta/" + modelName + ":generateContent"
             ))
             .timeout(Duration.ofSeconds(timeoutSeconds))
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", geminiApiKey)
             .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
             .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());

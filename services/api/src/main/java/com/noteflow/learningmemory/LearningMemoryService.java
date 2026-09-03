@@ -182,7 +182,7 @@ public class LearningMemoryService {
 
     public Map<String,Object> explain(String topic, List<UUID> documentIds) {
         String key = topicKey(required(topic, "topic", 1000));
-        List<Map<String,Object>> rows = topicRows(documentIds, 1, "topic_key='" + key.replace("'", "''") + "'", "last_activity_at DESC");
+        List<Map<String,Object>> rows = topicRows(documentIds, 1, null, "last_activity_at DESC", key);
         if (rows.isEmpty()) throw new IllegalArgumentException("No learning memory exists for this topic");
         attachMistakes(rows, documentIds);
         Map<String,Object> explanation = new LinkedHashMap<>(rows.get(0));
@@ -345,10 +345,17 @@ public class LearningMemoryService {
     }
 
     private List<Map<String,Object>> topicRows(List<UUID> documents, int limit, String extra, String order) {
+        return topicRows(documents, limit, extra, order, null);
+    }
+
+    /** When {@code topicKey} is non-null it is bound as a parameter, never interpolated. */
+    private List<Map<String,Object>> topicRows(List<UUID> documents, int limit, String extra, String order, String topicKey) {
         List<Object> args = new ArrayList<>(); args.add(workspaces.currentWorkspaceId());
         String scope = scopeClause(documents, args);
+        if (topicKey != null) args.add(topicKey);
         String filter = extra == null ? "" : " AND " + extra;
         args.add(limit);
+        String topicClause = topicKey == null ? "" : " AND topic_key=? ";
         String sql = """
             SELECT topic_key,MAX(topic) topic,
               SUM(mastery*GREATEST(evidence_weight,0.1))/SUM(GREATEST(evidence_weight,0.1)) mastery,
@@ -359,8 +366,8 @@ public class LearningMemoryService {
               AVG(recent_trend) recent_trend,MAX(last_activity_at) last_activity_at,MAX(last_reviewed_at) last_reviewed_at,
               AVG(stability_days) stability_days,AVG(calibration_error) calibration_error,SUM(lapse_count) lapse_count,
               MIN(next_review_at) next_review_at,BOOL_OR(needs_review) needs_review,MAX(version) version
-            FROM topic_learning_memory WHERE workspace_id=? AND is_active %s %s GROUP BY topic_key ORDER BY %s LIMIT ?
-            """.formatted(scope, filter, order);
+            FROM topic_learning_memory WHERE workspace_id=? AND is_active %s %s %s GROUP BY topic_key ORDER BY %s LIMIT ?
+            """.formatted(scope, topicClause, filter, order);
         return new ArrayList<>(jdbc.queryForList(sql, args.toArray()));
     }
 
