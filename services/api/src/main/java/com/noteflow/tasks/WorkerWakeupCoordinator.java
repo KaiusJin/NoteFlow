@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -25,6 +26,7 @@ public class WorkerWakeupCoordinator {
     private final Executor executor;
     private final ExecutorService ownedExecutor;
 
+    @Autowired
     public WorkerWakeupCoordinator(
             WorkerJobLauncher launcher,
             StringRedisTemplate redis,

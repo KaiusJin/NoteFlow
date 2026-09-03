@@ -16,6 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONPATH=/app
 
 RUN apt-get update \
+    && apt-get upgrade --yes \
     && apt-get install --yes --no-install-recommends libgomp1 tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 noteflow \
