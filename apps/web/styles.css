@@ -2495,3 +2495,26 @@ button.library-subfolder {
 .agent-study-item-main strong { font-size: 0.92rem; }
 .agent-study-scope { font-size: 0.8rem; opacity: 0.7; }
 .agent-study-item-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* Floating notice for library action failures (create/move/import/delete). */
+#library-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 200;
+  max-width: min(560px, calc(100vw - 48px));
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #1f2937;
+  color: #fff;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  white-space: pre-wrap;
+}
+#library-notice.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+#library-notice.error { background: var(--danger, #b91c1c); }
