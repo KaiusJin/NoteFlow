@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@milkdown/crepe": "^7.21.3",
-    "@milkdown/kit": "^7.21.3"
+    "@milkdown/kit": "^7.22.1"
   },
   "devDependencies": {
     "vite": "^6.3.5"
