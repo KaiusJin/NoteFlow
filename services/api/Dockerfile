@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM eclipse-temurin:21-jdk-noble AS build
+FROM eclipse-temurin:25-jdk-noble AS build
 WORKDIR /workspace
 
 COPY gradlew settings.gradle build.gradle gradle.lockfile ./
@@ -14,7 +14,7 @@ COPY src ./src
 RUN ./gradlew bootJar --no-daemon \
     && cp build/libs/noteflow-api-*.jar /workspace/noteflow-api.jar
 
-FROM eclipse-temurin:21-jre-noble AS runtime
+FROM eclipse-temurin:25-jre-noble AS runtime
 RUN groupadd --system --gid 10001 noteflow \
     && useradd --system --uid 10001 --gid noteflow --home-dir /nonexistent --shell /usr/sbin/nologin noteflow
 WORKDIR /app
