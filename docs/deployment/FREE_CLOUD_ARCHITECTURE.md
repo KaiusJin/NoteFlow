@@ -8,14 +8,14 @@
 
 | 层 | 推荐服务 | 固定成本目标 | NoteFlow 中的职责 |
 |---|---|---:|---|
-| 前端 | Cloudflare Pages | $0 | React PWA、静态资源、Preview 部署 |
+| 前端 | Cloudflare Workers Static Assets | $0 | React PWA、静态资源、版本 Preview；初期不执行 Worker 脚本 |
 | 身份/数据库/文件 | Supabase Free | $0 | 邮箱验证码、密码、Google OAuth、PostgreSQL、pgvector、Storage |
 | Redis | Upstash Redis Free | $0 | 优先级队列、delivery lease、重试唤醒、DLQ |
 | API | Google Cloud Run Service，min instances = 0 | 免费额度内可为 $0 | Spring Boot API、JWT/RLS 边界、outbox publisher |
 | Worker | Google Cloud Run Job，按需执行 | 免费额度内可为 $0 | Python/LangGraph、PDF/AI、线程池与进程池 |
 | AI | 用户选择的模型供应商 | 按量付费 | Gemini/OpenAI 等模型调用 |
 
-截至快照日期，Cloudflare Pages Free 文档列出每月 500 次构建等限制；Supabase Free 列出 50,000 MAU、500 MB 数据库、1 GB 文件存储，并提示空闲一周后项目可能暂停；Upstash Redis Free 列出每月 500,000 commands、256 MB；Cloud Run 按实际资源计费并提供月度 free tier。以官方页面为准：[Cloudflare Pages limits](https://developers.cloudflare.com/pages/platform/limits/)、[Supabase pricing](https://supabase.com/pricing)、[Upstash Redis pricing](https://upstash.com/pricing/redis)、[Cloud Run pricing](https://cloud.google.com/run/pricing)。
+截至快照日期，Cloudflare Workers 文档说明 Static Assets 请求免费且不限量；只有实际执行 Worker 脚本的动态请求才计入 Workers 配额。Supabase Free 列出 50,000 MAU、500 MB 数据库、1 GB 文件存储，并提示空闲一周后项目可能暂停；Upstash Redis Free 列出每月 500,000 commands、256 MB；Cloud Run 按实际资源计费并提供月度 free tier。以官方页面为准：[Cloudflare Static Assets billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)、[Supabase pricing](https://supabase.com/pricing)、[Upstash Redis pricing](https://upstash.com/pricing/redis)、[Cloud Run pricing](https://cloud.google.com/run/pricing)。
 
 ## 为什么 Redis 可以保留，而且不是装饰
 
@@ -74,7 +74,7 @@ Redis 不保存最终业务事实；它负责需要低延迟的数据流职责�
 
 ## 上线门槛
 
-- [x] Cloudflare 可部署的 React PWA 基础与安全响应头
+- [x] Cloudflare Workers Static Assets 可部署的 React PWA、SPA fallback 与安全响应头
 - [x] Supabase 邮箱验证码/密码/Google 登录 UI 与身份表迁移
 - [x] Spring JWT resource server、内部服务身份、workspace 隔离
 - [x] PostgreSQL outbox、Redis delivery lease、数据库 execution lease、有限重试/DLQ

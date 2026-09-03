@@ -139,9 +139,12 @@ jobs:
       - name: Build production PWA
         working-directory: apps/web-v2
         run: npm run build
-      - name: Audit Web production dependencies
+      - name: Validate Cloudflare Workers deployment bundle
         working-directory: apps/web-v2
-        run: npm audit --omit=dev --audit-level=high
+        run: npm run deploy:dry-run
+      - name: Audit Web and deployment dependencies
+        working-directory: apps/web-v2
+        run: npm audit --audit-level=high
 
   supply-chain:
     runs-on: ubuntu-latest

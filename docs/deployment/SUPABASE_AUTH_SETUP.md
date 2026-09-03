@@ -27,7 +27,7 @@ Supabase's built-in mail service is suitable only for local trials and has a ver
 
 ## 3. Enable Google OAuth
 
-Create a Google OAuth web client, add the callback URL displayed by **Authentication → Providers → Google**, and configure the client ID and secret there. Add both the Cloudflare Pages production origin and local development origin to the allowed origins/redirect URLs.
+Create a Google OAuth web client, add the callback URL displayed by **Authentication → Providers → Google**, and configure the client ID and secret there. Add both the Cloudflare Worker production origin and local development origin to the allowed origins/redirect URLs.
 
 Google users receive a provisional private profile on first sign-in. NoteFlow immediately asks them to choose a unique username before opening the application.
 
@@ -35,7 +35,7 @@ Google users receive a provisional private profile on first sign-in. NoteFlow im
 
 Copy `apps/web-v2/.env.example` to `apps/web-v2/.env.local` and set the project URL, publishable/anon key and Spring API URL. Only the public Supabase key belongs in the frontend. Never expose a Supabase secret or legacy service-role key.
 
-Cloudflare Pages should build from `apps/web-v2` with command `npm run build` and output directory `dist`. Production secrets and server-only keys belong in the Spring API or worker environment, not Pages.
+Cloudflare Workers Builds should use `apps/web-v2` as the root directory, `npm run build` as the build command, and `npm run deploy` as the deploy command. `wrangler.jsonc` declares `dist` as Static Assets and enables explicit SPA fallback without invoking Worker code. Add `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` and `VITE_API_BASE_URL` as build variables. Production secrets and server-only keys belong in the Spring API or Python worker environment, never in the Cloudflare build or browser bundle.
 
 Configure both trusted runtimes with `SUPABASE_URL`, `SUPABASE_SECRET_KEY` and `SUPABASE_STORAGE_BUCKET=noteflow-private`. Prefer Supabase's current `sb_secret_...` key. `SUPABASE_SERVICE_ROLE_KEY` is accepted only as a legacy migration fallback. Cloud source documents are stored as `supabase://` object references in PostgreSQL; a Worker job downloads one source to ephemeral disk, uploads deterministic derived PNG objects, and removes the temporary directory when the task finishes.
 

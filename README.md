@@ -50,7 +50,7 @@ The first backend and worker modules live in:
 
 - [services/api](services/api): Spring Boot API for document upload, task tracking (SSE), library/folders, study modules, conversational RAG, and hybrid retrieval.
 - [services/worker](services/worker): Python worker for PDF parsing, visual analysis, chunk extraction, embeddings, AI notes generation, study modules, conversation memory, and the tool-calling agent.
-- [apps/web-v2](apps/web-v2): Primary React/TypeScript PWA for Supabase sign-in, documents, grounded search/Agent, offline-safe notes, flashcards, and quizzes. It is deployable to Cloudflare Pages.
+- [apps/web-v2](apps/web-v2): Primary React/TypeScript PWA for Supabase sign-in, documents, grounded search/Agent, offline-safe notes, flashcards, and quizzes. It deploys as a Cloudflare Worker with Static Assets; Spring and Python remain separate Cloud Run runtimes.
 - [apps/web](apps/web): Legacy local workbench retained while remaining editor-only capabilities are migrated.
 - [apps/editor](apps/editor): Source for the legacy vendored CodeMirror editor bundle. Generated hashed assets are not part of the hosted PWA architecture.
 

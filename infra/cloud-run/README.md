@@ -47,7 +47,7 @@ Google documents `roles/run.invoker` as sufficient for `jobs.run`, including cal
      --role roles/run.invoker
    ```
 
-9. Put the resulting API HTTPS URL into `VITE_API_BASE_URL`, deploy `apps/web-v2/dist` to Cloudflare Pages, and set the exact Pages origin as `NOTEFLOW_ALLOWED_ORIGINS`.
+9. Put the resulting API HTTPS URL into `VITE_API_BASE_URL`, deploy `apps/web-v2/dist` through the versioned Cloudflare Workers Static Assets configuration, and set the exact `workers.dev` or custom frontend origin as `NOTEFLOW_ALLOWED_ORIGINS`.
 
 ## Required smoke test
 

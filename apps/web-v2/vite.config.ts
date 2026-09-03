@@ -33,7 +33,7 @@ export default defineConfig({
           {
             urlPattern: ({ request }) => request.destination === "document",
             handler: "NetworkFirst",
-            options: { cacheName: "noteflow-pages", networkTimeoutSeconds: 3 }
+            options: { cacheName: "noteflow-shell", networkTimeoutSeconds: 3 }
           }
         ]
       }

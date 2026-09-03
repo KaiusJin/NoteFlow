@@ -9,9 +9,9 @@
 
 ### 0.1 已确定的产品与部署边界
 
-本轮已按讨论结果正式选择：**登录制、云端保存的 Web App/PWA**。主前端使用 React + TypeScript + Vite 并部署到 Cloudflare Pages；Supabase 提供 Auth、Postgres/pgvector 和私有 Storage；Spring Boot API 与 Python/LangGraph Worker 保留；Redis 继续承担任务分发、租约、退避和死信语义。第一阶段的离线能力只包括应用壳和 IndexedDB 草稿，不承诺离线 AI 推理。
+本轮已按讨论结果正式选择：**登录制、云端保存的 Web App/PWA**。主前端使用 React + TypeScript + Vite，并以不执行动态脚本的 Cloudflare Workers Static Assets 部署；Supabase 提供 Auth、Postgres/pgvector 和私有 Storage；Spring Boot API 与 Python/LangGraph Worker 保留；Redis 继续承担任务分发、租约、退避和死信语义。第一阶段的离线能力只包括应用壳和 IndexedDB 草稿，不承诺离线 AI 推理。
 
-这套方案不要求固定购买 Railway。低流量演示可以用 Cloudflare Pages、Supabase 免费额度、Upstash Redis 免费额度以及 Cloud Run scale-to-zero/Job 的免费额度起步；但免费额度、区域和价格会变化，且模型调用、超额资源、网络流量和冷启动仍需接受真实运行监控。部署决策与变量清单见 `docs/deployment/FREE_CLOUD_ARCHITECTURE.md`。
+这套方案不要求固定购买 Railway。低流量演示可以用 Cloudflare Workers Static Assets、Supabase 免费额度、Upstash Redis 免费额度以及 Cloud Run scale-to-zero/Job 的免费额度起步；但免费额度、区域和价格会变化，且模型调用、超额资源、网络流量和冷启动仍需接受真实运行监控。部署决策与变量清单见 `docs/deployment/FREE_CLOUD_ARCHITECTURE.md`，前端托管决策见 `docs/technical/ADR-004_CLOUDFLARE_WORKERS_STATIC_ASSETS.md`。
 
 ### 0.2 本轮已落地
 
@@ -50,7 +50,7 @@
 | 配置 | Cloud Run YAML 可解析；`docker-compose config` 通过 |
 | 浏览器 | 登录/注册/验证码表单、移动端 375px、桌面端 1440px 无横向溢出、无控制台错误 |
 
-没有 Supabase、Google OAuth、Upstash 和 GCP 的用户项目凭据，因此**没有**声称真实云端端到端已经通过。上线前必须完成：Supabase migration + Auth 模板/Google provider、私有 bucket、Cloud Run 服务身份与 Secret Manager、Upstash TLS、Cloudflare Pages 环境变量，并用两个测试用户执行上传→解析→笔记→搜索/Agent→复习→重新登录的完整流程。
+没有 Supabase、Google OAuth、Upstash、GCP 和 Cloudflare 的用户项目凭据，因此**没有**声称真实云端端到端已经通过。上线前必须完成：Supabase migration + Auth 模板/Google provider、私有 bucket、Cloud Run 服务身份与 Secret Manager、Upstash TLS、Cloudflare Workers Builds 环境变量，并用两个测试用户执行上传→解析→笔记→搜索/Agent→复习→重新登录的完整流程。
 
 ### 0.5 审计开始时未提交重构的最终处理意见
 
