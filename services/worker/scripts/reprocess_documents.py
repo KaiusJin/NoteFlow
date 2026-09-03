@@ -23,7 +23,7 @@ def main() -> int:
     for index, document_id in enumerate(document_ids, start=1):
         with repository.connect() as conn:
             document = conn.execute(
-                "SELECT title FROM documents WHERE id = %s",
+                "SELECT title, user_id FROM documents WHERE id = %s",
                 (document_id,),
             ).fetchone()
             if document is None:
@@ -31,10 +31,10 @@ def main() -> int:
             task_id = str(uuid.uuid4())
             conn.execute(
                 """
-                INSERT INTO tasks (id, status, progress, retry_count, document_id, created_at, updated_at)
-                VALUES (%s, 'PENDING', 0, 0, %s, NOW(), NOW())
+                INSERT INTO tasks (id, status, progress, retry_count, document_id, user_id, created_at, updated_at)
+                VALUES (%s, 'PENDING', 0, 0, %s, %s, NOW(), NOW())
                 """,
-                (task_id, document_id),
+                (task_id, document_id, document["user_id"]),
             )
             conn.execute("UPDATE documents SET status = 'PROCESSING' WHERE id = %s", (document_id,))
 
@@ -44,7 +44,7 @@ def main() -> int:
             TaskPayload(
                 task_id=task_id,
                 document_id=document_id,
-                user_id=str(uuid.uuid4()),
+                user_id=str(document["user_id"]),
                 task_type="PARSE_DOCUMENT",
             )
         )

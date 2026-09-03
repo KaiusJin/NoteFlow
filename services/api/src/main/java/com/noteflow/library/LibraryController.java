@@ -102,10 +102,15 @@ public class LibraryController {
     @GetMapping("/notes/{noteId}/export")
     public ResponseEntity<byte[]> exportNote(@PathVariable UUID noteId) {
         NoteResponse note = library.getNote(noteId);
-        String safeName = (note.title() == null ? "note" : note.title()).replaceAll("[\\\\/:*?\"<>|]", "_");
+        String rawName = (note.title() == null ? "note" : note.title()).replaceAll("[\\\\/:*?\"<>|]", "_");
+        // ASCII fallback replaces non-ASCII characters; the RFC 5987 parameter
+        // carries the UTF-8 encoded original name.
+        String asciiFallback = rawName.replaceAll("[^\\x20-\\x7E]", "_");
+        String utf8Name = java.net.URLEncoder.encode(rawName, StandardCharsets.UTF_8).replace("+", "%20");
         byte[] body = (note.markdown() == null ? "" : note.markdown()).getBytes(StandardCharsets.UTF_8);
         return ResponseEntity.ok()
-            .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeName + ".md\"")
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                "attachment; filename=\"" + asciiFallback + ".md\"; filename*=UTF-8''" + utf8Name + ".md")
             .contentType(MediaType.TEXT_MARKDOWN)
             .body(body);
     }

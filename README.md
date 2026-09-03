@@ -20,16 +20,18 @@ See [docs/technical/WORKFLOW_AND_ARCHITECTURE.md](docs/technical/WORKFLOW_AND_AR
 end-to-end user workflow, service responsibilities, data flow, API links, and
 implementation phases.
 
-For the current shared Quiz/Flashcard generation boundary, Agent tool adapters,
-and local single-workspace persistence model, see
+For the shared Quiz/Flashcard generation boundary and Agent tool adapters, see
 [docs/technical/LOCAL_AGENTIC_STUDY_ARCHITECTURE.md](docs/technical/LOCAL_AGENTIC_STUDY_ARCHITECTURE.md).
+That document records the earlier local-only model; the hosted identity decision
+is superseded by
+[ADR-001](docs/architecture/ADR-001-cloud-web-supabase-identity.md).
 
 ## Database Schema
 
 See [docs/technical/DATABASE_SCHEMA.md](docs/technical/DATABASE_SCHEMA.md) for the table design covering
-documents, async tasks, PDF parse results, and document chunks. NoteFlow no
-longer has an account or `users` table; persisted content belongs to one local
-installation.
+documents, async tasks, PDF parse results, and document chunks. Hosted NoteFlow
+uses Supabase Auth identities and personal workspaces; local development uses a
+compatible seeded workspace profile.
 
 ## PDF Markdown And Chunk Pipeline
 
@@ -46,9 +48,17 @@ pipeline, metadata design, quality assessment, and known limitations.
 
 The first backend and worker modules live in:
 
-- [services/api](services/api): Spring Boot API for PDF upload and task tracking.
-- [services/worker](services/worker): Python worker for PDF parsing, visual analysis, chunk extraction, and AI notes generation.
-- [apps/web](apps/web): Minimal static frontend for PDF upload and task progress.
+- [services/api](services/api): Spring Boot API for document upload, task tracking (SSE), library/folders, study modules, conversational RAG, and hybrid retrieval.
+- [services/worker](services/worker): Python worker for PDF parsing, visual analysis, chunk extraction, embeddings, AI notes generation, study modules, conversation memory, and the tool-calling agent.
+- [apps/web-v2](apps/web-v2): Primary React/TypeScript PWA for Supabase sign-in, documents, grounded search/Agent, offline-safe notes, flashcards, and quizzes. It deploys as a Cloudflare Worker with Static Assets; Spring and Python remain separate Cloud Run runtimes.
+- [apps/web](apps/web): Legacy local workbench retained while remaining editor-only capabilities are migrated.
+- [apps/editor](apps/editor): Source for the legacy vendored CodeMirror editor bundle. Generated hashed assets are not part of the hosted PWA architecture.
+
+Supporting directories:
+
+- [infra](infra): `docker compose` infrastructure — PostgreSQL (pgvector), Redis, and the `observability` profile (OpenTelemetry collector, Tempo, Prometheus, Grafana).
+- [tests](tests): worker unit/integration tests, API tests (in `services/api/src/test`), Playwright browser security specs, benchmarks, and retrieval-quality evaluation.
+- [docs/technical](docs/technical/README.md): full technical documentation index, including the 2026-08-30 full-project review and its remediation roadmap.
 
 ## Local Development
 
@@ -56,10 +66,17 @@ Start local infrastructure:
 
 ```bash
 docker compose up -d postgres redis
+
+# Optional observability stack (Grafana at http://localhost:3000):
+docker compose --profile observability up -d
 ```
 
-Then run the API from [services/api](services/api) and the worker from
-[services/worker](services/worker). The first implemented flow is:
+Then run the API from [services/api](services/api), the worker from
+[services/worker](services/worker), and the PWA from [apps/web-v2](apps/web-v2).
+Supabase and free-tier deployment setup is documented in
+[SUPABASE_AUTH_SETUP.md](docs/deployment/SUPABASE_AUTH_SETUP.md) and
+[FREE_CLOUD_ARCHITECTURE.md](docs/deployment/FREE_CLOUD_ARCHITECTURE.md).
+The main implemented flow is:
 
 ```text
 POST /documents

@@ -9,6 +9,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
@@ -18,6 +20,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class GeminiEmbeddingClient implements EmbeddingClient {
+    private static final Logger log = LoggerFactory.getLogger(GeminiEmbeddingClient.class);
+
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
     private final AiSettingsService aiSettings;
@@ -64,16 +68,19 @@ public class GeminiEmbeddingClient implements EmbeddingClient {
             String payload = objectMapper.writeValueAsString(new GeminiEmbeddingRequest(modelName, text));
             HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(
-                    "https://generativelanguage.googleapis.com/v1beta/"
-                        + modelName + ":embedContent?key=" + geminiApiKey
+                    "https://generativelanguage.googleapis.com/v1beta/" + modelName + ":embedContent"
                 ))
                 .timeout(Duration.ofSeconds(120))
                 .header("Content-Type", "application/json")
+                .header("x-goog-api-key", geminiApiKey)
                 .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                 .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IllegalStateException("Gemini embedding request failed: HTTP " + response.statusCode() + " " + response.body());
+                // Do not echo the upstream body back to callers; log it at debug only.
+                log.debug("Gemini embedding request failed with HTTP {}: {}",
+                    response.statusCode(), response.body());
+                throw new IllegalStateException("Gemini embedding request failed: HTTP " + response.statusCode());
             }
             JsonNode values = objectMapper.readTree(response.body()).path("embedding").path("values");
             if (!values.isArray() || values.isEmpty()) {

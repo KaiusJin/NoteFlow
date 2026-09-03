@@ -33,10 +33,15 @@ services:
     command: ["-config.file=/etc/tempo.yml"]
     volumes:
       - ./infra/observability/tempo.yml:/etc/tempo.yml:ro
+      - noteflow_tempo_data:/var/tempo
 
   prometheus:
     image: prom/prometheus:v3.5.0
     profiles: ["observability"]
+    # extra_hosts is a no-op on macOS/Windows but makes host.docker.internal
+    # resolvable from the container on Linux hosts.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -47,6 +52,7 @@ services:
     image: grafana/grafana:12.1.0
     profiles: ["observability"]
     environment:
+      # Local-only convenience (port bound to 127.0.0.1). Do not expose.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
     volumes:
@@ -57,3 +63,4 @@ services:
 
 volumes:
   noteflow_postgres_data:
+  noteflow_tempo_data:

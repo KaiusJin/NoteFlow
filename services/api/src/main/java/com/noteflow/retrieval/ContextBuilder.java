@@ -30,7 +30,7 @@ class ContextBuilder {
     ContextBuildResult build(List<RetrievalCandidate> candidates, int maxItems, int maxContextTokens) {
         List<RetrievalItemResponse> items = new ArrayList<>();
         Set<UUID> consumedSourceIds = new HashSet<>();
-        Map<UUID, List<DocumentChunk>> chunkCache = new HashMap<>();
+        Map<String, List<DocumentChunk>> chunkCache = new HashMap<>();
         int totalTokens = 0;
 
         for (RetrievalCandidate candidate : candidates) {
@@ -82,15 +82,21 @@ class ContextBuilder {
 
     private ExpandedEvidence expand(
         RetrievalCandidate candidate,
-        Map<UUID, List<DocumentChunk>> chunkCache
+        Map<String, List<DocumentChunk>> chunkCache
     ) {
         if (!"PDF".equals(candidate.sourceDomain()) || candidate.chunkIndex() == null) {
             return ExpandedEvidence.fromCandidate(candidate);
         }
 
+        // Fetch only the candidate chunk plus its adjacent neighbors instead of
+        // every chunk (with full TEXT) of the document. Adjacent means the
+        // chunks immediately before and after the candidate's chunk index.
+        int centerIndex = candidate.chunkIndex();
         List<DocumentChunk> documentChunks = chunkCache.computeIfAbsent(
-            candidate.documentId(),
-            chunks::findByDocumentIdOrderByChunkIndexAsc
+            candidate.documentId() + ":" + centerIndex,
+            key -> chunks.findByDocumentIdAndChunkIndexBetweenOrderByChunkIndexAsc(
+                candidate.documentId(), centerIndex - 1, centerIndex + 1
+            )
         );
         int selectedPosition = -1;
         for (int index = 0; index < documentChunks.size(); index++) {

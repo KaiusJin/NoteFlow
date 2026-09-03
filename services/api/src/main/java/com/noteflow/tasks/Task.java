@@ -106,4 +106,16 @@ public class Task {
     public Instant getCreatedAt() {
         return createdAt;
     }
+
+    public void failDispatch(String message) {
+        if (status != TaskStatus.PENDING && status != TaskStatus.RETRYING) {
+            return;
+        }
+        status = TaskStatus.FAILED;
+        currentStep = TaskStep.FAILED;
+        progress = 100;
+        errorMessage = message == null ? "Task delivery failed" : message.substring(0, Math.min(4000, message.length()));
+        completedAt = Instant.now();
+        updatedAt = completedAt;
+    }
 }

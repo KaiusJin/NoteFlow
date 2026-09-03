@@ -1,0 +1,77 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: noteflow-api
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/cpu-throttling: "true"
+        run.googleapis.com/startup-cpu-boost: "true"
+        run.googleapis.com/secrets: >-
+          database-url:projects/PROJECT_NUMBER/secrets/noteflow-database-url,
+          database-user:projects/PROJECT_NUMBER/secrets/noteflow-database-user,
+          database-password:projects/PROJECT_NUMBER/secrets/noteflow-database-password,
+          redis-url:projects/PROJECT_NUMBER/secrets/noteflow-redis-url,
+          internal-token:projects/PROJECT_NUMBER/secrets/noteflow-internal-token,
+          supabase-secret:projects/PROJECT_NUMBER/secrets/noteflow-supabase-secret
+    spec:
+      containerConcurrency: 20
+      timeoutSeconds: 60
+      serviceAccountName: noteflow-api@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/noteflow/api:IMAGE_TAG
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: cloud
+            - name: SUPABASE_URL
+              value: https://PROJECT_REF.supabase.co
+            - name: SUPABASE_STORAGE_BUCKET
+              value: noteflow-private
+            - name: NOTEFLOW_ALLOWED_ORIGINS
+              value: https://APP_HOSTNAME
+            - name: NOTEFLOW_CLOUD_RUN_JOB_RESOURCE
+              value: projects/PROJECT_ID/locations/REGION/jobs/noteflow-worker
+            - name: NOTEFLOW_DB_MAX_POOL_SIZE
+              value: "5"
+            - name: NOTEFLOW_DB_MIN_IDLE
+              value: "0"
+            - name: SPRING_DATASOURCE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: database-url
+                  key: "1"
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: database-user
+                  key: "1"
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: database-password
+                  key: "1"
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-url
+                  key: "1"
+            - name: NOTEFLOW_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: internal-token
+                  key: "1"
+            - name: SUPABASE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: supabase-secret
+                  key: "1"

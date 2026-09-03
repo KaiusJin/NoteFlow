@@ -64,7 +64,9 @@ public class FlashcardStudyService {
             List.of((String)card.get("topic")),(UUID)card.get("document_id"),"FLASHCARD",cardId,
             !"AGAIN".equals(grade),(String)card.get("difficulty"),null,false,grade,null,null,Map.of()));
         if(((Number)event.get("acceptedTopics")).intValue()==0){
-            if(rows.isEmpty())throw new IllegalStateException("Duplicate review event has no scheduling state");
+            // Duplicate event with no prior scheduling state is a client-side
+            // replay problem, surfaced as 400 instead of a 500.
+            if(rows.isEmpty())throw new IllegalArgumentException("Duplicate review event has no scheduling state");
             var prior=rows.getFirst();
             Map<String,Object> result=new LinkedHashMap<>();
             result.put("status",prior.get("status")); result.put("intervalDays",prior.get("interval_days"));

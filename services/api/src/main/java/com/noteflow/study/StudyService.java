@@ -1,13 +1,8 @@
 package com.noteflow.study;
 
-import com.noteflow.documents.DocumentRepository;
-import com.noteflow.learningmemory.LearningMemoryService;
-import com.noteflow.tasks.TaskDispatchService;
-import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -15,15 +10,7 @@ public class StudyService {
     private final FlashcardStudyService flashcards;
     private final QuizStudyService quizzes;
 
-    public StudyService(LocalWorkspaceService users, DocumentRepository documents, TaskDispatchService tasks,
-            JdbcTemplate jdbc, LearningMemoryService memory) {
-        this(
-            new FlashcardStudyService(users, documents, jdbc, memory),
-            new QuizStudyService(users, documents, tasks, jdbc, memory)
-        );
-    }
-
-    StudyService(FlashcardStudyService flashcards, QuizStudyService quizzes) {
+    public StudyService(FlashcardStudyService flashcards, QuizStudyService quizzes) {
         this.flashcards = flashcards;
         this.quizzes = quizzes;
     }

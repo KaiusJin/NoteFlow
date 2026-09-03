@@ -7,7 +7,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Protocol
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.runtime.limits import process_resource_slot
 
 ALLOWED_SECTION_TYPES = {
@@ -65,8 +65,8 @@ class GeminiNotesProvider:
     provider_name = "gemini"
 
     def __init__(self) -> None:
-        self.api_key = settings.gemini_api_key
-        self.model = settings.gemini_notes_model or settings.gemini_vision_model
+        self.api_key = ai_setting("gemini_api_key")
+        self.model = ai_setting("gemini_notes_model") or settings.gemini_vision_model
 
     def generate_sections(self, prompt: str) -> list[NotesGeneration]:
         if not self.api_key:
@@ -77,23 +77,28 @@ class GeminiNotesProvider:
                 "temperature": 0.2,
                 "response_mime_type": "application/json",
                 "response_schema": notes_response_schema(),
+                "maxOutputTokens": max(1, settings.notes_max_output_tokens),
+                **gemini_thinking_config(settings.notes_gemini_thinking_budget),
             },
         }
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             + self.model
-            + ":generateContent?key="
-            + self.api_key
+            + ":generateContent"
         )
-        return generations_with_retries(self.provider_name, self.model, lambda: post_json(url, payload))
+        return generations_with_retries(
+            self.provider_name,
+            self.model,
+            lambda: post_json(url, payload, headers={"x-goog-api-key": self.api_key}),
+        )
 
 
 class OpenAINotesProvider:
     provider_name = "openai"
 
     def __init__(self) -> None:
-        self.api_key = settings.openai_api_key
-        self.model = settings.openai_notes_model or settings.openai_vision_model
+        self.api_key = ai_setting("openai_api_key")
+        self.model = ai_setting("openai_notes_model") or settings.openai_vision_model
 
     def generate_sections(self, prompt: str) -> list[NotesGeneration]:
         if not self.api_key:
@@ -117,6 +122,15 @@ class OpenAINotesProvider:
             self.model,
             lambda: post_json("https://api.openai.com/v1/chat/completions", payload, headers=headers),
         )
+
+
+def gemini_thinking_config(budget: int) -> dict:
+    # Gemini 2.5 models "think" by consuming the output-token budget before
+    # emitting text, which truncates large note-section JSON mid-string
+    # (same failure mode study generation already guards against).
+    if budget >= 0:
+        return {"thinkingConfig": {"thinkingBudget": budget}}
+    return {}
 
 
 def notes_response_schema() -> dict:
@@ -170,11 +184,11 @@ def convert_gemini_schema_to_json_schema(value):
 
 
 def make_notes_provider() -> NotesProvider:
-    provider = (settings.notes_provider or "").lower().strip()
+    provider = (ai_setting("notes_provider") or "").lower().strip()
     if not provider:
-        if settings.gemini_api_key:
+        if ai_setting("gemini_api_key"):
             provider = "gemini"
-        elif settings.openai_api_key:
+        elif ai_setting("openai_api_key"):
             provider = "openai"
         else:
             provider = "disabled"
@@ -254,6 +268,12 @@ def parse_json_object(text: str) -> dict:
 
 
 def escape_invalid_json_backslashes(text: str) -> str:
+    # A \b/\f/\t/\n/\r immediately followed by a letter is almost always a
+    # LaTeX command prefix (\begin, \theta, \newcommand) rather than a control
+    # character escape. Doubling it keeps the LaTeX text intact; leaving it
+    # alone would parse "successfully" as a control character and silently
+    # corrupt the content (e.g. "\begin" -> backspace + "egin").
+    text = re.sub(r'\\(?=[bfnrt])(?=[A-Za-z])', r"\\\\", text)
     return re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
 
 

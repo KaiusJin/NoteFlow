@@ -1,20 +1,28 @@
-"""Apply per-user AI settings saved through the API onto the worker config.
+"""Apply per-user AI settings saved through the API onto the current task.
 
 The API stores user overrides in ``user_ai_settings`` (see the Spring
-``AiSettings`` entity). The worker applies them onto the process-global
-``settings`` object at task start, so every pipeline (notes, study, memory,
-answer, vision, embeddings) picks them up through its normal fallback chain:
-study/memory/answer already fall back to the notes provider and models.
+``AiSettings`` entity). The worker applies them as a **thread-local task
+snapshot** (see ``config.set_task_ai_overrides``), so every pipeline (notes,
+study, memory, answer, vision, embeddings) picks them up through the
+``config.ai_setting`` accessor at provider-construction time.
+
+Writing to the process-global ``settings`` object is not safe: the main loop
+runs several pipelines in parallel and a global write from one user's task
+would leak its API keys/models into another user's concurrent task.
+``main._process_payload`` clears the snapshot in a ``finally`` block so pooled
+threads never carry one user's settings into the next task.
 """
 
 import logging
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import TASK_OVERRIDABLE_AI_FIELDS, ai_setting, clear_task_ai_overrides, set_task_ai_overrides
 from noteflow_worker.db.repository import Repository
 
 logger = logging.getLogger(__name__)
 
+
 def apply_user_ai_settings(user_id: str) -> None:
+    clear_task_ai_overrides()
     if not user_id:
         return
     try:
@@ -30,39 +38,43 @@ def apply_user_ai_settings(user_id: str) -> None:
 
     gemini_key = (row.get("gemini_api_key") or "").strip()
     openai_key = (row.get("openai_api_key") or "").strip()
-    if gemini_key:
-        settings.gemini_api_key = gemini_key
-    if openai_key:
-        settings.openai_api_key = openai_key
 
     llm_provider = (row.get("llm_provider") or "").strip().lower()
-    if llm_provider in ("gemini", "openai", "disabled"):
-        settings.notes_provider = llm_provider
     # "auto"/empty keeps notes_provider blank so make_notes_provider resolves
     # by whichever API key is available.
-
-    gemini_llm_model = (row.get("gemini_llm_model") or "").strip()
-    if gemini_llm_model:
-        settings.gemini_notes_model = gemini_llm_model
-    openai_llm_model = (row.get("openai_llm_model") or "").strip()
-    if openai_llm_model:
-        settings.openai_notes_model = openai_llm_model
+    if llm_provider not in ("gemini", "openai", "disabled"):
+        llm_provider = ""
 
     embedding_provider = (row.get("embedding_provider") or "").strip().lower()
-    if embedding_provider in ("gemini", "openai", "disabled"):
-        settings.embedding_provider = embedding_provider
-    elif embedding_provider == "auto":
-        if settings.gemini_api_key:
-            settings.embedding_provider = "gemini"
-        elif settings.openai_api_key:
-            settings.embedding_provider = "openai"
+    if embedding_provider not in ("gemini", "openai", "disabled"):
+        if embedding_provider == "auto":
+            if gemini_key:
+                embedding_provider = "gemini"
+            elif openai_key:
+                embedding_provider = "openai"
+            # Fall back to whichever key the environment provides, matching the
+            # previous global-resolution behaviour for auto rows without keys.
+            elif ai_setting("gemini_api_key"):
+                embedding_provider = "gemini"
+            elif ai_setting("openai_api_key"):
+                embedding_provider = "openai"
+        else:
+            embedding_provider = ""
 
-    gemini_embedding_model = (row.get("gemini_embedding_model") or "").strip()
-    if gemini_embedding_model:
-        settings.gemini_embedding_model = gemini_embedding_model
-    openai_embedding_model = (row.get("openai_embedding_model") or "").strip()
-    if openai_embedding_model:
-        settings.openai_embedding_model = openai_embedding_model
+    overrides = {
+        "gemini_api_key": gemini_key,
+        "openai_api_key": openai_key,
+        "notes_provider": llm_provider,
+        "gemini_notes_model": (row.get("gemini_llm_model") or "").strip(),
+        "openai_notes_model": (row.get("openai_llm_model") or "").strip(),
+        "embedding_provider": embedding_provider,
+        "gemini_embedding_model": (row.get("gemini_embedding_model") or "").strip(),
+        "openai_embedding_model": (row.get("openai_embedding_model") or "").strip(),
+    }
+    unexpected = set(overrides) - set(TASK_OVERRIDABLE_AI_FIELDS)
+    if unexpected:  # defensive: keeps the thread-local contract explicit
+        raise ValueError(f"unexpected task AI override fields: {sorted(unexpected)}")
+    set_task_ai_overrides(overrides)
 
 
 def _load_row(user_id: str):

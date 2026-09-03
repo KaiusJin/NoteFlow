@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -26,8 +27,11 @@ public class ConversationController {
     public List<Map<String, Object>> list() { return conversations.list(); }
 
     @GetMapping("/{conversationId}/messages")
-    public List<Map<String, Object>> messages(@PathVariable UUID conversationId) {
-        return conversations.messages(conversationId);
+    public List<Map<String, Object>> messages(
+            @PathVariable UUID conversationId,
+            @RequestParam(defaultValue = "100") int limit,
+            @RequestParam(required = false) UUID before) {
+        return conversations.messages(conversationId, limit, before);
     }
 
     @PostMapping("/{conversationId}/messages")

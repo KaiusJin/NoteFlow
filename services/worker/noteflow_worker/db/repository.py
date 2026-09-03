@@ -11,6 +11,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from noteflow_worker.config import settings
+from noteflow_worker.runtime.execution_context import current_execution_id
 from noteflow_worker.db.connection import BaseRepository, CleanConnection
 from noteflow_worker.db.schema import require_tables
 
@@ -34,7 +35,7 @@ class Repository(BaseRepository):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, storage_path, document_type, title, content_source_type, page_count
+                SELECT id, user_id, storage_path, document_type, title, content_source_type, page_count
                 FROM documents
                 WHERE id = %s
                 """,
@@ -46,6 +47,7 @@ class Repository(BaseRepository):
             id=str(row["id"]),
             storage_path=row["storage_path"],
             document_type=row["document_type"],
+            user_id=str(row["user_id"]),
             title=row["title"] or "",
             content_source_type=row["content_source_type"] or "UNKNOWN",
             page_count=row["page_count"],
@@ -126,30 +128,57 @@ class Repository(BaseRepository):
         sections = list(sections)
         self.ensure_notes_schema()
         with self.connect() as conn:
-            conn.execute("DELETE FROM document_ai_note_sections WHERE note_id = %s", (note_id,))
-            for section in sections:
+            # Reuse the existing section id for an unchanged section_index so
+            # embeddings whose source_object_id points at a section keep
+            # resolving across note re-saves (failed-group resume, regeneration).
+            existing = {
+                int(row["section_index"]): str(row["id"])
+                for row in conn.execute(
+                    "SELECT id, section_index FROM document_ai_note_sections WHERE note_id = %s",
+                    (note_id,),
+                ).fetchall()
+            }
+            new_indexes = {int(section.section_index) for section in sections}
+            stale_indexes = [index for index in existing if index not in new_indexes]
+            if stale_indexes:
                 conn.execute(
-                    """
-                    INSERT INTO document_ai_note_sections (
-                      id,
-                      note_id,
-                      document_id,
-                      section_index,
-                      section_type,
-                      heading,
-                      markdown,
-                      page_start,
-                      page_end,
-                      source_chunk_ids_json,
-                      source_pages_json,
-                      confidence,
-                      warnings_json,
-                      metadata_json
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
+                    "DELETE FROM document_ai_note_sections WHERE note_id = %s AND section_index = ANY(%s::int[])",
+                    (note_id, stale_indexes),
+                )
+            conn.executemany(
+                """
+                INSERT INTO document_ai_note_sections (
+                  id,
+                  note_id,
+                  document_id,
+                  section_index,
+                  section_type,
+                  heading,
+                  markdown,
+                  page_start,
+                  page_end,
+                  source_chunk_ids_json,
+                  source_pages_json,
+                  confidence,
+                  warnings_json,
+                  metadata_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                  section_type = EXCLUDED.section_type,
+                  heading = EXCLUDED.heading,
+                  markdown = EXCLUDED.markdown,
+                  page_start = EXCLUDED.page_start,
+                  page_end = EXCLUDED.page_end,
+                  source_chunk_ids_json = EXCLUDED.source_chunk_ids_json,
+                  source_pages_json = EXCLUDED.source_pages_json,
+                  confidence = EXCLUDED.confidence,
+                  warnings_json = EXCLUDED.warnings_json,
+                  metadata_json = EXCLUDED.metadata_json
+                """,
+                [
                     (
-                        str(uuid4()),
+                        existing.get(int(section.section_index), str(uuid4())),
                         section.note_id,
                         section.document_id,
                         section.section_index,
@@ -163,8 +192,10 @@ class Repository(BaseRepository):
                         section.confidence,
                         section.warnings_json,
                         section.metadata_json,
-                    ),
-                )
+                    )
+                    for section in sections
+                ],
+            )
             conn.execute(
                 """
                 UPDATE document_ai_notes
@@ -441,11 +472,28 @@ class Repository(BaseRepository):
     def replace_chunks(self, document_id: str, chunks: Iterable[TextChunk]) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM document_chunks WHERE document_id = %s", (document_id,))
+            rows = []
             for chunk in chunks:
                 page_start = chunk.page_start or chunk.page_number
                 page_end = chunk.page_end or page_start
                 token_count = chunk.token_count if chunk.token_count is not None else len(chunk.content.split())
-                conn.execute(
+                rows.append((
+                    str(uuid4()),
+                    document_id,
+                    chunk.page_number,
+                    page_start,
+                    page_end,
+                    chunk.section_title,
+                    chunk.chunk_index,
+                    chunk.chunk_type,
+                    chunk.content,
+                    token_count,
+                    chunk.source_asset_id,
+                    chunk.metadata_json,
+                ))
+            if rows:
+                # One pipelined executemany instead of one round trip per chunk.
+                conn.executemany(
                     """
                     INSERT INTO document_chunks (
                       id,
@@ -463,31 +511,18 @@ class Repository(BaseRepository):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (
-                        str(uuid4()),
-                        document_id,
-                        chunk.page_number,
-                        page_start,
-                        page_end,
-                        chunk.section_title,
-                        chunk.chunk_index,
-                        chunk.chunk_type,
-                        chunk.content,
-                        token_count,
-                        chunk.source_asset_id,
-                        chunk.metadata_json,
-                    ),
+                    rows,
                 )
 
     def replace_page_assets(self, document_id: str, assets: Iterable[PageAsset]) -> dict[int, str]:
         assets = list(assets)
+        # One pipelined executemany instead of one round trip per asset.
+        asset_ids = [str(uuid4()) for _ in assets]
+        ids_by_page = {asset.page_number: asset_id for asset, asset_id in zip(assets, asset_ids)}
         with self.connect() as conn:
             conn.execute("DELETE FROM document_page_assets WHERE document_id = %s", (document_id,))
-            ids_by_page: dict[int, str] = {}
-            for asset in assets:
-                asset_id = str(uuid4())
-                ids_by_page[asset.page_number] = asset_id
-                conn.execute(
+            if assets:
+                conn.executemany(
                     """
                     INSERT INTO document_page_assets (
                       id,
@@ -505,28 +540,33 @@ class Repository(BaseRepository):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (
-                        asset_id,
-                        asset.document_id,
-                        asset.page_number,
-                        asset.asset_type,
-                        asset.image_path,
-                        asset.width,
-                        asset.height,
-                        asset.image_count,
-                        asset.drawing_count,
-                        asset.image_coverage,
-                        asset.text_length,
-                        asset.visual_summary,
-                    ),
+                    [
+                        (
+                            asset_id,
+                            asset.document_id,
+                            asset.page_number,
+                            asset.asset_type,
+                            asset.image_path,
+                            asset.width,
+                            asset.height,
+                            asset.image_count,
+                            asset.drawing_count,
+                            asset.image_coverage,
+                            asset.text_length,
+                            asset.visual_summary,
+                        )
+                        for asset, asset_id in zip(assets, asset_ids)
+                    ],
                 )
         return ids_by_page
 
     def replace_layout_blocks(self, document_id: str, blocks: Iterable[LayoutBlock]) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM document_layout_blocks WHERE document_id = %s", (document_id,))
-            for block in blocks:
-                conn.execute(
+            blocks = list(blocks)
+            if blocks:
+                # One pipelined executemany instead of one round trip per block.
+                conn.executemany(
                     """
                     INSERT INTO document_layout_blocks (
                       id,
@@ -544,20 +584,23 @@ class Repository(BaseRepository):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (
-                        str(uuid4()),
-                        block.document_id,
-                        block.page_number,
-                        block.block_index,
-                        block.block_type,
-                        block.content,
-                        block.bbox_json,
-                        block.section_title,
-                        block.heading_path_json,
-                        block.source_asset_id,
-                        block.confidence,
-                        block.metadata_json,
-                    ),
+                    [
+                        (
+                            str(uuid4()),
+                            block.document_id,
+                            block.page_number,
+                            block.block_index,
+                            block.block_type,
+                            block.content,
+                            block.bbox_json,
+                            block.section_title,
+                            block.heading_path_json,
+                            block.source_asset_id,
+                            block.confidence,
+                            block.metadata_json,
+                        )
+                        for block in blocks
+                    ],
                 )
 
     def load_layout_blocks(self, document_id: str) -> list[LayoutBlock]:
@@ -602,8 +645,10 @@ class Repository(BaseRepository):
     def replace_visual_regions(self, document_id: str, regions: Iterable[VisualRegion]) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM document_visual_regions WHERE document_id = %s", (document_id,))
-            for region in regions:
-                conn.execute(
+            regions = list(regions)
+            if regions:
+                # One pipelined executemany instead of one round trip per region.
+                conn.executemany(
                     """
                     INSERT INTO document_visual_regions (
                       id,
@@ -621,20 +666,23 @@ class Repository(BaseRepository):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (
-                        str(uuid4()),
-                        region.document_id,
-                        region.page_number,
-                        region.region_index,
-                        region.region_type,
-                        region.asset_path,
-                        region.bbox_json,
-                        region.page_asset_id,
-                        region.width,
-                        region.height,
-                        region.confidence,
-                        region.metadata_json,
-                    ),
+                    [
+                        (
+                            str(uuid4()),
+                            region.document_id,
+                            region.page_number,
+                            region.region_index,
+                            region.region_type,
+                            region.asset_path,
+                            region.bbox_json,
+                            region.page_asset_id,
+                            region.width,
+                            region.height,
+                            region.confidence,
+                            region.metadata_json,
+                        )
+                        for region in regions
+                    ],
                 )
 
     def load_visual_regions(self, document_id: str) -> list[VisualRegion]:
@@ -778,8 +826,10 @@ class Repository(BaseRepository):
     def replace_markdown_pages(self, document_id: str, pages: Iterable[MarkdownPage]) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM document_markdown_pages WHERE document_id = %s", (document_id,))
-            for page in pages:
-                conn.execute(
+            pages = list(pages)
+            if pages:
+                # One pipelined executemany instead of one round trip per page.
+                conn.executemany(
                     """
                     INSERT INTO document_markdown_pages (
                       id,
@@ -793,16 +843,19 @@ class Repository(BaseRepository):
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (
-                        str(uuid4()),
-                        page.document_id,
-                        page.page_number,
-                        page.markdown,
-                        page.source_type,
-                        page.quality_score,
-                        page.warnings_json,
-                        page.structure_json,
-                    ),
+                    [
+                        (
+                            str(uuid4()),
+                            page.document_id,
+                            page.page_number,
+                            page.markdown,
+                            page.source_type,
+                            page.quality_score,
+                            page.warnings_json,
+                            page.structure_json,
+                        )
+                        for page in pages
+                    ],
                 )
 
     def save_markdown_document(self, document: MarkdownDocument) -> None:
@@ -858,6 +911,20 @@ class Repository(BaseRepository):
                )
             """,
             (str(uuid4()), document.markdown, document.document_id, document.document_id),
+        )
+        # A re-parse produces new markdown; without this refresh the RAW note
+        # silently keeps serving the first version forever.
+        conn.execute(
+            """
+            UPDATE notes n
+            SET markdown = d.markdown, updated_at = NOW()
+            FROM documents d
+            WHERE n.source_document_id = d.id
+              AND n.source_kind = 'RAW'
+              AND d.id = %s
+              AND n.markdown IS DISTINCT FROM d.markdown
+            """,
+            (document.document_id,),
         )
 
     def ensure_embedding_schema(self) -> None:
@@ -966,22 +1033,27 @@ class Repository(BaseRepository):
         if not sources:
             return {}
         source_ids = [source.source_object_id for source in sources]
-        placeholders = ",".join(["%s"] * len(source_ids))
+        hashes: dict[tuple[str, str, str], str] = {}
+        # Large documents produce thousands of source ids; batching keeps the
+        # statement far below the driver's parameter limits.
+        batch_size = 500
         with self.connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT source_domain, source_object_type, source_object_id, content_hash
-                FROM document_embeddings
-                WHERE embedding_provider = %s
-                  AND embedding_model = %s
-                  AND source_object_id IN ({placeholders})
-                """,
-                (provider, model, *source_ids),
-            ).fetchall()
-        return {
-            (row["source_domain"], row["source_object_type"], str(row["source_object_id"])): row["content_hash"]
-            for row in rows
-        }
+            for start in range(0, len(source_ids), batch_size):
+                batch = source_ids[start:start + batch_size]
+                placeholders = ",".join(["%s"] * len(batch))
+                rows = conn.execute(
+                    f"""
+                    SELECT source_domain, source_object_type, source_object_id, content_hash
+                    FROM document_embeddings
+                    WHERE embedding_provider = %s
+                      AND embedding_model = %s
+                      AND source_object_id IN ({placeholders})
+                    """,
+                    (provider, model, *batch),
+                ).fetchall()
+                for row in rows:
+                    hashes[(row["source_domain"], row["source_object_type"], str(row["source_object_id"]))] = row["content_hash"]
+        return hashes
 
     def upsert_embeddings(self, embeddings: Iterable[DocumentEmbedding]) -> None:
         rows = list(embeddings)
@@ -989,36 +1061,37 @@ class Repository(BaseRepository):
             return
         self.ensure_embedding_schema()
         with self.connect() as conn:
-            for row in rows:
-                conn.execute(
-                    """
-                    INSERT INTO document_embeddings (
-                      id,
-                      document_id,
-                      source_domain,
-                      source_object_type,
-                      source_object_id,
-                      embedding_provider,
-                      embedding_model,
-                      embedding_dimension,
-                      content_hash,
-                      embedding_text,
-                      text_preview,
-                      embedding,
-                      metadata_json
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-                    ON CONFLICT (source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
-                    DO UPDATE SET
-                      document_id = EXCLUDED.document_id,
-                      embedding_dimension = EXCLUDED.embedding_dimension,
-                      content_hash = EXCLUDED.content_hash,
-                      embedding_text = EXCLUDED.embedding_text,
-                      text_preview = EXCLUDED.text_preview,
-                      embedding = EXCLUDED.embedding,
-                      metadata_json = EXCLUDED.metadata_json,
-                      updated_at = NOW()
-                    """,
+            # One pipelined executemany instead of one round trip per embedding.
+            conn.executemany(
+                """
+                INSERT INTO document_embeddings (
+                  id,
+                  document_id,
+                  source_domain,
+                  source_object_type,
+                  source_object_id,
+                  embedding_provider,
+                  embedding_model,
+                  embedding_dimension,
+                  content_hash,
+                  embedding_text,
+                  text_preview,
+                  embedding,
+                  metadata_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
+                ON CONFLICT (source_domain, source_object_type, source_object_id, embedding_provider, embedding_model)
+                DO UPDATE SET
+                  document_id = EXCLUDED.document_id,
+                  embedding_dimension = EXCLUDED.embedding_dimension,
+                  content_hash = EXCLUDED.content_hash,
+                  embedding_text = EXCLUDED.embedding_text,
+                  text_preview = EXCLUDED.text_preview,
+                  embedding = EXCLUDED.embedding,
+                  metadata_json = EXCLUDED.metadata_json,
+                  updated_at = NOW()
+                """,
+                [
                     (
                         str(uuid4()),
                         row.document_id,
@@ -1033,24 +1106,31 @@ class Repository(BaseRepository):
                         row.text_preview,
                         vector_literal(row.embedding),
                         row.metadata_json,
-                    ),
-                )
+                    )
+                    for row in rows
+                ],
+            )
 
     def mark_completed(self, task_id: str, document_id: str) -> None:
+        execution_id = current_execution_id()
+        guard = " AND execution_id = %s" if execution_id else ""
         with self.connect() as conn:
-            conn.execute(
-                """
+            updated = conn.execute(
+                f"""
                 UPDATE tasks
                 SET status = 'COMPLETED',
                     current_step = 'COMPLETED',
                     progress = 100,
                     completed_at = NOW(),
+                    execution_id = NULL,
+                    execution_lease_until = NULL,
                     updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s{guard}
                 """,
-                (task_id,),
+                (task_id, execution_id) if execution_id else (task_id,),
             )
-            conn.execute(
+            if updated.rowcount == 1:
+                conn.execute(
                 """
                 UPDATE documents
                 SET status = 'READY',
@@ -1058,24 +1138,30 @@ class Repository(BaseRepository):
                 WHERE id = %s
                 """,
                 (document_id,),
-            )
+                )
 
     def mark_failed(self, task_id: str, document_id: str, error_message: str) -> None:
+        execution_id = current_execution_id()
+        guard = " AND execution_id = %s" if execution_id else ""
         with self.connect() as conn:
-            conn.execute(
-                """
+            updated = conn.execute(
+                f"""
                 UPDATE tasks
                 SET status = 'FAILED',
                     current_step = 'FAILED',
                     progress = 100,
                     error_message = %s,
                     completed_at = NOW(),
+                    execution_id = NULL,
+                    execution_lease_until = NULL,
                     updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s{guard}
                 """,
-                (error_message[:4000], task_id),
+                (error_message[:4000], task_id, execution_id)
+                    if execution_id else (error_message[:4000], task_id),
             )
-            conn.execute(
+            if updated.rowcount == 1:
+                conn.execute(
                 """
                 UPDATE documents
                 SET status = 'FAILED',
@@ -1083,60 +1169,88 @@ class Repository(BaseRepository):
                 WHERE id = %s
                 """,
                 (document_id,),
-            )
+                )
 
     def mark_task_processing(self, task_id: str, step: str, progress: int) -> None:
+        execution_id = current_execution_id()
+        guard = " AND execution_id = %s" if execution_id else ""
         with self.connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE tasks
                 SET status = 'PROCESSING',
                     current_step = %s,
                     progress = %s,
                     started_at = COALESCE(started_at, NOW()),
+                    last_heartbeat_at = NOW(),
                     updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s{guard}
                 """,
-                (step, progress, task_id),
+                (step, progress, task_id, execution_id) if execution_id else (step, progress, task_id),
             )
 
     def mark_task_completed(self, task_id: str) -> None:
+        execution_id = current_execution_id()
+        guard = " AND execution_id = %s" if execution_id else ""
         with self.connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE tasks
                 SET status = 'COMPLETED',
                     current_step = 'COMPLETED',
                     progress = 100,
                     completed_at = NOW(),
+                    execution_id = NULL,
+                    execution_lease_until = NULL,
                     updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s{guard}
                 """,
-                (task_id,),
+                (task_id, execution_id) if execution_id else (task_id,),
             )
 
     def mark_task_failed(self, task_id: str, error_message: str) -> None:
+        execution_id = current_execution_id()
+        guard = " AND execution_id = %s" if execution_id else ""
         with self.connect() as conn:
             conn.execute(
-                """
+                f"""
                 UPDATE tasks
                 SET status = 'FAILED',
                     current_step = 'FAILED',
                     progress = 100,
                     error_message = %s,
                     completed_at = NOW(),
+                    execution_id = NULL,
+                    execution_lease_until = NULL,
                     updated_at = NOW()
-                WHERE id = %s
+                WHERE id = %s{guard}
                 """,
-                (error_message[:4000], task_id),
+                (error_message[:4000], task_id, execution_id)
+                    if execution_id else (error_message[:4000], task_id),
             )
 
-    def recover_stale_generate_notes_tasks(self, stale_after_minutes: int) -> list[dict]:
+    def has_concurrent_task(self, task_id: str, document_id: str, task_type: str) -> bool:
+        """True when another task of the same type is PROCESSING for the document."""
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM tasks
+                WHERE task_type = %s
+                  AND document_id = %s
+                  AND status = 'PROCESSING'
+                  AND id <> %s
+                LIMIT 1
+                """,
+                (task_type, document_id, task_id),
+            ).fetchone()
+        return row is not None
+
+    def recover_stale_generate_notes_tasks(self, stale_after_minutes: int, max_retries: int) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
                 WITH stale AS (
-                  SELECT id
+                  SELECT id, retry_count
                   FROM tasks
                   WHERE task_type = 'GENERATE_NOTES'
                     AND status = 'PROCESSING'
@@ -1145,18 +1259,51 @@ class Repository(BaseRepository):
                   FOR UPDATE SKIP LOCKED
                 )
                 UPDATE tasks t
-                SET status = 'RETRYING',
+                SET status = CASE WHEN stale.retry_count >= %s THEN 'FAILED' ELSE 'RETRYING' END,
                     current_step = 'GENERATING_NOTES',
-                    retry_count = retry_count + 1,
-                    error_message = 'Recovered stale PROCESSING task and re-enqueued it.',
+                    retry_count = t.retry_count + 1,
+                    error_message = CASE
+                      WHEN stale.retry_count >= %s THEN 'Stale notes task exhausted its retry budget.'
+                      ELSE 'Recovered stale PROCESSING task and re-enqueued it.'
+                    END,
                     updated_at = NOW()
                 FROM stale
                 WHERE t.id = stale.id
-                RETURNING t.id, t.document_id, t.user_id, t.task_type
+                RETURNING t.id, t.document_id, t.user_id, t.task_type, t.status
                 """,
-                (stale_after_minutes,),
+                (stale_after_minutes, max_retries, max_retries),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows if row["status"] == "RETRYING"]
+
+    def recover_stale_generate_embeddings_tasks(self, stale_after_minutes: int, max_retries: int) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                WITH stale AS (
+                  SELECT id, retry_count
+                  FROM tasks
+                  WHERE task_type = 'GENERATE_EMBEDDINGS'
+                    AND status = 'PROCESSING'
+                    AND updated_at < NOW() - (%s::text || ' minutes')::interval
+                  ORDER BY updated_at
+                  FOR UPDATE SKIP LOCKED
+                )
+                UPDATE tasks t
+                SET status = CASE WHEN stale.retry_count >= %s THEN 'FAILED' ELSE 'RETRYING' END,
+                    current_step = 'GENERATING_EMBEDDINGS',
+                    retry_count = t.retry_count + 1,
+                    error_message = CASE
+                      WHEN stale.retry_count >= %s THEN 'Stale embeddings task exhausted its retry budget.'
+                      ELSE 'Recovered stale PROCESSING task and re-enqueued it.'
+                    END,
+                    updated_at = NOW()
+                FROM stale
+                WHERE t.id = stale.id
+                RETURNING t.id, t.document_id, t.user_id, t.task_type, t.status
+                """,
+                (stale_after_minutes, max_retries, max_retries),
+            ).fetchall()
+        return [dict(row) for row in rows if row["status"] == "RETRYING"]
 
     def recover_stale_parse_tasks(self, stale_after_minutes: int, max_retries: int) -> list[dict]:
         with self.connect() as conn:
@@ -1175,7 +1322,7 @@ class Repository(BaseRepository):
                 UPDATE tasks t
                 SET status = 'RETRYING',
                     current_step = 'PARSING_PDF',
-                    retry_count = retry_count + 1,
+                    retry_count = t.retry_count + 1,
                     error_message = 'Recovered stale parse task; successful region checkpoints will be reused.',
                     updated_at = NOW()
                 FROM stale

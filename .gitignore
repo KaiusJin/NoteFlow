@@ -26,3 +26,6 @@ experiments/
 node_modules/
 tests/e2e/test-results/
 tests/e2e/playwright-report/
+
+# Personal local tool config
+.claude/

@@ -1,6 +1,9 @@
 package com.noteflow.settings;
 
 import com.noteflow.workspace.LocalWorkspaceService;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,6 +19,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class AiSettingsService {
     private static final long CACHE_TTL_MILLIS = 15_000;
+    private static final int MAX_CACHE_ENTRIES = 1_024;
 
     private final AiSettingsRepository repository;
     private final LocalWorkspaceService users;
@@ -25,7 +29,15 @@ public class AiSettingsService {
     private final String envGeminiEmbeddingModel;
     private final String envOpenaiEmbeddingModel;
 
-    private volatile Snapshot cached;
+    /** Per-user, access-ordered snapshot cache with a hard memory bound. */
+    private final Map<UUID, Snapshot> cached = Collections.synchronizedMap(
+        new LinkedHashMap<>(16, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<UUID, Snapshot> eldest) {
+                return size() > MAX_CACHE_ENTRIES;
+            }
+        }
+    );
 
     public AiSettingsService(
         AiSettingsRepository repository,
@@ -52,7 +64,7 @@ public class AiSettingsService {
 
     public AiSettings save(AiSettings settings) {
         AiSettings saved = repository.save(settings);
-        cached = null;
+        cached.remove(saved.getUserId());
         return saved;
     }
 
@@ -116,12 +128,13 @@ public class AiSettingsService {
     }
 
     private Snapshot snapshot() {
-        Snapshot current = cached;
+        UUID userId = users.currentUserId();
         long now = System.currentTimeMillis();
+        Snapshot current = cached.get(userId);
         if (current != null && now - current.loadedAt() < CACHE_TTL_MILLIS) {
             return current;
         }
-        Optional<AiSettings> row = repository.findById(users.currentUserId());
+        Optional<AiSettings> row = repository.findById(userId);
         Snapshot fresh = row.map(settings -> new Snapshot(
             safe(settings.getGeminiApiKey()),
             safe(settings.getOpenaiApiKey()),
@@ -134,7 +147,7 @@ public class AiSettingsService {
             false,
             now
         )).orElseGet(() -> new Snapshot("", "", "", "", "", "", "", "", true, now));
-        cached = fresh;
+        cached.put(userId, fresh);
         return fresh;
     }
 

@@ -45,17 +45,45 @@ public class ConversationService {
     }
 
     public List<Map<String, Object>> messages(UUID conversationId) {
+        return messages(conversationId, 100, null);
+    }
+
+    /**
+     * Lists messages with citations. When {@code before} is provided, only
+     * the page immediately preceding that message (within the conversation)
+     * is returned. Pages are fetched newest-first for efficient keyset
+     * pagination, then reordered oldest-first for chat rendering. {@code limit}
+     * is clamped to [1, 300].
+     */
+    public List<Map<String, Object>> messages(UUID conversationId, int limit, UUID before) {
         requireOwnedConversation(conversationId);
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map<String, Object> row : jdbc.queryForList("""
+        int safeLimit = Math.max(1, Math.min(300, limit));
+        List<Object> args = new ArrayList<>();
+        args.add(conversationId);
+        String beforeClause = "";
+        if (before != null) {
+            beforeClause = " AND (created_at,id) < (SELECT created_at,id FROM rag_messages WHERE id=? AND conversation_id=?) ";
+            args.add(before);
+            args.add(conversationId);
+        }
+        args.add(safeLimit);
+        List<Map<String, Object>> rows = jdbc.queryForList("""
             SELECT id,role,status,content_markdown,model_provider,model_name,structured_response_json,error_message,created_at,completed_at
-              FROM rag_messages
-             WHERE conversation_id=?
-             ORDER BY created_at,
-                      CASE role WHEN 'USER' THEN 0 WHEN 'ASSISTANT' THEN 1 ELSE 2 END,
-                      id
-            """, conversationId)) {
-            result.add(withCitations(row));
+              FROM (
+                    SELECT id,role,status,content_markdown,model_provider,model_name,
+                           structured_response_json,error_message,created_at,completed_at
+                      FROM rag_messages
+                     WHERE conversation_id=?""" + beforeClause + """
+                     ORDER BY created_at DESC,id DESC
+                     LIMIT ?
+                   ) page
+             ORDER BY created_at,id
+            """, args.toArray());
+        Map<Object, List<Map<String, Object>>> citations = loadCitations(
+            rows.stream().map(row -> row.get("id")).toList());
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            result.add(withCitations(row, citations.get(row.get("id"))));
         }
         return result;
     }
@@ -67,7 +95,7 @@ public class ConversationService {
               FROM rag_messages m JOIN rag_conversations c ON c.id=m.conversation_id
              WHERE m.id=? AND c.user_id=?
             """, messageId, users.currentUserId());
-        return withCitations(row);
+        return withCitations(row, null);
     }
 
     public Map<String, Object> messageTrace(UUID conversationId, UUID messageId) {
@@ -142,16 +170,32 @@ public class ConversationService {
         );
     }
 
-    private Map<String, Object> withCitations(Map<String, Object> row) {
+    private Map<String, Object> withCitations(Map<String, Object> row, List<Map<String, Object>> citations) {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>(row);
         Object rawStructured = result.remove("structured_response_json");
         result.put("structuredResponse", parseStructuredResponse(rawStructured));
-        result.put("citations", jdbc.queryForList("""
-            SELECT citation_index,document_id,source_title AS document_title,page_start,page_end,
-                   evidence_snapshot AS quote_text,retrieval_score AS similarity_score
-              FROM rag_message_citations WHERE message_id=? ORDER BY citation_index
-            """, row.get("id")));
+        if (citations != null) {
+            result.put("citations", citations);
+            return result;
+        }
+        result.put("citations", loadCitations(List.of(row.get("id"))).getOrDefault(row.get("id"), List.of()));
         return result;
+    }
+
+    /** One IN query for all requested messages, grouped in memory (avoids N+1). */
+    private Map<Object, List<Map<String, Object>>> loadCitations(List<Object> messageIds) {
+        if (messageIds.isEmpty()) return Map.of();
+        String placeholders = String.join(",", java.util.Collections.nCopies(messageIds.size(), "?"));
+        Map<Object, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (Map<String, Object> citation : jdbc.queryForList("""
+            SELECT message_id,citation_index,document_id,source_title AS document_title,page_start,page_end,
+                   evidence_snapshot AS quote_text,retrieval_score AS similarity_score
+              FROM rag_message_citations WHERE message_id IN (%s)
+             ORDER BY message_id,citation_index
+            """.formatted(placeholders), messageIds.toArray())) {
+            grouped.computeIfAbsent(citation.remove("message_id"), ignored -> new ArrayList<>()).add(citation);
+        }
+        return grouped;
     }
 
     private List<String> requestedCapabilities(String message, boolean allowWrites, boolean allowDeletes) {

@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from noteflow_worker.config import settings
+from noteflow_worker.internal_api import internal_api_headers
 
 
 class StudyGenerationClient:
@@ -26,7 +27,7 @@ class StudyGenerationClient:
         request = Request(
             settings.noteflow_api_url.rstrip("/") + path,
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=internal_api_headers(),
             method="POST",
         )
         try:

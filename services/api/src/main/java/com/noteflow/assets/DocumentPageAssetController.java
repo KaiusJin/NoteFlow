@@ -2,12 +2,11 @@ package com.noteflow.assets;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.storage.ManagedStorageFileService;
+import com.noteflow.storage.PngObjectStorage;
+import com.noteflow.storage.StoredObject;
 import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,10 +18,10 @@ public class DocumentPageAssetController {
     private final DocumentPageAssetRepository assets;
     private final DocumentRepository documents;
     private final LocalWorkspaceService users;
-    private final ManagedStorageFileService storageFiles;
+    private final PngObjectStorage storageFiles;
 
     public DocumentPageAssetController(DocumentPageAssetRepository assets, DocumentRepository documents,
-            LocalWorkspaceService users, ManagedStorageFileService storageFiles) {
+            LocalWorkspaceService users, PngObjectStorage storageFiles) {
         this.assets = assets;
         this.documents = documents;
         this.users = users;
@@ -38,15 +37,15 @@ public class DocumentPageAssetController {
     }
 
     @GetMapping("/assets/{assetId}")
-    public ResponseEntity<Resource> getAsset(@PathVariable UUID assetId) {
+    public ResponseEntity<byte[]> getAsset(@PathVariable UUID assetId) {
         DocumentPageAsset asset = assets.findById(assetId)
             .orElseThrow(() -> new IllegalArgumentException("Asset not found"));
         ensureDocumentAccess(asset.getDocumentId());
 
-        FileSystemResource resource = new FileSystemResource(storageFiles.resolvePngForRead(asset.getImagePath()));
+        StoredObject object = storageFiles.readPng(asset.getImagePath());
         return ResponseEntity.ok()
-            .contentType(MediaType.IMAGE_PNG)
-            .body(resource);
+            .contentType(MediaType.parseMediaType(object.contentType()))
+            .body(object.content());
     }
 
     private void ensureDocumentAccess(UUID documentId) {

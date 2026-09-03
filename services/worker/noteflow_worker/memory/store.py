@@ -488,7 +488,7 @@ class MemoryStore(Repository):
                 """
                 UPDATE rag_memories
                 SET access_count = access_count + 1, last_accessed_at = NOW()
-                WHERE id = ANY(%s)
+                WHERE id = ANY(%s::uuid[])
                 """,
                 (memory_ids,),
             )

@@ -4,8 +4,12 @@ import com.noteflow.workspace.LocalWorkspaceService;
 import com.noteflow.common.CursorPage;
 import com.noteflow.common.OpaqueCursor;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -57,7 +61,7 @@ public class LibraryService {
         Folder folder = requireFolder(folderId, userId);
         if (parentId != null) {
             requireFolder(parentId, userId);
-            if (parentId.equals(folderId) || isDescendant(parentId, folderId)) {
+            if (parentId.equals(folderId) || isDescendant(parentId, folderId, userId)) {
                 throw new IllegalArgumentException("Cannot move a folder into itself or its descendant");
             }
         }
@@ -70,14 +74,8 @@ public class LibraryService {
     public void deleteFolder(UUID folderId) {
         UUID userId = users.currentUserId();
         Folder folder = requireFolder(folderId, userId);
-        Set<UUID> toDelete = new HashSet<>();
-        collectSubtree(folder.getId(), toDelete);
-        for (UUID id : toDelete) {
-            for (Note note : notes.findByFolderId(id)) {
-                note.moveTo(null);
-                notes.save(note);
-            }
-        }
+        Set<UUID> toDelete = collectSubtree(folder.getId(), userId);
+        notes.clearFolder(toDelete, Instant.now());
         folders.deleteAllById(toDelete);
     }
 
@@ -122,13 +120,18 @@ public class LibraryService {
         return NoteResponse.from(notes.save(note));
     }
 
+    /**
+     * Full-content update with optimistic concurrency. A {@code null} title or
+     * markdown means "do not modify that column"; non-null values (including
+     * empty strings) replace the stored column.
+     */
     @Transactional
     public NoteResponse updateNote(UUID noteId, String title, String markdown, Instant expectedUpdatedAt) {
         UUID userId = users.currentUserId();
         requireExpectedVersion(expectedUpdatedAt);
         requireNote(noteId, userId);
         int updated = notes.updateContentIfUnchanged(
-            noteId, userId, title, markdown == null ? "" : markdown, expectedUpdatedAt, Instant.now()
+            noteId, userId, title, markdown, expectedUpdatedAt, Instant.now()
         );
         if (updated != 1) {
             throw new ConcurrentNoteEditException();
@@ -207,16 +210,25 @@ public class LibraryService {
         };
     }
 
-    private void collectSubtree(UUID folderId, Set<UUID> acc) {
-        if (!acc.add(folderId)) return;
-        for (Folder child : folders.findByParentId(folderId)) {
-            collectSubtree(child.getId(), acc);
+    /** Collects the folder and all descendant folders, building the tree in memory from one query. */
+    private Set<UUID> collectSubtree(UUID rootId, UUID userId) {
+        Map<UUID, Set<UUID>> childrenByParent = new HashMap<>();
+        for (Folder folder : folders.findByUserIdOrderByNameAsc(userId)) {
+            childrenByParent.computeIfAbsent(folder.getParentId(), ignored -> new HashSet<>()).add(folder.getId());
         }
+        Set<UUID> subtree = new HashSet<>();
+        Deque<UUID> stack = new ArrayDeque<>();
+        stack.push(rootId);
+        while (!stack.isEmpty()) {
+            UUID current = stack.pop();
+            if (subtree.add(current)) {
+                stack.addAll(childrenByParent.getOrDefault(current, Set.of()));
+            }
+        }
+        return subtree;
     }
 
-    private boolean isDescendant(UUID candidate, UUID ancestor) {
-        Set<UUID> subtree = new HashSet<>();
-        collectSubtree(ancestor, subtree);
-        return subtree.contains(candidate);
+    private boolean isDescendant(UUID candidate, UUID ancestor, UUID userId) {
+        return collectSubtree(ancestor, userId).contains(candidate);
     }
 }

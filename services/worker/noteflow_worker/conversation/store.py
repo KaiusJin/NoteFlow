@@ -278,23 +278,29 @@ class ConversationStore(MemoryStore):
                 (task_id, user_id),
             )
 
-    def recover_stale_answer_tasks(self, stale_after_minutes: int) -> list[dict]:
+    def recover_stale_answer_tasks(self, stale_after_minutes: int, max_retries: int) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute(
                 """WITH stale AS (
-                     SELECT id FROM tasks
+                     SELECT id, retry_count FROM tasks
                      WHERE task_type IN ('ANSWER_CONVERSATION_TURN','RESUME_AGENT_RUN') AND status = 'PROCESSING'
                        AND updated_at < NOW() - (%s::text||' minutes')::interval
                      FOR UPDATE SKIP LOCKED)
-                   UPDATE tasks t SET status = 'RETRYING', retry_count = retry_count + 1,
-                     error_message = 'Recovered stale answer task.', updated_at = NOW()
+                   UPDATE tasks t SET
+                     status = CASE WHEN stale.retry_count >= %s THEN 'FAILED' ELSE 'RETRYING' END,
+                     retry_count = t.retry_count + 1,
+                     error_message = CASE
+                       WHEN stale.retry_count >= %s THEN 'Stale answer task exhausted its retry budget.'
+                       ELSE 'Recovered stale answer task.'
+                     END,
+                     updated_at = NOW()
                    FROM stale WHERE t.id = stale.id
-                   RETURNING t.id, t.user_id, t.task_type,
+                   RETURNING t.id, t.user_id, t.task_type, t.status,
                      (SELECT conversation_id FROM conversation_task_targets c WHERE c.task_id = t.id) conversation_id,
                      (SELECT message_id FROM conversation_task_targets c WHERE c.task_id = t.id) message_id""",
-                (stale_after_minutes,),
+                (stale_after_minutes, max_retries, max_retries),
             ).fetchall()
-        return [dict(row) for row in rows]
+        return [dict(row) for row in rows if row["status"] == "RETRYING"]
 
     def load_document_titles(self, document_ids: list[str]) -> dict[str, str]:
         unique_ids = sorted(set(document_ids))

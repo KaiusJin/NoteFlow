@@ -1,0 +1,50 @@
+server:
+  address: 0.0.0.0
+  shutdown: graceful
+
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  datasource:
+    hikari:
+      # Cloud Run instances can scale horizontally. Keep each instance's pool
+      # deliberately small and use Supabase's transaction pooler in production.
+      maximum-pool-size: ${NOTEFLOW_DB_MAX_POOL_SIZE:5}
+      minimum-idle: ${NOTEFLOW_DB_MIN_IDLE:0}
+      idle-timeout: ${NOTEFLOW_DB_IDLE_TIMEOUT_MS:60000}
+  data:
+    redis:
+      url: ${REDIS_URL}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${SUPABASE_JWT_ISSUER:${SUPABASE_URL}/auth/v1}
+          jwk-set-uri: ${SUPABASE_JWKS_URI:${SUPABASE_URL}/auth/v1/.well-known/jwks.json}
+          audiences: ${SUPABASE_JWT_AUDIENCE:authenticated}
+
+management:
+  tracing:
+    sampling:
+      probability: ${NOTEFLOW_TRACE_SAMPLING_PROBABILITY:0.1}
+
+noteflow:
+  cors:
+    allowed-origin-patterns: ${NOTEFLOW_ALLOWED_ORIGINS}
+  security:
+    internal-token: ${NOTEFLOW_INTERNAL_TOKEN}
+  storage:
+    supabase-url: ${SUPABASE_URL}
+    # Prefer Supabase's current sb_secret key. Legacy service_role JWTs remain
+    # supported during migration, but this value must stay server-side.
+    supabase-secret-key: ${SUPABASE_SECRET_KEY:${SUPABASE_SERVICE_ROLE_KEY:}}
+    supabase-bucket: ${SUPABASE_STORAGE_BUCKET:noteflow-private}
+    request-timeout-seconds: ${NOTEFLOW_STORAGE_TIMEOUT_SECONDS:30}
+  worker:
+    # Full resource name: projects/<project>/locations/<region>/jobs/<job>.
+    # Leave blank for a continuously running worker. When set, the API uses its
+    # Cloud Run service identity to start a scale-to-zero worker job on demand.
+    cloud-run-job-resource: ${NOTEFLOW_CLOUD_RUN_JOB_RESOURCE:}
+    wakeup-cooldown-seconds: ${NOTEFLOW_WORKER_WAKEUP_COOLDOWN_SECONDS:20}
+    wakeup-recovery-millis: ${NOTEFLOW_WORKER_WAKEUP_RECOVERY_MILLIS:30000}
+    launch-timeout-seconds: ${NOTEFLOW_WORKER_LAUNCH_TIMEOUT_SECONDS:10}

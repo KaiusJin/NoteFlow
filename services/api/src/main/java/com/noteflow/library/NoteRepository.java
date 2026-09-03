@@ -35,17 +35,29 @@ public interface NoteRepository extends JpaRepository<Note, UUID> {
     );
     Optional<Note> findByIdAndUserId(UUID id, UUID userId);
     List<Note> findByFolderId(UUID folderId);
+
+    /** Bulk "move to Unfiled": detaches every note in the given folders in one statement. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Note n SET n.folderId = NULL, n.updatedAt = :updatedAt WHERE n.folderId IN :folderIds")
+    int clearFolder(@Param("folderIds") java.util.Collection<UUID> folderIds, @Param("updatedAt") Instant updatedAt);
+
     Optional<Note> findFirstBySourceDocumentIdOrderByUpdatedAtDesc(UUID sourceDocumentId);
     Optional<Note> findFirstBySourceDocumentIdAndSourceKindOrderByCreatedAtAsc(UUID sourceDocumentId, String sourceKind);
 
+    /**
+     * Optimistic-concurrency content update. A {@code null} title or markdown
+     * means "leave that column unchanged"; non-null values replace the column
+     * wholesale (including with an empty string). The WHERE clause on
+     * {@code updated_at = :expectedUpdatedAt} keeps the optimistic lock intact.
+     *
+     * @return 1 when the row was updated, 0 when the note was missing or
+     *         concurrently modified
+     */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query(value = """
         UPDATE notes
-           SET title = CASE
-                         WHEN :title IS NULL OR BTRIM(:title) = '' THEN title
-                         ELSE :title
-                       END,
-               markdown = :markdown,
+           SET title = COALESCE(:title, title),
+               markdown = COALESCE(:markdown, markdown),
                updated_at = :updatedAt
          WHERE id = :id
            AND user_id = :userId

@@ -19,7 +19,7 @@ class ContextBuilderTest {
         DocumentChunk previous = chunk(0, "Taylor Series", 1, 1, "Previous derivation.", 10);
         DocumentChunk center = chunk(1, "Taylor Series", 1, 2, "Lagrange remainder formula.", 10);
         DocumentChunk nextDifferentSection = chunk(2, "Worked Example", 2, 2, "Unrelated example.", 10);
-        when(repository.findByDocumentIdOrderByChunkIndexAsc(DOCUMENT_ID))
+        when(repository.findByDocumentIdAndChunkIndexBetweenOrderByChunkIndexAsc(DOCUMENT_ID, 0, 2))
             .thenReturn(List.of(previous, center, nextDifferentSection));
         ContextBuilder builder = new ContextBuilder(repository, 100);
         RetrievalCandidate candidate = candidate(center, "Lagrange remainder formula.", 0.78);

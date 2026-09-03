@@ -130,8 +130,8 @@ class PriorityQueueTest(unittest.TestCase):
                     return 0
                 self.zadd(deadlines_key, {lease_id: float(deadline)})
                 return 1
-            if keys_count == 5:
-                payloads_key, deadlines_key, queue_0, queue_1, queue_2, now, limit = args
+            if keys_count == 6:
+                payloads_key, deadlines_key, queue_0, queue_1, queue_2, dead_key, now, limit = args
                 expired = self.zrangebyscore(deadlines_key, "-inf", now, start=0, num=int(limit))
                 reclaimed = 0
                 queues = (queue_0, queue_1, queue_2)
@@ -144,7 +144,14 @@ class PriorityQueueTest(unittest.TestCase):
                     self.zrem(deadlines_key, lease_id)
                     if payload is None:
                         continue
-                    decoded = json.loads(payload)
+                    try:
+                        decoded = json.loads(payload)
+                        if not isinstance(decoded, dict):
+                            raise ValueError("payload is not a JSON object")
+                    except ValueError:
+                        self.rpush(dead_key, payload)
+                        reclaimed += 1
+                        continue
                     priority = decoded.get("priority")
                     if priority not in (PRIORITY_INTERACTIVE, PRIORITY_USER_VISIBLE, PRIORITY_BACKGROUND):
                         priority = priority_for_task_type(decoded.get("taskType", ""))

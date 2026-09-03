@@ -7,6 +7,7 @@ class DocumentRecord:
     id: str
     storage_path: str
     document_type: str
+    user_id: str = ""
     title: str = ""
     content_source_type: str = "UNKNOWN"
     page_count: Optional[int] = None

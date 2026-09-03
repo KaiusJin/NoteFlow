@@ -2,12 +2,11 @@ package com.noteflow.vision;
 
 import com.noteflow.documents.Document;
 import com.noteflow.documents.DocumentRepository;
-import com.noteflow.storage.ManagedStorageFileService;
+import com.noteflow.storage.PngObjectStorage;
+import com.noteflow.storage.StoredObject;
 import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
-import org.springframework.core.io.FileSystemResource;
-import org.springframework.core.io.Resource;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -22,10 +21,10 @@ public class DocumentVisionController {
     private final DocumentVlmResultRepository vlmResults;
     private final DocumentRepository documents;
     private final LocalWorkspaceService users;
-    private final ManagedStorageFileService storageFiles;
+    private final PngObjectStorage storageFiles;
 
     public DocumentVisionController(DocumentVisualRegionRepository regions, DocumentVlmResultRepository vlmResults,
-            DocumentRepository documents, LocalWorkspaceService users, ManagedStorageFileService storageFiles) {
+            DocumentRepository documents, LocalWorkspaceService users, PngObjectStorage storageFiles) {
         this.regions = regions;
         this.vlmResults = vlmResults;
         this.documents = documents;
@@ -60,15 +59,15 @@ public class DocumentVisionController {
     }
 
     @GetMapping("/visual-regions/{regionId}/asset")
-    public ResponseEntity<Resource> getRegionAsset(@PathVariable UUID regionId) {
+    public ResponseEntity<byte[]> getRegionAsset(@PathVariable UUID regionId) {
         DocumentVisualRegion region = regions.findById(regionId)
             .orElseThrow(() -> new IllegalArgumentException("Visual region not found"));
         ensureDocumentAccess(region.getDocumentId());
 
-        FileSystemResource resource = new FileSystemResource(storageFiles.resolvePngForRead(region.getAssetPath()));
+        StoredObject object = storageFiles.readPng(region.getAssetPath());
         return ResponseEntity.ok()
-            .contentType(MediaType.IMAGE_PNG)
-            .body(resource);
+            .contentType(MediaType.parseMediaType(object.contentType()))
+            .body(object.content());
     }
 
     private void ensureDocumentAccess(UUID documentId) {

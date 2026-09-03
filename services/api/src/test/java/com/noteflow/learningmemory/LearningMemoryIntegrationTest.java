@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.noteflow.workspace.LocalWorkspaceService;
 import com.noteflow.documents.DocumentRepository;
+import com.noteflow.study.FlashcardStudyService;
+import com.noteflow.study.QuizStudyService;
 import com.noteflow.study.StudyService;
 import com.noteflow.tasks.TaskDispatchService;
 import java.time.Instant;
@@ -149,7 +151,9 @@ class LearningMemoryIntegrationTest {
         UUID deckId=UUID.randomUUID(),cardId=UUID.randomUUID();
         jdbc.update("INSERT INTO flashcard_decks(id,document_id,user_id,version,title,status,generation_options_json) VALUES (?,?,?,1,'Deck','READY','{}')",deckId,documentId,workspaceId);
         jdbc.update("INSERT INTO flashcards(id,deck_id,document_id,source_group_index,item_index,card_type,front,back,difficulty,topic,source_chunk_ids_json,source_pages_json,dedupe_hash,confidence) VALUES (?,?,?,0,0,'BASIC','Front','Back','MEDIUM','Covariance','[]','[]',?,.9)",cardId,deckId,documentId,"f".repeat(64));
-        StudyService study=new StudyService(new LocalWorkspaceService(workspaceId),Mockito.mock(DocumentRepository.class),Mockito.mock(TaskDispatchService.class),jdbc,memory);
+        StudyService study=new StudyService(
+            new FlashcardStudyService(new LocalWorkspaceService(workspaceId),Mockito.mock(DocumentRepository.class),jdbc,memory),
+            new QuizStudyService(new LocalWorkspaceService(workspaceId),Mockito.mock(DocumentRepository.class),Mockito.mock(TaskDispatchService.class),jdbc,memory));
         Map<String,Object> first=transactions.execute(status->study.review(cardId,"GOOD","review-once"));
         Map<String,Object> duplicate=transactions.execute(status->study.review(cardId,"GOOD","review-once"));
         assertEquals(1,first.get("repetitions")); assertEquals(1,duplicate.get("repetitions")); assertEquals(true,duplicate.get("duplicate"));

@@ -2067,13 +2067,31 @@ function expandLibraryAncestors(folderId) {
   localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
 }
 
+// Floating toast shown when a library action fails. Auto-dismisses after 3s.
+let libraryNoticeTimer = null;
+function showLibraryNotice(message, isError = false) {
+  let notice = document.querySelector("#library-notice");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.id = "library-notice";
+    notice.setAttribute("role", "status");
+    document.body.appendChild(notice);
+  }
+  notice.textContent = message;
+  notice.classList.toggle("error", Boolean(isError));
+  notice.classList.add("visible");
+  clearTimeout(libraryNoticeTimer);
+  libraryNoticeTimer = setTimeout(() => notice.classList.remove("visible"), 3000);
+}
+
 async function moveLibraryNote(noteId, folderId) {
   try {
-    await fetch(`${API_BASE_URL}/notes/${noteId}`, {
+    const response = await fetch(`${API_BASE_URL}/notes/${noteId}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folderId: folderId || null, move: true }),
     });
+    if (!response.ok) throw new Error((await readJson(response)).message || `Move failed (HTTP ${response.status})`);
     // Switch the right panel into the destination folder (or Unfiled).
     if (folderId) {
       expandLibraryAncestors(folderId);
@@ -2084,37 +2102,58 @@ async function moveLibraryNote(noteId, folderId) {
     await refreshLibrary();
   } catch (error) {
     console.error("Move failed:", error);
+    showLibraryNotice(`Move failed: ${formatFetchError(error)}`, true);
   }
 }
 
 async function createLibraryFolder(parentId) {
   const name = prompt(parentId ? "New subfolder name" : "New folder name", "New folder");
   if (name === null || !name.trim()) return;
-  const folder = await (await fetch(`${API_BASE_URL}/folders`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name.trim(), parentId: parentId || null }),
-  })).json();
-  if (parentId) {
-    libraryExpanded.add(parentId);
-    localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
+  try {
+    const response = await fetch(`${API_BASE_URL}/folders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), parentId: parentId || null }),
+    });
+    const folder = await readJson(response);
+    if (!response.ok) throw new Error(folder.message || `Could not create folder (HTTP ${response.status})`);
+    if (parentId) {
+      libraryExpanded.add(parentId);
+      localStorage.setItem("noteflowLibraryExpanded", JSON.stringify(Array.from(libraryExpanded)));
+    }
+    if (folder && folder.id) selectLibraryFolder(folder.id);
+    await refreshLibrary();
+  } catch (error) {
+    console.error("Create folder failed:", error);
+    showLibraryNotice(`Could not create folder: ${formatFetchError(error)}`, true);
   }
-  if (folder && folder.id) selectLibraryFolder(folder.id);
-  await refreshLibrary();
 }
 
+// viewRoot is persistent and renderFoldersView re-runs on every navigation, so
+// these listeners must be bound exactly once. None of the handlers below close
+// over render-local state: they read module-level state (libraryExpanded,
+// libraryDragNoteId, librarySelectedFolderId) or query the DOM at event time.
+let libraryEventsWired = false;
 function wireLibraryEvents() {
-  const importInput = viewRoot.querySelector("#library-import-input");
-  importInput.addEventListener("change", async () => {
+  if (libraryEventsWired) return;
+  libraryEventsWired = true;
+
+  // The file input itself is re-created on every render, so its change event
+  // is handled via delegation on the persistent viewRoot (change bubbles).
+  viewRoot.addEventListener("change", async (event) => {
+    const importInput = event.target.closest("#library-import-input");
+    if (!importInput) return;
     const targetFolder = currentLibraryFolderTarget();
     for (const file of Array.from(importInput.files || [])) {
       const form = new FormData();
       form.append("file", file);
       if (targetFolder) form.append("folderId", targetFolder);
       try {
-        await fetch(`${API_BASE_URL}/notes/import`, { method: "POST", body: form });
+        const response = await fetch(`${API_BASE_URL}/notes/import`, { method: "POST", body: form });
+        if (!response.ok) throw new Error((await readJson(response)).message || `Import failed (HTTP ${response.status})`);
       } catch (error) {
         console.error("Import failed:", error);
+        showLibraryNotice(`Import failed for “${file.name}”: ${formatFetchError(error)}`, true);
       }
     }
     importInput.value = "";
@@ -2162,7 +2201,14 @@ function wireLibraryEvents() {
     const del = event.target.closest("[data-library-delete]");
     if (del) {
       if (!confirm("Delete this note? This cannot be undone.")) return;
-      await fetch(`${API_BASE_URL}/notes/${del.dataset.libraryDelete}`, { method: "DELETE" });
+      try {
+        const response = await fetch(`${API_BASE_URL}/notes/${del.dataset.libraryDelete}`, { method: "DELETE" });
+        if (!response.ok) throw new Error((await readJson(response)).message || `Delete failed (HTTP ${response.status})`);
+      } catch (error) {
+        console.error("Delete failed:", error);
+        showLibraryNotice(`Delete failed: ${formatFetchError(error)}`, true);
+        return;
+      }
       await refreshLibrary();
       return;
     }
@@ -2214,15 +2260,17 @@ async function handleLibraryAction(kind) {
       const current = libraryFolders.find((folder) => folder.id === librarySelectedFolderId);
       const name = prompt("Rename folder", current?.name || "");
       if (name === null || !name.trim()) return;
-      await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, {
+      const response = await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim(), move: false }),
       });
+      if (!response.ok) throw new Error((await readJson(response)).message || `Rename failed (HTTP ${response.status})`);
       await refreshLibrary();
     } else if (kind === "delete-folder" && isRealLibraryFolder()) {
       if (!confirm("Delete this folder and its subfolders? Notes inside are moved to Unfiled.")) return;
-      await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, { method: "DELETE" });
+      const response = await fetch(`${API_BASE_URL}/folders/${librarySelectedFolderId}`, { method: "DELETE" });
+      if (!response.ok) throw new Error((await readJson(response)).message || `Delete failed (HTTP ${response.status})`);
       selectLibraryFolder("ALL");
       await refreshLibrary();
     } else if (kind === "new-note") {
@@ -2240,6 +2288,7 @@ async function handleLibraryAction(kind) {
     }
   } catch (error) {
     console.error("Library action failed:", error);
+    showLibraryNotice(`Library action failed: ${formatFetchError(error)}`, true);
   }
 }
 
@@ -2474,7 +2523,12 @@ async function startBlankEditorDraft() {
   }
 }
 
+let editorDropdownEventsWired = false;
 function wireEditorEvents(doc, startDoc = doc) {
+  // The toolbar / outline / header listeners below attach to elements that are
+  // re-created by renderEditorView on every render, so re-binding them each
+  // time is safe (old elements are discarded with their listeners). Only the
+  // viewRoot-level listener needs the one-time guard below.
   const toolbar = viewRoot.querySelector("#editor-toolbar");
   // Keep the editor's selection alive while clicking toolbar controls.
   toolbar.addEventListener("mousedown", (event) => event.preventDefault());
@@ -2506,11 +2560,18 @@ function wireEditorEvents(doc, startDoc = doc) {
     if (tool.dataset.edTool === "redo") editorInstance?.redo();
     if (tool.dataset.edTool === "outline") toggleEditorOutline(tool);
   });
-  viewRoot.addEventListener("click", (event) => {
-    if (!event.target.closest(".ed-dropdown")) {
-      toolbar.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
-    }
-  });
+  // viewRoot is persistent and renderEditorView re-runs on every navigation,
+  // so this listener is bound once and resolves the toolbar at event time
+  // (the toolbar element is re-created on each render).
+  if (!editorDropdownEventsWired) {
+    editorDropdownEventsWired = true;
+    viewRoot.addEventListener("click", (event) => {
+      if (!event.target.closest(".ed-dropdown")) {
+        const currentToolbar = viewRoot.querySelector("#editor-toolbar");
+        currentToolbar?.querySelectorAll(".ed-menu").forEach((m) => { m.hidden = true; });
+      }
+    });
+  }
   const outlineBody = viewRoot.querySelector("#editor-outline-body");
   if (outlineBody) {
     outlineBody.addEventListener("click", (event) => {

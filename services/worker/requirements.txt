@@ -5,7 +5,7 @@ pydantic-settings==2.14.2
 psycopg[binary,pool]==3.3.4
 Pillow==12.3.0
 PyMuPDF==1.27.2.3
-pypdf==6.14.2
+pypdf==6.16.1
 pytesseract==0.3.13
 redis==6.4.0
 langgraph==1.2.10

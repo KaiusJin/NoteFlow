@@ -14,12 +14,57 @@ from noteflow_worker.pipelines.generate_flashcards import GenerateFlashcardsPipe
 from noteflow_worker.pipelines.generate_quiz import GenerateQuizPipeline
 from noteflow_worker.pipelines.grade_quiz_attempt import GradeQuizAttemptPipeline
 from noteflow_worker.queue.redis_queue import TaskPayload
+from noteflow_worker.task_execution import TaskExecutionStore
 
 
 def ensure_legacy_user(conn, user_id):
     """Keep the suite runnable before or after the local-workspace migration."""
     if conn.execute("SELECT to_regclass('users') present").fetchone()["present"]:
         conn.execute("INSERT INTO users(id,display_name,email,created_at,updated_at) VALUES (%s,'Test','test@local',NOW(),NOW()) ON CONFLICT(id) DO NOTHING", (user_id,))
+
+
+@unittest.skipUnless(os.getenv("NOTEFLOW_RUN_DB_TESTS") == "1", "requires local PostgreSQL")
+class TaskExecutionIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self.store = TaskExecutionStore()
+        self.user_id, self.document_id, self.task_id = (str(uuid4()) for _ in range(3))
+        with self.store.connect() as conn:
+            ensure_legacy_user(conn, self.user_id)
+            conn.execute(
+                """INSERT INTO documents(id,user_id,title,storage_path,file_size,status,document_type,
+                  content_source_type) VALUES (%s,%s,'Lease Test','/tmp/none.pdf',1,'UPLOADED',
+                  'COURSE_NOTES','TEXT_PDF')""",
+                (self.document_id, self.user_id),
+            )
+            conn.execute(
+                """INSERT INTO tasks(id,document_id,user_id,task_type,status,current_step,progress,retry_count)
+                  VALUES (%s,%s,%s,'PARSE_DOCUMENT','PENDING','UPLOADED',0,0)""",
+                (self.task_id, self.document_id, self.user_id),
+            )
+
+    def tearDown(self):
+        with self.store.connect() as conn:
+            conn.execute("DELETE FROM tasks WHERE id=%s", (self.task_id,))
+            conn.execute("DELETE FROM documents WHERE id=%s", (self.document_id,))
+            conn.execute("DELETE FROM users WHERE id=%s", (self.user_id,))
+
+    def test_claim_is_exclusive_and_retry_requires_the_current_execution(self):
+        first_lease, second_lease = str(uuid4()), str(uuid4())
+        first = TaskPayload(
+            self.task_id, self.document_id, self.user_id, "PARSE_DOCUMENT", lease_id=first_lease
+        )
+        second = TaskPayload(
+            self.task_id, self.document_id, self.user_id, "PARSE_DOCUMENT", lease_id=second_lease
+        )
+
+        self.assertTrue(self.store.claim(first, 60))
+        self.assertFalse(self.store.claim(second, 60))
+        self.assertTrue(self.store.renew(first, 60))
+        self.assertFalse(self.store.renew(second, 60))
+
+        retry = self.store.retry_or_fail(first, "transient failure", 3)
+        self.assertEqual((retry.status, retry.retry_count), ("RETRYING", 1))
+        self.assertTrue(self.store.claim(second, 60))
 
 
 @unittest.skipUnless(os.getenv("NOTEFLOW_RUN_DB_TESTS") == "1", "requires local PostgreSQL")

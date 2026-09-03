@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Callable
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.notes.providers import (
     convert_gemini_schema_to_json_schema,
     is_retryable_error,
@@ -104,13 +104,13 @@ class StructuredMemoryLlm:
         raise MemoryLlmError(f"Unsupported memory LLM provider: {self.provider}")
 
     def _request_gemini(self, prompt: str, response_schema: dict) -> dict:
-        if not settings.gemini_api_key:
+        api_key = ai_setting("gemini_api_key")
+        if not api_key:
             raise MemoryLlmError("Gemini API key is not configured.")
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             + self.model
-            + ":generateContent?key="
-            + settings.gemini_api_key
+            + ":generateContent"
         )
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -120,10 +120,11 @@ class StructuredMemoryLlm:
                 "response_schema": response_schema,
             },
         }
-        return post_json(url, payload, timeout_seconds=self.timeout_seconds)
+        return post_json(url, payload, headers={"x-goog-api-key": api_key}, timeout_seconds=self.timeout_seconds)
 
     def _request_openai(self, prompt: str, response_schema: dict, schema_name: str) -> dict:
-        if not settings.openai_api_key:
+        api_key = ai_setting("openai_api_key")
+        if not api_key:
             raise MemoryLlmError("OpenAI API key is not configured.")
         payload = {
             "model": self.model,
@@ -138,7 +139,7 @@ class StructuredMemoryLlm:
                 },
             },
         }
-        headers = {"Authorization": "Bearer " + settings.openai_api_key}
+        headers = {"Authorization": "Bearer " + api_key}
         return post_json("https://api.openai.com/v1/chat/completions", payload, headers=headers, timeout_seconds=self.timeout_seconds)
 
 
@@ -166,16 +167,16 @@ def post_json(url: str, payload: dict, headers: dict | None = None, timeout_seco
 
 
 def make_memory_llm() -> StructuredMemoryLlm:
-    provider = (settings.memory_llm_provider or settings.notes_provider or "").lower().strip()
+    provider = (settings.memory_llm_provider or ai_setting("notes_provider") or "").lower().strip()
     if not provider:
-        if settings.gemini_api_key:
+        if ai_setting("gemini_api_key"):
             provider = "gemini"
-        elif settings.openai_api_key:
+        elif ai_setting("openai_api_key"):
             provider = "openai"
     if provider == "gemini":
-        return StructuredMemoryLlm("gemini", settings.memory_gemini_model or settings.gemini_notes_model)
+        return StructuredMemoryLlm("gemini", settings.memory_gemini_model or ai_setting("gemini_notes_model"))
     if provider == "openai":
-        return StructuredMemoryLlm("openai", settings.memory_openai_model or settings.openai_notes_model)
+        return StructuredMemoryLlm("openai", settings.memory_openai_model or ai_setting("openai_notes_model"))
     raise MemoryLlmError(
         "Memory LLM is not configured. Set MEMORY_LLM_PROVIDER or NOTES_PROVIDER plus GEMINI_API_KEY or OPENAI_API_KEY."
     )

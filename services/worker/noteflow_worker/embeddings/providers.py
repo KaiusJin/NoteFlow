@@ -4,11 +4,11 @@ import json
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.runtime.limits import process_resource_slot
 
 
@@ -41,48 +41,63 @@ class GeminiEmbeddingProvider:
     dimension = 768
 
     def __init__(self) -> None:
-        self.api_key = settings.gemini_api_key
-        self.model = settings.gemini_embedding_model
+        self.api_key = ai_setting("gemini_api_key")
+        self.model = ai_setting("gemini_embedding_model")
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
         if not self.api_key:
             return [EmbeddingResult([], "Gemini API key is not configured.") for _ in texts]
-        max_workers = max(1, min(settings.embedding_max_concurrent_requests, len(texts)))
+        # batchEmbedContents accepts up to 100 requests per call, so a large
+        # document costs a handful of HTTP round trips instead of one per chunk.
+        chunks = [texts[i:i + GEMINI_EMBED_BATCH_LIMIT] for i in range(0, len(texts), GEMINI_EMBED_BATCH_LIMIT)]
+        max_workers = max(1, min(settings.embedding_max_concurrent_requests, len(chunks)))
         results: list[EmbeddingResult | None] = [None] * len(texts)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_index = {
-                executor.submit(embedding_with_retries, lambda text=text: self.embed_one(text)): index
-                for index, text in enumerate(texts)
+            future_to_range = {
+                executor.submit(embedding_with_retries, lambda chunk=chunk, start=i: self.embed_batch(chunk, start)): (
+                    i,
+                    i + len(chunk),
+                )
+                for i, chunk in enumerate(chunks)
             }
-            for future in as_completed(future_to_index):
-                index = future_to_index[future]
+            for future, (start, end) in future_to_range.items():
                 try:
-                    results[index] = future.result()
+                    batch_results = future.result()
                 except Exception as exc:
-                    results[index] = EmbeddingResult([], str(exc)[:2000])
+                    batch_results = [EmbeddingResult([], str(exc)[:2000])] * (end - start)
+                results[start:end] = batch_results
         return [result or EmbeddingResult([], "Embedding request did not return a result.") for result in results]
 
-    def embed_one(self, text: str) -> EmbeddingResult:
+    def embed_batch(self, texts: list[str], start_index: int) -> list[EmbeddingResult]:
         model_name = self.model if self.model.startswith("models/") else f"models/{self.model}"
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:embedContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:batchEmbedContents"
         payload = {
-            "model": model_name,
-            "content": {"parts": [{"text": text}]},
+            "requests": [
+                {"model": model_name, "content": {"parts": [{"text": text}]}}
+                for text in texts
+            ],
         }
-        response = post_json(url, payload)
-        values = response.get("embedding", {}).get("values", [])
-        if not isinstance(values, list) or not values:
-            raise RuntimeError("Gemini embedding response did not contain embedding.values.")
-        return EmbeddingResult([float(value) for value in values])
+        response = post_json(url, payload, headers={"x-goog-api-key": self.api_key})
+        embeddings = response.get("embeddings", [])
+        if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+            raise RuntimeError("Gemini batch embedding response count mismatch.")
+        results: list[EmbeddingResult] = []
+        for index, entry in enumerate(embeddings):
+            values = entry.get("values", [])
+            if not isinstance(values, list) or not values:
+                results.append(EmbeddingResult([], f"Gemini embedding response item {start_index + index} had no values."))
+                continue
+            results.append(EmbeddingResult([float(value) for value in values]))
+        return results
 
 
 class OpenAIEmbeddingProvider:
     provider_name = "openai"
-    dimension = 1536
 
     def __init__(self) -> None:
-        self.api_key = settings.openai_api_key
-        self.model = settings.openai_embedding_model
+        self.api_key = ai_setting("openai_api_key")
+        self.model = ai_setting("openai_embedding_model")
+        self.dimension = resolve_openai_dimensions(self.model)
 
     def embed_texts(self, texts: list[str]) -> list[EmbeddingResult]:
         if not self.api_key:
@@ -117,7 +132,7 @@ class LocalEmbeddingProvider:
 
 
 def make_embedding_provider() -> EmbeddingProvider:
-    provider = (settings.embedding_provider or "").strip().lower()
+    provider = (ai_setting("embedding_provider") or "").strip().lower()
     if provider == "gemini":
         return GeminiEmbeddingProvider()
     if provider == "openai":
@@ -125,6 +140,21 @@ def make_embedding_provider() -> EmbeddingProvider:
     if provider == "local":
         return LocalEmbeddingProvider()
     return DisabledEmbeddingProvider()
+
+
+GEMINI_EMBED_BATCH_LIMIT = 100
+
+
+def resolve_openai_dimensions(model: str) -> int:
+    # The pgvector column dimension is fixed, so the configured model must map
+    # to the declared dimension. text-embedding-3-large emits 3072 dims;
+    # every other OpenAI embedding model emits 1536.
+    override = settings.openai_embedding_dimensions
+    if override > 0:
+        return override
+    if "3-large" in model:
+        return 3072
+    return 1536
 
 
 def embedding_with_retries(request_fn) -> EmbeddingResult:

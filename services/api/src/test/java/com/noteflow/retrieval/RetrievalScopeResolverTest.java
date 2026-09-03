@@ -1,7 +1,6 @@
 package com.noteflow.retrieval;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -12,7 +11,6 @@ import com.noteflow.documents.DocumentStatus;
 import com.noteflow.search.SearchMode;
 import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -28,8 +26,8 @@ class RetrievalScopeResolverTest {
         Document ready = document(readyId, USER_ID, DocumentStatus.READY);
         Document processing = document(processingId, USER_ID, DocumentStatus.PROCESSING);
         when(users.currentUserId()).thenReturn(USER_ID);
-        when(documents.findById(readyId)).thenReturn(Optional.of(ready));
-        when(documents.findById(processingId)).thenReturn(Optional.of(processing));
+        when(documents.findByIdInAndUserId(org.mockito.ArgumentMatchers.anyCollection(), org.mockito.ArgumentMatchers.eq(USER_ID)))
+            .thenReturn(List.of(ready, processing));
         RetrievalScopeResolver resolver = new RetrievalScopeResolver(users, documents);
 
         RetrievalScope scope = resolver.resolve(
@@ -43,18 +41,21 @@ class RetrievalScopeResolverTest {
     }
 
     @Test
-    void customScopeRejectsForeignDocument() {
+    void customScopeFiltersForeignDocumentWithoutFailing() {
         LocalWorkspaceService users = mock(LocalWorkspaceService.class);
         DocumentRepository documents = mock(DocumentRepository.class);
+        UUID ownedId = UUID.randomUUID();
         UUID foreignId = UUID.randomUUID();
+        Document owned = document(ownedId, USER_ID, DocumentStatus.READY);
         Document foreign = document(foreignId, UUID.randomUUID(), DocumentStatus.READY);
         when(users.currentUserId()).thenReturn(USER_ID);
-        when(documents.findById(foreignId)).thenReturn(Optional.of(foreign));
+        when(documents.findByIdInAndUserId(org.mockito.ArgumentMatchers.anyCollection(), org.mockito.ArgumentMatchers.eq(USER_ID)))
+            .thenReturn(List.of(owned));
         RetrievalScopeResolver resolver = new RetrievalScopeResolver(users, documents);
 
-        assertThatThrownBy(() -> resolver.resolve(SearchMode.CUSTOM, List.of(foreignId), List.of()))
-            .isInstanceOf(IllegalArgumentException.class)
-            .hasMessage("Document not found");
+        RetrievalScope scope = resolver.resolve(SearchMode.CUSTOM, List.of(ownedId, foreignId), List.of());
+
+        assertThat(scope.pdfDocumentIds()).containsExactly(ownedId);
     }
 
     private Document document(UUID id, UUID userId, DocumentStatus status) {

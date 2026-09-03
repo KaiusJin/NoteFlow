@@ -63,7 +63,9 @@ public class AdvancedLearningMemoryService {
         UUID workspaceId=workspaces.currentWorkspaceId(),scope=scopeId==null?workspaceId:scopeId;
         String key=topicKey(topic);
         lockTopic(workspaceId,scope,key);
-        Map<String,Object> old=jdbc.queryForMap("SELECT mastery,is_active,version FROM topic_learning_memory WHERE workspace_id=? AND scope_id=? AND topic_key=?",workspaceId,scope,key);
+        List<Map<String,Object>> current=jdbc.queryForList("SELECT mastery,is_active,version FROM topic_learning_memory WHERE workspace_id=? AND scope_id=? AND topic_key=?",workspaceId,scope,key);
+        if(current.isEmpty())throw new IllegalArgumentException("Learning memory not found for this topic");
+        Map<String,Object> old=current.getFirst();
         double value=mastery==null?((Number)old.get("mastery")).doubleValue():Math.max(0,Math.min(1,mastery));
         boolean enabled=active==null?(Boolean)old.get("is_active"):active;
         int changed=jdbc.update("UPDATE topic_learning_memory SET mastery=?,is_active=?,confidence=CASE WHEN ? IS NULL THEN confidence ELSE 1 END,version=version+1,updated_at=NOW() WHERE workspace_id=? AND scope_id=? AND topic_key=? AND version=?",
@@ -164,6 +166,6 @@ public class AdvancedLearningMemoryService {
     private static int intPreference(Map<String,Object> values,String key,int fallback,int minimum,int maximum){Object value=values.get(key);if(!(value instanceof Number number))return fallback;return Math.max(minimum,Math.min(maximum,number.intValue()));}
     private static String sha256(String s){try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}catch(Exception e){throw new IllegalStateException(e);}}
     private void lockTopic(UUID workspaceId,UUID scopeId,String key){jdbc.queryForObject("SELECT pg_advisory_xact_lock(hashtext(?))",Object.class,"learning-memory:"+workspaceId+":"+scopeId+":"+key);}
-    private void validateDocuments(List<UUID> ids){if(ids==null)return;UUID workspaceId=workspaces.currentWorkspaceId();for(UUID id:ids.stream().filter(Objects::nonNull).distinct().limit(100).toList()){Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM documents WHERE id=? AND user_id=?",Integer.class,id,workspaceId);if(count==null||count!=1)throw new IllegalArgumentException("Document not found");}}
+    private void validateDocuments(List<UUID> ids){if(ids==null)return;UUID workspaceId=workspaces.currentWorkspaceId();List<UUID> unique=ids.stream().filter(Objects::nonNull).distinct().limit(100).toList();if(unique.isEmpty())return;String placeholders=String.join(",",Collections.nCopies(unique.size(),"?"));List<Object> params=new ArrayList<>();params.add(workspaceId);params.addAll(unique);Integer count=jdbc.queryForObject("SELECT COUNT(DISTINCT id) FROM documents WHERE user_id=? AND id IN ("+placeholders+")",Integer.class,params.toArray());if(count==null||count!=unique.size())throw new IllegalArgumentException("Document not found");}
     private void validateArtifact(String type,UUID artifactId){if(artifactId==null)throw new IllegalArgumentException("artifactId is required");String table=type.equals("QUIZ")?"quiz_sets":type.equals("FLASHCARDS")?"flashcard_decks":"notes";Integer count=jdbc.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE id=? AND user_id=?",Integer.class,artifactId,workspaces.currentWorkspaceId());if(count==null||count!=1)throw new IllegalArgumentException("Artifact not found");}
 }

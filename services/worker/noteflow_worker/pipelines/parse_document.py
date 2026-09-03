@@ -1,6 +1,7 @@
 import json
 import logging
-from dataclasses import asdict
+from contextlib import ExitStack
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from noteflow_worker.config import settings
@@ -17,6 +18,7 @@ from noteflow_worker.pdf.strategies import resolve_processing_strategy
 from noteflow_worker.pdf.visual import analyze_pdf_visuals, to_page_assets
 from noteflow_worker.queue.redis_queue import TaskPayload
 from noteflow_worker.runtime.resource_pools import build_resource_pool_plan
+from noteflow_worker.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,20 @@ class ParseDocumentPipeline:
         self._repository = repository
 
     def run(self, payload: TaskPayload) -> None:
+        storage_scope = ExitStack()
         try:
             self._repository.mark_processing(payload.task_id, payload.document_id, "PARSING_PDF", 10)
             document = self._repository.load_document(payload.document_id)
+            source_storage_path = document.storage_path
+            object_storage = ObjectStorage()
+            local_pdf_path = storage_scope.enter_context(
+                object_storage.materialize_document(
+                    source_storage_path,
+                    payload.document_id,
+                    document.user_id,
+                )
+            )
+            document = replace(document, storage_path=local_pdf_path)
             ensure_pdf_exists(document.storage_path)
 
             resource_plan = build_resource_pool_plan(
@@ -46,18 +59,29 @@ class ParseDocumentPipeline:
             parse_version = f"native-pdf-parser-v2:{document.document_type}"
             cached_parse = content_cache.get("pdf-parse", pdf_digest, parse_version)
             if isinstance(cached_parse, dict):
-                parsed = ParsedPdf(
-                    page_count=int(cached_parse["page_count"]),
-                    text=str(cached_parse["text"]),
-                    preview=str(cached_parse["preview"]),
-                    content_source_type=str(cached_parse["content_source_type"]),
-                    chunks=[TextChunk(**chunk) for chunk in cached_parse.get("chunks", [])],
-                    page_profiles=[
-                        PageTextProfile(**profile) for profile in cached_parse.get("page_profiles", [])
-                    ],
-                    source_confidence=float(cached_parse["source_confidence"]),
-                    source_distribution=dict(cached_parse["source_distribution"]),
-                )
+                try:
+                    parsed = ParsedPdf(
+                        page_count=int(cached_parse["page_count"]),
+                        text=str(cached_parse["text"]),
+                        preview=str(cached_parse["preview"]),
+                        content_source_type=str(cached_parse["content_source_type"]),
+                        chunks=[TextChunk(**chunk) for chunk in cached_parse.get("chunks", [])],
+                        page_profiles=[
+                            PageTextProfile(**profile) for profile in cached_parse.get("page_profiles", [])
+                        ],
+                        source_confidence=float(cached_parse["source_confidence"]),
+                        source_distribution=dict(cached_parse["source_distribution"]),
+                    )
+                except (TypeError, KeyError, ValueError) as exc:
+                    # A cache entry written by an older code version (fields
+                    # renamed/added/removed) must degrade to a cache miss, not
+                    # fail the whole parse task.
+                    logger.warning(
+                        "parse_cache_schema_mismatch cache=pdf-parse digest=%s error=%s",
+                        pdf_digest, exc,
+                    )
+                    parsed = parse_pdf(document.storage_path, document.document_type)
+                    content_cache.put("pdf-parse", pdf_digest, parse_version, asdict(parsed))
             else:
                 parsed = parse_pdf(document.storage_path, document.document_type)
                 content_cache.put("pdf-parse", pdf_digest, parse_version, asdict(parsed))
@@ -107,10 +131,21 @@ class ParseDocumentPipeline:
                 payload.document_id,
                 json.dumps(parse_manifest, separators=(",", ":")),
             )
-            asset_ids_by_page = self._repository.replace_page_assets(
-                payload.document_id,
-                to_page_assets(payload.document_id, visual_pages),
-            )
+            page_assets = to_page_assets(payload.document_id, visual_pages)
+            remote_paths_by_local_path: dict[str, str] = {}
+            if object_storage.is_remote(source_storage_path):
+                persisted_page_assets = []
+                for asset in page_assets:
+                    remote_path = object_storage.publish_png(
+                        asset.image_path,
+                        document.user_id,
+                        payload.document_id,
+                        "rendered",
+                    )
+                    remote_paths_by_local_path[asset.image_path] = remote_path
+                    persisted_page_assets.append(replace(asset, image_path=remote_path))
+                page_assets = persisted_page_assets
+            asset_ids_by_page = self._repository.replace_page_assets(payload.document_id, page_assets)
 
             self._repository.mark_processing(payload.task_id, payload.document_id, "CROPPING_VISUAL_REGIONS", 50)
             full_page_routes = {
@@ -126,7 +161,20 @@ class ParseDocumentPipeline:
                 asset_ids_by_page,
                 full_page_routes=full_page_routes,
             )
-            self._repository.replace_visual_regions(payload.document_id, visual_regions)
+            persisted_visual_regions = visual_regions
+            if object_storage.is_remote(source_storage_path):
+                persisted_visual_regions = []
+                for region in visual_regions:
+                    remote_path = remote_paths_by_local_path.get(region.asset_path)
+                    if remote_path is None:
+                        remote_path = object_storage.publish_png(
+                            region.asset_path,
+                            document.user_id,
+                            payload.document_id,
+                            "regions",
+                        )
+                    persisted_visual_regions.append(replace(region, asset_path=remote_path))
+            self._repository.replace_visual_regions(payload.document_id, persisted_visual_regions)
 
             self._repository.mark_processing(payload.task_id, payload.document_id, "VLM_ANALYSIS", 62)
             vlm_regions = select_regions_for_vlm(
@@ -208,15 +256,36 @@ class ParseDocumentPipeline:
             )
             cached_markdown = content_cache.get("markdown-document", markdown_digest, "markdown-v2")
             if isinstance(cached_markdown, dict):
-                markdown = MarkdownBuildResult(
-                    pages=[
-                        MarkdownPage(**{**page, "document_id": payload.document_id})
-                        for page in cached_markdown.get("pages", [])
-                    ],
-                    document=MarkdownDocument(
-                        **{**cached_markdown["document"], "document_id": payload.document_id}
-                    ),
-                )
+                try:
+                    markdown = MarkdownBuildResult(
+                        pages=[
+                            MarkdownPage(**{**page, "document_id": payload.document_id})
+                            for page in cached_markdown.get("pages", [])
+                        ],
+                        document=MarkdownDocument(
+                            **{**cached_markdown["document"], "document_id": payload.document_id}
+                        ),
+                    )
+                except (TypeError, KeyError, ValueError) as exc:
+                    logger.warning(
+                        "parse_cache_schema_mismatch cache=markdown-document digest=%s error=%s",
+                        markdown_digest, exc,
+                    )
+                    markdown = build_markdown_document(
+                        payload.document_id,
+                        layout.blocks,
+                        vlm_results,
+                        document_type=document.document_type,
+                    )
+                    content_cache.put(
+                        "markdown-document",
+                        markdown_digest,
+                        "markdown-v2",
+                        {
+                            "pages": [asdict(page) for page in markdown.pages],
+                            "document": asdict(markdown.document),
+                        },
+                    )
             else:
                 markdown = build_markdown_document(
                     payload.document_id,
@@ -292,3 +361,5 @@ class ParseDocumentPipeline:
         except Exception as exc:
             self._repository.mark_failed(payload.task_id, payload.document_id, str(exc))
             raise
+        finally:
+            storage_scope.close()

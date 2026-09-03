@@ -2,12 +2,18 @@ package com.noteflow.queue;
 
 import com.noteflow.tasks.Task;
 import java.time.Instant;
+import java.util.List;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
 public class DocumentTaskQueue {
+    private static final DefaultRedisScript<Long> PENDING_TASK_COUNT = new DefaultRedisScript<>(
+        "local total = 0; for _, key in ipairs(KEYS) do total = total + redis.call('LLEN', key); end; return total",
+        Long.class
+    );
     private final String queueName;
     private final StringRedisTemplate redis;
 
@@ -35,20 +41,28 @@ public class DocumentTaskQueue {
         String messageField = messageId == null ? "" : ",\"messageId\":\"" + messageId + "\"";
         String eventField = eventId == null ? "" : ",\"eventId\":\"" + eventId + "\"";
         String payload = """
-            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s%s%s%s}
+            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%d%s%s%s%s}
             """.formatted(
                 task.getId(),
                 task.getDocumentId() == null ? "null" : "\"" + task.getDocumentId() + "\"",
                 task.getUserId(),
                 task.getTaskType(),
                 task.getPriority(),
-                Instant.now().toEpochMilli() / 1000.0,
+                Instant.now().toEpochMilli(),
                 attemptField,
                 conversationField,
                 messageField,
                 eventField
             ).trim();
         redis.opsForList().rightPush(priorityQueueName(task.getPriority()), payload);
+    }
+
+    public boolean hasPendingTasks() {
+        Long count = redis.execute(
+            PENDING_TASK_COUNT,
+            List.of(priorityQueueName(0), priorityQueueName(1), priorityQueueName(2))
+        );
+        return count != null && count > 0;
     }
 
     private String priorityQueueName(int priority) {
