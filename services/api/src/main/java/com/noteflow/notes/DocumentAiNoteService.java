@@ -9,6 +9,7 @@ import com.noteflow.tasks.TaskType;
 import com.noteflow.workspace.LocalWorkspaceService;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,14 +20,16 @@ public class DocumentAiNoteService {
     private final DocumentAiNoteRepository notes;
     private final DocumentAiNoteSectionRepository sections;
     private final TaskDispatchService taskDispatcher;
+    private final JdbcTemplate jdbc;
 
     public DocumentAiNoteService(LocalWorkspaceService users, DocumentRepository documents, DocumentAiNoteRepository notes,
-            DocumentAiNoteSectionRepository sections, TaskDispatchService taskDispatcher) {
+            DocumentAiNoteSectionRepository sections, TaskDispatchService taskDispatcher, JdbcTemplate jdbc) {
         this.users = users;
         this.documents = documents;
         this.notes = notes;
         this.sections = sections;
         this.taskDispatcher = taskDispatcher;
+        this.jdbc = jdbc;
     }
 
     @Transactional
@@ -45,6 +48,14 @@ public class DocumentAiNoteService {
             Task task = taskDispatcher.createAndEnqueue(documentId, userId, TaskType.GENERATE_NOTES);
             return new GenerateNotesResponse(existingGenerating.get().getId(), task.getId(), existingGenerating.get().getStatus());
         }
+        // Serialize version assignment per document so concurrent generate()
+        // calls cannot both compute the same next note_version and collide on
+        // the (document_id, note_version) unique constraint.
+        jdbc.queryForObject(
+            "SELECT pg_advisory_xact_lock(hashtext(?))",
+            Object.class,
+            "note-version:" + documentId
+        );
         int nextVersion = notes.findByDocumentIdOrderByNoteVersionDesc(documentId).stream()
             .findFirst()
             .map(note -> note.getNoteVersion() + 1)

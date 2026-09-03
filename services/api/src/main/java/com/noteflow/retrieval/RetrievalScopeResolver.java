@@ -5,12 +5,19 @@ import com.noteflow.documents.DocumentRepository;
 import com.noteflow.documents.DocumentStatus;
 import com.noteflow.search.SearchMode;
 import com.noteflow.workspace.LocalWorkspaceService;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 class RetrievalScopeResolver {
+    private static final Logger log = LoggerFactory.getLogger(RetrievalScopeResolver.class);
+
     private final LocalWorkspaceService users;
     private final DocumentRepository documents;
 
@@ -43,18 +50,27 @@ class RetrievalScopeResolver {
         };
     }
 
+    /**
+     * Loads all requested documents in a single {@code WHERE id IN} query and
+     * filters in memory. Documents that are missing, foreign, or not READY are
+     * silently dropped (with a debug log) instead of failing the request.
+     */
     private List<UUID> filterOwnedReadyDocuments(List<UUID> ids, UUID userId) {
-        return ids.stream()
-            .distinct()
-            .map(id -> loadCurrentUserDocument(id, userId))
+        Set<UUID> requested = ids.stream().distinct().collect(Collectors.toCollection(LinkedHashSet::new));
+        if (requested.isEmpty()) {
+            return List.of();
+        }
+        List<Document> loaded = documents.findByIdInAndUserId(requested, userId);
+        Set<UUID> readyIds = loaded.stream()
             .filter(document -> document.getStatus() == DocumentStatus.READY)
             .map(Document::getId)
-            .toList();
-    }
-
-    private Document loadCurrentUserDocument(UUID documentId, UUID userId) {
-        return documents.findById(documentId)
-            .filter(candidate -> candidate.getUserId().equals(userId))
-            .orElseThrow(() -> new IllegalArgumentException("Document not found"));
+            .collect(Collectors.toSet());
+        for (UUID requestedId : requested) {
+            if (!readyIds.contains(requestedId)) {
+                log.debug("Excluding unavailable document {} from CUSTOM retrieval scope", requestedId);
+            }
+        }
+        // Preserve the caller's request order, deduplicated.
+        return requested.stream().filter(readyIds::contains).toList();
     }
 }

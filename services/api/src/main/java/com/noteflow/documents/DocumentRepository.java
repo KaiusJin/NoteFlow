@@ -9,6 +9,8 @@ import org.springframework.data.repository.query.Param;
 public interface DocumentRepository extends JpaRepository<Document, UUID> {
     List<Document> findByUserIdOrderByCreatedAtDesc(UUID userId);
 
+    List<Document> findByIdInAndUserId(java.util.Collection<UUID> ids, UUID userId);
+
     @Query(value = """
         SELECT * FROM documents
          WHERE user_id = :userId

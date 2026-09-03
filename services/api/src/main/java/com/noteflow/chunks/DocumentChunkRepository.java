@@ -8,4 +8,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface DocumentChunkRepository extends JpaRepository<DocumentChunk, UUID> {
     List<DocumentChunk> findByDocumentIdOrderByChunkIndexAsc(UUID documentId);
     List<DocumentChunk> findByDocumentIdOrderByChunkIndexAsc(UUID documentId, Pageable pageable);
+    List<DocumentChunk> findByDocumentIdAndChunkIndexBetweenOrderByChunkIndexAsc(UUID documentId, int start, int end);
 }

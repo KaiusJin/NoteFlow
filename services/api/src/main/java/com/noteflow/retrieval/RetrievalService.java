@@ -33,6 +33,7 @@ public class RetrievalService {
     private final int lexicalCandidateLimit;
     private final int exactCandidateLimit;
     private final int channelTimeoutSeconds;
+    private final int hydeTimeoutSeconds;
     private final int defaultContextTokens;
 
     public RetrievalService(
@@ -54,6 +55,7 @@ public class RetrievalService {
         @Value("${noteflow.retrieval.lexical-candidate-limit:30}") int lexicalCandidateLimit,
         @Value("${noteflow.retrieval.exact-candidate-limit:15}") int exactCandidateLimit,
         @Value("${noteflow.retrieval.channel-timeout-seconds:20}") int channelTimeoutSeconds,
+        @Value("${noteflow.retrieval.hyde-timeout-seconds:20}") int hydeTimeoutSeconds,
         @Value("${noteflow.retrieval.default-context-tokens:6000}") int defaultContextTokens
     ) {
         this.scopeResolver = scopeResolver;
@@ -74,6 +76,7 @@ public class RetrievalService {
         this.lexicalCandidateLimit = lexicalCandidateLimit;
         this.exactCandidateLimit = exactCandidateLimit;
         this.channelTimeoutSeconds = channelTimeoutSeconds;
+        this.hydeTimeoutSeconds = hydeTimeoutSeconds;
         this.defaultContextTokens = defaultContextTokens;
     }
 
@@ -98,16 +101,17 @@ public class RetrievalService {
         long recallStartedAt = System.nanoTime();
         // HyDE is an LLM round-trip; run it concurrently with lexical/exact recall
         // instead of serially blocking the whole fan-out. Only vector recall waits
-        // for it. expand() never throws, but guard the future so an unexpected
+        // for it. orTimeout + exceptionally guarantee that a timeout or unexpected
         // failure degrades to "no expansion" instead of failing retrieval.
         CompletableFuture<HydeExpansionResult> hydeFuture = CompletableFuture
             .supplyAsync(() -> hydeQueryExpander.expand(query), retrievalExecutor)
+            .orTimeout(hydeTimeoutSeconds, TimeUnit.SECONDS)
             .exceptionally(error -> new HydeExpansionResult(
                 true,
                 false,
                 "unavailable",
                 null,
-                error.getMessage(),
+                conciseError(error),
                 0
             ));
         CompletableFuture<ChannelRecallResult> vectorFuture = recall(

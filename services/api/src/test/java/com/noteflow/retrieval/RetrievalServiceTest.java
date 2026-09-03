@@ -70,6 +70,7 @@ class RetrievalServiceTest {
             30,
             15,
             20,
+            20,
             6000
         );
         lenient().when(externalReranker.rerank(anyString(), anyList())).thenAnswer(invocation -> {
