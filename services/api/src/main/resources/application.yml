@@ -79,6 +79,8 @@ noteflow:
     document-analysis: ${NOTEFLOW_DOCUMENT_QUEUE:queue:document-analysis}
     outbox-poll-millis: ${NOTEFLOW_OUTBOX_POLL_MILLIS:250}
     outbox-batch-size: ${NOTEFLOW_OUTBOX_BATCH_SIZE:100}
+    outbox-max-attempts: ${NOTEFLOW_OUTBOX_MAX_ATTEMPTS:12}
+    outbox-claim-timeout-seconds: ${NOTEFLOW_OUTBOX_CLAIM_TIMEOUT_SECONDS:30}
     outbox-retention-days: ${NOTEFLOW_OUTBOX_RETENTION_DAYS:7}
   local:
     # Stable namespace for this installation, not an account identity.

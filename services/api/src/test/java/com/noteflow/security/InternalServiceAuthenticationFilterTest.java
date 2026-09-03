@@ -52,4 +52,23 @@ class InternalServiceAuthenticationFilterTest {
         assertEquals(workspaceId, principal.workspaceId());
         assertEquals(200, response.getStatus());
     }
+
+    @Test
+    void authenticatesWorkerOnPublicFeatureEndpointWhenHeadersArePresent() throws Exception {
+        UUID workspaceId = UUID.randomUUID();
+        InternalServiceAuthenticationFilter filter = new InternalServiceAuthenticationFilter(TOKEN);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/study/quiz-generations");
+        request.addHeader(InternalServiceAuthenticationFilter.TOKEN_HEADER, TOKEN);
+        request.addHeader(InternalServiceAuthenticationFilter.WORKSPACE_HEADER, workspaceId.toString());
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicReference<Authentication> observed = new AtomicReference<>();
+
+        filter.doFilter(request, response,
+            (ignoredRequest, ignoredResponse) -> observed.set(SecurityContextHolder.getContext().getAuthentication()));
+
+        InternalWorkspacePrincipal principal = assertInstanceOf(
+            InternalWorkspacePrincipal.class, observed.get().getPrincipal());
+        assertEquals(workspaceId, principal.workspaceId());
+        assertEquals(200, response.getStatus());
+    }
 }

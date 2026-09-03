@@ -47,6 +47,13 @@ class GenerateNotesPipeline:
             self._repository.mark_task_processing(payload.task_id, "GENERATING_NOTES", 10)
             self._repository.ensure_notes_schema()
             document = self._repository.load_document(payload.document_id)
+            # Unlike study generation, notes had no concurrency guard: two
+            # concurrent tasks would both write the same note and the last
+            # finisher silently won. Fail fast instead.
+            if self._repository.has_concurrent_task(payload.task_id, payload.document_id, "GENERATE_NOTES"):
+                raise RuntimeError(
+                    "Another GENERATE_NOTES task is already running for this document; retry after it finishes."
+                )
             note_id = self._repository.latest_generating_note_id(payload.document_id)
             chunks = self._repository.load_chunks(payload.document_id)
             if not chunks:

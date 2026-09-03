@@ -1041,8 +1041,22 @@ def agent_state_snapshot(state: AgentState) -> dict:
 
 
 def restore_agent_state(state: AgentState, snapshot: dict) -> None:
-    state.scratchpad = [AgentTraceStep(**item) for item in snapshot.get("scratchpad") or []]
-    state.evidence = [Evidence(**item) for item in snapshot.get("evidence") or []]
+    # Snapshots written by older code versions may carry renamed/removed fields;
+    # skip incompatible entries instead of failing the whole RESUME_AGENT_RUN.
+    scratchpad: list[AgentTraceStep] = []
+    for item in snapshot.get("scratchpad") or []:
+        try:
+            scratchpad.append(AgentTraceStep(**item))
+        except TypeError as exc:
+            logger.warning("agent_snapshot_step_skipped error=%s", exc)
+    state.scratchpad = scratchpad
+    evidence: list[Evidence] = []
+    for item in snapshot.get("evidence") or []:
+        try:
+            evidence.append(Evidence(**item))
+        except TypeError as exc:
+            logger.warning("agent_snapshot_evidence_skipped error=%s", exc)
+    state.evidence = evidence
     state.fallback_used = bool(snapshot.get("fallbackUsed"))
     state.stop_reason = str(snapshot.get("stopReason") or "")
     state.token_budget_used = int(snapshot.get("tokenBudgetUsed") or 0)

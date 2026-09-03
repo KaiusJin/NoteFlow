@@ -35,14 +35,14 @@ public class DocumentTaskQueue {
         String messageField = messageId == null ? "" : ",\"messageId\":\"" + messageId + "\"";
         String eventField = eventId == null ? "" : ",\"eventId\":\"" + eventId + "\"";
         String payload = """
-            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%f%s%s%s%s}
+            {"taskId":"%s","documentId":%s,"userId":"%s","taskType":"%s","priority":%d,"enqueuedAt":%d%s%s%s%s}
             """.formatted(
                 task.getId(),
                 task.getDocumentId() == null ? "null" : "\"" + task.getDocumentId() + "\"",
                 task.getUserId(),
                 task.getTaskType(),
                 task.getPriority(),
-                Instant.now().toEpochMilli() / 1000.0,
+                Instant.now().toEpochMilli(),
                 attemptField,
                 conversationField,
                 messageField,

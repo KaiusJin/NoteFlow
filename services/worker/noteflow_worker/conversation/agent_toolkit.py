@@ -19,7 +19,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+
+def _like_pattern(query: str) -> str:
+    """Escape LIKE/ILIKE metacharacters so a user query cannot wildcard-scan
+    the whole table via % or _ inside the pattern."""
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
 from noteflow_worker.config import settings
+from noteflow_worker.internal_api import internal_api_headers
 from noteflow_worker.conversation.retrieval import Evidence
 from noteflow_worker.study.generation_client import StudyGenerationClient
 
@@ -214,7 +222,7 @@ def _api(path: str, method: str = "GET", body: dict | None = None) -> dict:
     request = Request(
         settings.noteflow_api_url.rstrip("/") + path,
         data=None if body is None else json.dumps(body, separators=(",", ":")).encode(),
-        headers={"Content-Type": "application/json"},
+        headers=internal_api_headers(),
         method=method,
     )
     try:
@@ -246,7 +254,7 @@ def search_notes(args: dict, state) -> ToolkitResult:
     query = str(args["query"]).strip()
     rows = _rows(state, """SELECT id,title,LEFT(markdown,1200) markdown,source_kind,updated_at
       FROM notes WHERE user_id=%s AND (title ILIKE %s OR markdown ILIKE %s)
-      ORDER BY updated_at DESC LIMIT %s""", (state.user_id, f"%{query}%", f"%{query}%", _limit(args)))
+      ORDER BY updated_at DESC LIMIT %s""", (state.user_id, _like_pattern(query), _like_pattern(query), _limit(args)))
     return ToolkitResult(True, _json_observation("search_notes", rows))
 
 
@@ -260,7 +268,7 @@ def search_quiz_history(args: dict, state) -> ToolkitResult:
       WHERE s.user_id=%s AND (%s='' OR s.title ILIKE %s)
         AND (cardinality(%s::uuid[])=0 OR s.document_id=ANY(%s::uuid[]))
       GROUP BY s.id ORDER BY s.created_at DESC LIMIT %s""",
-      (state.user_id, query, f"%{query}%", document_ids, document_ids, _limit(args)))
+      (state.user_id, query, _like_pattern(query), document_ids, document_ids, _limit(args)))
     return ToolkitResult(True, _json_observation("search_quiz_history", rows))
 
 
@@ -272,7 +280,7 @@ def search_flashcards(args: dict, state) -> ToolkitResult:
       WHERE d.user_id=%s AND (f.topic ILIKE %s OR f.front ILIKE %s OR f.back ILIKE %s OR d.title ILIKE %s)
         AND (cardinality(%s::uuid[])=0 OR d.document_id=ANY(%s::uuid[]))
       ORDER BY f.created_at DESC LIMIT %s""",
-      (state.user_id, *(f"%{query}%",) * 4, document_ids, document_ids, _limit(args, 20, 100)))
+      (state.user_id, *(_like_pattern(query),) * 4, document_ids, document_ids, _limit(args, 20, 100)))
     return ToolkitResult(True, _json_observation("search_flashcards", rows))
 
 
@@ -298,10 +306,10 @@ def retrieve_previous_conversation(args: dict, state) -> ToolkitResult:
     rows = _rows(state, """SELECT m.id,m.conversation_id,m.role,LEFT(m.content_markdown,1200) content,m.created_at
       FROM rag_messages m JOIN rag_conversations c ON c.id=m.conversation_id
       WHERE c.user_id=%s AND m.content_markdown ILIKE %s
-      ORDER BY m.created_at DESC LIMIT %s""", (state.user_id, f"%{query}%", _limit(args)))
+      ORDER BY m.created_at DESC LIMIT %s""", (state.user_id, _like_pattern(query), _limit(args)))
     memories = _rows(state, """SELECT id,memory_type,LEFT(content,1000) content,confidence,last_accessed_at
       FROM rag_memories WHERE user_id=%s AND status='ACTIVE' AND content ILIKE %s
-      ORDER BY confidence DESC,updated_at DESC LIMIT %s""", (state.user_id, f"%{query}%", _limit(args)))
+      ORDER BY confidence DESC,updated_at DESC LIMIT %s""", (state.user_id, _like_pattern(query), _limit(args)))
     return ToolkitResult(True, _json_observation("retrieve_previous_conversation", {"messages": rows, "memories": memories}))
 
 
@@ -677,7 +685,7 @@ def select_documents(args: dict, state) -> ToolkitResult:
       FROM documents d LEFT JOIN document_chunks c ON c.document_id=d.id
       WHERE d.user_id=%s AND d.status='READY' AND (d.title ILIKE %s OR c.content ILIKE %s)
       GROUP BY d.id ORDER BY (d.title ILIKE %s) DESC,matching_chunks DESC,d.created_at DESC LIMIT %s""",
-      (f"%{query}%", state.user_id, f"%{query}%", f"%{query}%", f"%{query}%", _limit(args, 8, 25)))
+      (_like_pattern(query), state.user_id, _like_pattern(query), _like_pattern(query), _like_pattern(query), _limit(args, 8, 25)))
     return ToolkitResult(True, _json_observation("select_documents", rows))
 
 

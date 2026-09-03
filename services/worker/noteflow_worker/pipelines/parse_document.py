@@ -46,18 +46,29 @@ class ParseDocumentPipeline:
             parse_version = f"native-pdf-parser-v2:{document.document_type}"
             cached_parse = content_cache.get("pdf-parse", pdf_digest, parse_version)
             if isinstance(cached_parse, dict):
-                parsed = ParsedPdf(
-                    page_count=int(cached_parse["page_count"]),
-                    text=str(cached_parse["text"]),
-                    preview=str(cached_parse["preview"]),
-                    content_source_type=str(cached_parse["content_source_type"]),
-                    chunks=[TextChunk(**chunk) for chunk in cached_parse.get("chunks", [])],
-                    page_profiles=[
-                        PageTextProfile(**profile) for profile in cached_parse.get("page_profiles", [])
-                    ],
-                    source_confidence=float(cached_parse["source_confidence"]),
-                    source_distribution=dict(cached_parse["source_distribution"]),
-                )
+                try:
+                    parsed = ParsedPdf(
+                        page_count=int(cached_parse["page_count"]),
+                        text=str(cached_parse["text"]),
+                        preview=str(cached_parse["preview"]),
+                        content_source_type=str(cached_parse["content_source_type"]),
+                        chunks=[TextChunk(**chunk) for chunk in cached_parse.get("chunks", [])],
+                        page_profiles=[
+                            PageTextProfile(**profile) for profile in cached_parse.get("page_profiles", [])
+                        ],
+                        source_confidence=float(cached_parse["source_confidence"]),
+                        source_distribution=dict(cached_parse["source_distribution"]),
+                    )
+                except (TypeError, KeyError, ValueError) as exc:
+                    # A cache entry written by an older code version (fields
+                    # renamed/added/removed) must degrade to a cache miss, not
+                    # fail the whole parse task.
+                    logger.warning(
+                        "parse_cache_schema_mismatch cache=pdf-parse digest=%s error=%s",
+                        pdf_digest, exc,
+                    )
+                    parsed = parse_pdf(document.storage_path, document.document_type)
+                    content_cache.put("pdf-parse", pdf_digest, parse_version, asdict(parsed))
             else:
                 parsed = parse_pdf(document.storage_path, document.document_type)
                 content_cache.put("pdf-parse", pdf_digest, parse_version, asdict(parsed))
@@ -208,15 +219,36 @@ class ParseDocumentPipeline:
             )
             cached_markdown = content_cache.get("markdown-document", markdown_digest, "markdown-v2")
             if isinstance(cached_markdown, dict):
-                markdown = MarkdownBuildResult(
-                    pages=[
-                        MarkdownPage(**{**page, "document_id": payload.document_id})
-                        for page in cached_markdown.get("pages", [])
-                    ],
-                    document=MarkdownDocument(
-                        **{**cached_markdown["document"], "document_id": payload.document_id}
-                    ),
-                )
+                try:
+                    markdown = MarkdownBuildResult(
+                        pages=[
+                            MarkdownPage(**{**page, "document_id": payload.document_id})
+                            for page in cached_markdown.get("pages", [])
+                        ],
+                        document=MarkdownDocument(
+                            **{**cached_markdown["document"], "document_id": payload.document_id}
+                        ),
+                    )
+                except (TypeError, KeyError, ValueError) as exc:
+                    logger.warning(
+                        "parse_cache_schema_mismatch cache=markdown-document digest=%s error=%s",
+                        markdown_digest, exc,
+                    )
+                    markdown = build_markdown_document(
+                        payload.document_id,
+                        layout.blocks,
+                        vlm_results,
+                        document_type=document.document_type,
+                    )
+                    content_cache.put(
+                        "markdown-document",
+                        markdown_digest,
+                        "markdown-v2",
+                        {
+                            "pages": [asdict(page) for page in markdown.pages],
+                            "document": asdict(markdown.document),
+                        },
+                    )
             else:
                 markdown = build_markdown_document(
                     payload.document_id,

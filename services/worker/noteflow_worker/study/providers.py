@@ -9,7 +9,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.notes.providers import convert_gemini_schema_to_json_schema, is_retryable_error, parse_provider_response
 from noteflow_worker.study.models import (
     DIFFICULTIES, FLASHCARD_TYPES, QUESTION_TYPES, FlashcardCandidate, GradeResult,
@@ -103,15 +103,15 @@ class StructuredStudyProvider:
 
 
 def make_study_provider() -> StudyProvider:
-    provider = (settings.study_llm_provider or settings.notes_provider or "").lower().strip()
+    provider = (settings.study_llm_provider or ai_setting("notes_provider") or "").lower().strip()
     if not provider:
-        provider = "gemini" if settings.gemini_api_key else "openai" if settings.openai_api_key else "disabled"
+        provider = "gemini" if ai_setting("gemini_api_key") else "openai" if ai_setting("openai_api_key") else "disabled"
     if provider == "gemini":
-        return StructuredStudyProvider("gemini", settings.study_gemini_model or settings.gemini_notes_model,
-                                       settings.gemini_api_key)
+        return StructuredStudyProvider("gemini", settings.study_gemini_model or ai_setting("gemini_notes_model"),
+                                       ai_setting("gemini_api_key"))
     if provider == "openai":
-        return StructuredStudyProvider("openai", settings.study_openai_model or settings.openai_notes_model,
-                                       settings.openai_api_key)
+        return StructuredStudyProvider("openai", settings.study_openai_model or ai_setting("openai_notes_model"),
+                                       ai_setting("openai_api_key"))
     raise RuntimeError("Study provider is not configured. Set STUDY_LLM_PROVIDER and an API key.")
 
 

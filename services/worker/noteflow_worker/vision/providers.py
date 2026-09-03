@@ -8,7 +8,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Protocol
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.db.repository import VisualRegion, VlmResult
 
 VISION_KEYS = {
@@ -83,7 +83,7 @@ class GeminiVisionProvider:
     provider_name = "gemini"
 
     def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = api_key or settings.gemini_api_key
+        self.api_key = api_key or ai_setting("gemini_api_key")
         self.model = settings.gemini_vision_model or "gemini-1.5-flash"
 
     def analyze(self, image_path: str, region: VisualRegion) -> VisionAnalysis:
@@ -117,12 +117,24 @@ class GeminiVisionProvider:
         url = (
             "https://generativelanguage.googleapis.com/v1beta/models/"
             + self.model
-            + ":generateContent?key="
-            + self.api_key
+            + ":generateContent"
         )
         try:
-            response = post_json(url, payload)
-            text = response["candidates"][0]["content"]["parts"][0].get("text", "")
+            response = post_json(url, payload, headers={"x-goog-api-key": self.api_key})
+            # Safety-blocked responses return no candidates; surface the block
+            # reason instead of raising a bare KeyError.
+            candidates = response.get("candidates") or []
+            text = ""
+            if candidates:
+                text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text:
+                finish_reason = candidates[0].get("finishReason", "empty") if candidates else "no_candidates"
+                return VisionAnalysis(
+                    provider=self.provider_name,
+                    model=self.model,
+                    uncertainty="Gemini vision response contained no text.",
+                    error_message=f"Gemini vision response was empty (finishReason={finish_reason}).",
+                )
             parsed = parse_json_object(text)
             return analysis_from_dict(self.provider_name, self.model, parsed, response)
         except Exception as exc:
@@ -138,7 +150,7 @@ class OpenAIVisionProvider:
     provider_name = "openai"
 
     def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = api_key or settings.openai_api_key
+        self.api_key = api_key or ai_setting("openai_api_key")
         self.model = settings.openai_vision_model or "gpt-4o-mini"
 
     def analyze(self, image_path: str, region: VisualRegion) -> VisionAnalysis:
@@ -367,10 +379,10 @@ def build_provider_candidates(provider: str) -> list[VisionProvider]:
     candidates: list[VisionProvider] = []
     for name in requested:
         if name == "gemini":
-            keys = parse_api_keys(settings.gemini_api_keys, settings.gemini_api_key)
+            keys = parse_api_keys(settings.gemini_api_keys, ai_setting("gemini_api_key"))
             candidates.extend(GeminiVisionProvider(key) for key in keys)
         elif name == "openai":
-            keys = parse_api_keys(settings.openai_api_keys, settings.openai_api_key)
+            keys = parse_api_keys(settings.openai_api_keys, ai_setting("openai_api_key"))
             candidates.extend(OpenAIVisionProvider(key) for key in keys)
         elif name == "mcp" and settings.mcp_vision_endpoint:
             keys = parse_api_keys(settings.mcp_vision_api_keys, settings.mcp_vision_api_key, allow_empty=True)

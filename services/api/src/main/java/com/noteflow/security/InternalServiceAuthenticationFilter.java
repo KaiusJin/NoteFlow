@@ -36,7 +36,7 @@ public class InternalServiceAuthenticationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return !request.getRequestURI().startsWith("/internal/");
+        return !request.getRequestURI().startsWith("/internal/") && request.getHeader(TOKEN_HEADER) == null;
     }
 
     @Override

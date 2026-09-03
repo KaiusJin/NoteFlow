@@ -40,6 +40,16 @@ public class TaskOutbox {
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
+    /** Terminal state: set once retry attempts exceed the configured maximum. */
+    @Column(name = "dead_letter_at")
+    private Instant deadLetterAt;
+
+    @Column(name = "claim_token")
+    private UUID claimToken;
+
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
     protected TaskOutbox() {
     }
 
@@ -85,9 +95,28 @@ public class TaskOutbox {
         return lastError;
     }
 
+    public Instant getDeadLetterAt() {
+        return deadLetterAt;
+    }
+
+    public UUID getClaimToken() {
+        return claimToken;
+    }
+
+    public Instant getClaimedAt() {
+        return claimedAt;
+    }
+
+    /** Stops further delivery attempts for this event (terminal FAILED state). */
+    public void markDeadLetter() {
+        deadLetterAt = Instant.now();
+        releaseClaim();
+    }
+
     public void markPublished() {
         publishedAt = Instant.now();
         lastError = null;
+        releaseClaim();
     }
 
     public void markFailed(RuntimeException error) {
@@ -99,5 +128,11 @@ public class TaskOutbox {
         if (lastError.length() > 2_000) {
             lastError = lastError.substring(0, 2_000);
         }
+        releaseClaim();
+    }
+
+    private void releaseClaim() {
+        claimToken = null;
+        claimedAt = null;
     }
 }

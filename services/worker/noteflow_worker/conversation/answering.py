@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from noteflow_worker.config import settings
+from noteflow_worker.config import ai_setting, settings
 from noteflow_worker.conversation.retrieval import Evidence
 from noteflow_worker.memory.llm import MemoryLlmError, StructuredMemoryLlm
 from noteflow_worker.memory.models import WorkingContext
@@ -23,11 +23,11 @@ class StructuredAnswer:
 
 
 def make_answer_llm() -> StructuredMemoryLlm:
-    provider = (settings.answer_llm_provider or settings.notes_provider or "").lower().strip()
+    provider = (settings.answer_llm_provider or ai_setting("notes_provider") or "").lower().strip()
     if not provider:
-        if settings.gemini_api_key:
+        if ai_setting("gemini_api_key"):
             provider = "gemini"
-        elif settings.openai_api_key:
+        elif ai_setting("openai_api_key"):
             provider = "openai"
     kwargs = {
         "timeout_seconds": settings.answer_request_timeout_seconds,
@@ -35,9 +35,9 @@ def make_answer_llm() -> StructuredMemoryLlm:
         "backoff_seconds": settings.answer_retry_backoff_seconds,
     }
     if provider == "gemini":
-        return StructuredMemoryLlm("gemini", settings.answer_gemini_model or settings.gemini_notes_model, **kwargs)
+        return StructuredMemoryLlm("gemini", settings.answer_gemini_model or ai_setting("gemini_notes_model"), **kwargs)
     if provider == "openai":
-        return StructuredMemoryLlm("openai", settings.answer_openai_model or settings.openai_notes_model, **kwargs)
+        return StructuredMemoryLlm("openai", settings.answer_openai_model or ai_setting("openai_notes_model"), **kwargs)
     raise MemoryLlmError(
         "Answer LLM is not configured. Set ANSWER_LLM_PROVIDER or NOTES_PROVIDER plus GEMINI_API_KEY or OPENAI_API_KEY."
     )
