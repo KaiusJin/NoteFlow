@@ -42,6 +42,7 @@
 | 验证 | 当前结果 |
 |---|---:|
 | Java 测试 | 88，0 failure |
+| API 空库启动 | 隔离 PostgreSQL 上 V1–V6 从零迁移，完整 Spring Context 启动，health=`UP` |
 | Python 测试 | 160 passed，13 skipped（跳过项依赖可选外部/数据库条件） |
 | Web v2 | TypeScript + Vite 生产构建通过 |
 | 旧 Web 安全测试 | Playwright 1/1 通过，JavaScript 语法通过 |
