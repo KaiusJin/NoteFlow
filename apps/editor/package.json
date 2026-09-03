@@ -14,5 +14,10 @@
   },
   "devDependencies": {
     "vite": "^6.3.5"
+  },
+  "overrides": {
+    "postcss": {
+      "nanoid": "3.3.18"
+    }
   }
 }
