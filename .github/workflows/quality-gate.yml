@@ -97,6 +97,9 @@ jobs:
           psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V1__baseline.sql
           psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V2__reliable_task_outbox.sql
           psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V3__content_addressed_cache.sql
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V4__notes_unique_source_and_cleanup.sql
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V5__task_outbox_dead_letter.sql
+          psql "$DATABASE_URL" -f services/api/src/main/resources/db/migration/V6__durable_task_execution_leases.sql
       - name: Run Worker unit and PostgreSQL integration tests
         run: ./tests/run_worker_tests.sh
       - name: Audit Python dependencies
@@ -121,12 +124,33 @@ jobs:
       - working-directory: tests/e2e
         run: npm test
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web-v2/package-lock.json
+      - name: Install locked Web dependencies
+        working-directory: apps/web-v2
+        run: npm ci
+      - name: Build production PWA
+        working-directory: apps/web-v2
+        run: npm run build
+      - name: Audit Web production dependencies
+        working-directory: apps/web-v2
+        run: npm audit --omit=dev --audit-level=high
+
   supply-chain:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Scan repository filesystem
-        uses: aquasecurity/trivy-action@0.33.1
+        # v0.36.0, pinned to its immutable upstream commit after the 2026
+        # Trivy Action tag migration/supply-chain incident.
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8
         with:
           scan-type: fs
           scan-ref: .
