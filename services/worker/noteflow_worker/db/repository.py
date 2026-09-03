@@ -35,7 +35,7 @@ class Repository(BaseRepository):
         with self.connect() as conn:
             row = conn.execute(
                 """
-                SELECT id, storage_path, document_type, title, content_source_type, page_count
+                SELECT id, user_id, storage_path, document_type, title, content_source_type, page_count
                 FROM documents
                 WHERE id = %s
                 """,
@@ -47,6 +47,7 @@ class Repository(BaseRepository):
             id=str(row["id"]),
             storage_path=row["storage_path"],
             document_type=row["document_type"],
+            user_id=str(row["user_id"]),
             title=row["title"] or "",
             content_source_type=row["content_source_type"] or "UNKNOWN",
             page_count=row["page_count"],

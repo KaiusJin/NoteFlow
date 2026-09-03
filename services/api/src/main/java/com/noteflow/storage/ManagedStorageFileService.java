@@ -7,10 +7,12 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Locale;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 @Service
-public class ManagedStorageFileService {
+@Profile("!cloud")
+public class ManagedStorageFileService implements PngObjectStorage {
     private static final byte[] PNG_SIGNATURE = {
         (byte) 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
     };
@@ -43,6 +45,16 @@ public class ManagedStorageFileService {
             return realFile;
         } catch (IOException error) {
             throw new IllegalArgumentException("Asset file not found", error);
+        }
+    }
+
+    @Override
+    public StoredObject readPng(String storedPath) {
+        Path path = resolvePngForRead(storedPath);
+        try {
+            return new StoredObject(Files.readAllBytes(path), "image/png");
+        } catch (IOException error) {
+            throw new IllegalArgumentException("Asset file could not be read", error);
         }
     }
 

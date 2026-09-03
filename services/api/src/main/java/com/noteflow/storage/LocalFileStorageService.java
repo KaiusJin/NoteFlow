@@ -5,18 +5,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 @Service
-public class LocalFileStorageService {
+@Profile("!cloud")
+public class LocalFileStorageService implements DocumentObjectStorage {
     private final Path uploadDir;
 
     public LocalFileStorageService(@Value("${noteflow.storage.upload-dir}") String uploadDir) {
         this.uploadDir = Path.of(uploadDir).toAbsolutePath().normalize();
     }
 
-    public StoredFile savePdf(UUID documentId, MultipartFile file) {
+    @Override
+    public StoredFile savePdf(UUID userId, UUID documentId, MultipartFile file) {
         try {
             Files.createDirectories(uploadDir);
             Path target = uploadDir.resolve(documentId + ".pdf");
@@ -27,6 +30,7 @@ public class LocalFileStorageService {
         }
     }
 
+    @Override
     public void deleteIfExists(String storagePath) {
         if (storagePath == null || storagePath.isBlank()) {
             return;

@@ -79,11 +79,11 @@ Redis 不保存最终业务事实；它负责需要低延迟的数据流职责�
 - [x] Spring JWT resource server、内部服务身份、workspace 隔离
 - [x] PostgreSQL outbox、Redis delivery lease、数据库 execution lease、有限重试/DLQ
 - [x] 有界线程池、PDF 进程池、连接池预算和优雅停机
-- [ ] Supabase Storage 对象存储替换本地文件路径
+- [x] cloud profile 的私有 Supabase Storage、Worker 临时物化和派生 PNG 回传
 - [x] Cloud Run IAM 无密钥唤醒器、Redis 合并和低频恢复机制
 - [ ] Cloud Run API/Job 容器、部署清单与真实 IAM 验证
 - [ ] Supabase 项目中的真实 Auth/Google/邮件模板端到端验证
 - [ ] GitHub branch protection required checks 与 Preview/production 部署工作流
 - [ ] 备份、DLQ 运维入口、成本/错误率告警和恢复演练
 
-达到前五项只能称为“云端基础架构完成”；未完成剩余上线门槛前，不应宣称生产就绪。
+代码层面的云端基础架构已经贯通；未完成真实 Supabase/GCP 配置、容器部署和恢复演练前，不应宣称生产就绪。

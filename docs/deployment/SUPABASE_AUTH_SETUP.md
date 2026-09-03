@@ -4,7 +4,7 @@ This project delegates passwords, one-time codes, sessions and Google OAuth toke
 
 ## 1. Create the project and schema
 
-The current transition has two explicit schema owners: Flyway owns the NoteFlow domain tables and Supabase owns the managed `auth` schema. Apply Spring/Flyway migrations V1–V5 to the empty Supabase database first, then link the Supabase CLI project and apply `supabase/migrations/202609030001_identity_and_personal_workspaces.sql`. Never let both tools define the same table.
+The current transition has two explicit schema owners: Flyway owns the NoteFlow domain tables and Supabase owns the managed `auth` and `storage` schemas. Apply Spring/Flyway migrations V1–V6 to the empty Supabase database first, then link the Supabase CLI project and apply the ordered files under `supabase/migrations/`. Never let both tools define the same table.
 
 The Supabase migration creates:
 
@@ -14,6 +14,8 @@ The Supabase migration creates:
 - `username_available`, a narrowly scoped registration check available to anonymous clients.
 
 It also maintains a credential-free row in the legacy `public.users` table. This is a compatibility projection for existing foreign keys; Supabase `auth.users` remains the identity source. The personal workspace initially uses the same UUID as the Auth user so existing `user_id` tenant columns remain enforceable during the workspace-column migration.
+
+The second Supabase migration creates the private `noteflow-private` Storage bucket. Source PDFs and generated PNGs use deterministic object paths under `users/<user-id>/documents/<document-id>/`. There are intentionally no browser-facing `storage.objects` policies: Spring authorizes the document owner and proxies image reads, while the trusted API and Worker use a server-only secret key.
 
 Do not copy password hashes, email verification codes or refresh tokens into public tables.
 
@@ -31,9 +33,11 @@ Google users receive a provisional private profile on first sign-in. NoteFlow im
 
 ## 4. Configure the frontend
 
-Copy `apps/web-v2/.env.example` to `apps/web-v2/.env.local` and set the project URL, publishable/anon key and Spring API URL. Only the public Supabase key belongs in the frontend. Never expose the service-role key.
+Copy `apps/web-v2/.env.example` to `apps/web-v2/.env.local` and set the project URL, publishable/anon key and Spring API URL. Only the public Supabase key belongs in the frontend. Never expose a Supabase secret or legacy service-role key.
 
 Cloudflare Pages should build from `apps/web-v2` with command `npm run build` and output directory `dist`. Production secrets and server-only keys belong in the Spring API or worker environment, not Pages.
+
+Configure both trusted runtimes with `SUPABASE_URL`, `SUPABASE_SECRET_KEY` and `SUPABASE_STORAGE_BUCKET=noteflow-private`. Prefer Supabase's current `sb_secret_...` key. `SUPABASE_SERVICE_ROLE_KEY` is accepted only as a legacy migration fallback. Cloud source documents are stored as `supabase://` object references in PostgreSQL; a Worker job downloads one source to ephemeral disk, uploads deterministic derived PNG objects, and removes the temporary directory when the task finishes.
 
 ## 5. Production hardening checklist
 
@@ -41,4 +45,4 @@ Cloudflare Pages should build from `apps/web-v2` with command `npm run build` an
 - Enable leaked-password protection and MFA when the product reaches private beta.
 - Add Cloudflare Turnstile through Supabase CAPTCHA before public signup.
 - Verify every application table has RLS in Supabase and tenant enforcement in the Spring API.
-- Rotate OAuth and service-role secrets if they have ever appeared in logs or client bundles.
+- Rotate OAuth, Supabase secret and legacy service-role credentials if they have ever appeared in logs or client bundles.

@@ -33,6 +33,13 @@ noteflow:
     allowed-origin-patterns: ${NOTEFLOW_ALLOWED_ORIGINS}
   security:
     internal-token: ${NOTEFLOW_INTERNAL_TOKEN}
+  storage:
+    supabase-url: ${SUPABASE_URL}
+    # Prefer Supabase's current sb_secret key. Legacy service_role JWTs remain
+    # supported during migration, but this value must stay server-side.
+    supabase-secret-key: ${SUPABASE_SECRET_KEY:${SUPABASE_SERVICE_ROLE_KEY:}}
+    supabase-bucket: ${SUPABASE_STORAGE_BUCKET:noteflow-private}
+    request-timeout-seconds: ${NOTEFLOW_STORAGE_TIMEOUT_SECONDS:30}
   worker:
     # Full resource name: projects/<project>/locations/<region>/jobs/<job>.
     # Leave blank for a continuously running worker. When set, the API uses its

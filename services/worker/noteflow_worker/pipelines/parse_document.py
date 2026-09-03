@@ -1,6 +1,7 @@
 import json
 import logging
-from dataclasses import asdict
+from contextlib import ExitStack
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from noteflow_worker.config import settings
@@ -17,6 +18,7 @@ from noteflow_worker.pdf.strategies import resolve_processing_strategy
 from noteflow_worker.pdf.visual import analyze_pdf_visuals, to_page_assets
 from noteflow_worker.queue.redis_queue import TaskPayload
 from noteflow_worker.runtime.resource_pools import build_resource_pool_plan
+from noteflow_worker.storage import ObjectStorage
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +27,20 @@ class ParseDocumentPipeline:
         self._repository = repository
 
     def run(self, payload: TaskPayload) -> None:
+        storage_scope = ExitStack()
         try:
             self._repository.mark_processing(payload.task_id, payload.document_id, "PARSING_PDF", 10)
             document = self._repository.load_document(payload.document_id)
+            source_storage_path = document.storage_path
+            object_storage = ObjectStorage()
+            local_pdf_path = storage_scope.enter_context(
+                object_storage.materialize_document(
+                    source_storage_path,
+                    payload.document_id,
+                    document.user_id,
+                )
+            )
+            document = replace(document, storage_path=local_pdf_path)
             ensure_pdf_exists(document.storage_path)
 
             resource_plan = build_resource_pool_plan(
@@ -118,10 +131,21 @@ class ParseDocumentPipeline:
                 payload.document_id,
                 json.dumps(parse_manifest, separators=(",", ":")),
             )
-            asset_ids_by_page = self._repository.replace_page_assets(
-                payload.document_id,
-                to_page_assets(payload.document_id, visual_pages),
-            )
+            page_assets = to_page_assets(payload.document_id, visual_pages)
+            remote_paths_by_local_path: dict[str, str] = {}
+            if object_storage.is_remote(source_storage_path):
+                persisted_page_assets = []
+                for asset in page_assets:
+                    remote_path = object_storage.publish_png(
+                        asset.image_path,
+                        document.user_id,
+                        payload.document_id,
+                        "rendered",
+                    )
+                    remote_paths_by_local_path[asset.image_path] = remote_path
+                    persisted_page_assets.append(replace(asset, image_path=remote_path))
+                page_assets = persisted_page_assets
+            asset_ids_by_page = self._repository.replace_page_assets(payload.document_id, page_assets)
 
             self._repository.mark_processing(payload.task_id, payload.document_id, "CROPPING_VISUAL_REGIONS", 50)
             full_page_routes = {
@@ -137,7 +161,20 @@ class ParseDocumentPipeline:
                 asset_ids_by_page,
                 full_page_routes=full_page_routes,
             )
-            self._repository.replace_visual_regions(payload.document_id, visual_regions)
+            persisted_visual_regions = visual_regions
+            if object_storage.is_remote(source_storage_path):
+                persisted_visual_regions = []
+                for region in visual_regions:
+                    remote_path = remote_paths_by_local_path.get(region.asset_path)
+                    if remote_path is None:
+                        remote_path = object_storage.publish_png(
+                            region.asset_path,
+                            document.user_id,
+                            payload.document_id,
+                            "regions",
+                        )
+                    persisted_visual_regions.append(replace(region, asset_path=remote_path))
+            self._repository.replace_visual_regions(payload.document_id, persisted_visual_regions)
 
             self._repository.mark_processing(payload.task_id, payload.document_id, "VLM_ANALYSIS", 62)
             vlm_regions = select_regions_for_vlm(
@@ -324,3 +361,5 @@ class ParseDocumentPipeline:
         except Exception as exc:
             self._repository.mark_failed(payload.task_id, payload.document_id, str(exc))
             raise
+        finally:
+            storage_scope.close()

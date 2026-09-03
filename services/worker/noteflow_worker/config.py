@@ -17,6 +17,16 @@ class Settings(BaseSettings):
     db_pool_max_size: int = 4
     db_pool_acquire_timeout_seconds: float = 30.0
     redis_url: str = "redis://localhost:6379/0"
+    supabase_url: str = ""
+    # Prefer the current sb_secret key. The legacy service_role JWT remains a
+    # compatibility fallback and must never be exposed to the browser.
+    supabase_secret_key: str = ""
+    supabase_service_role_key: str = ""
+    supabase_storage_bucket: str = "noteflow-private"
+    storage_http_timeout_seconds: float = 30.0
+    storage_request_max_attempts: int = 3
+    storage_max_download_bytes: int = 52_428_800
+    storage_max_png_bytes: int = 26_214_400
     noteflow_api_url: str = "http://localhost:8080"
     noteflow_api_timeout_seconds: float = 15.0
     noteflow_internal_token: str = ""
